@@ -1,0 +1,9 @@
+# Sensitive local ChatGPT archive
+psychologist-memory/
+.tools/
+node_modules/
+dist/
+dist-electron/
+release/
+.family-bridge/
+*.log

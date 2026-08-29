@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "message_to_peer": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["continue", "complete", "paused", "unsafe"]
+    },
+    "topics": { "type": "array", "items": { "type": "string" } },
+    "private_report": { "type": "string" },
+    "shared_summary": { "type": "string" }
+  },
+  "required": [
+    "message_to_peer",
+    "status",
+    "topics",
+    "private_report",
+    "shared_summary"
+  ]
+}
