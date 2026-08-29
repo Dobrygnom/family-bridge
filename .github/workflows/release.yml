@@ -1,5 +1,8 @@
 name: build-desktop
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -24,3 +27,21 @@ jobs:
         with:
           name: family-bridge-${{ matrix.os }}
           path: release/**
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish installers
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+            artifacts/**/*.blockmap

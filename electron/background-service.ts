@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -95,9 +95,14 @@ export class BackgroundService {
     const existing = this.remoteAgents.get(conversationId);
     if (existing) return existing;
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
-    const memoryPath = path.join(this.userData, "psychologist-memory", "MEMORY.md");
+    const memoryRoot = path.join(this.userData, "psychologist-memory");
     let memory = "Личная память ещё не синхронизирована.";
-    try { memory = readFileSync(memoryPath, "utf8").slice(0, 80_000); } catch { /* optional */ }
+    try {
+      const files = [path.join(memoryRoot, "personal-profile.md")];
+      const topics = path.join(memoryRoot, "topic-summaries");
+      if (existsSync(topics)) files.push(...readdirSync(topics).filter((x) => x.endsWith(".md")).map((x) => path.join(topics, x)));
+      memory = files.filter(existsSync).map((file) => readFileSync(file, "utf8")).join("\n\n").slice(0, 80_000) || memory;
+    } catch { /* optional */ }
     const agent = new CodexCliAgent({ id: owner, displayName: owner === "dima" ? "Димы" : "Кати",
       perspective: `Используй локальную психологическую память как фон, не цитируя её дословно:\n${memory}`,
       workspace: path.join(this.userData, "agents", owner, conversationId), schemaPath, codexCommand: defaultCodexCommand() });
@@ -123,13 +128,14 @@ export class BackgroundService {
       this.remoteMessages.set(envelope.conversation_id, messages);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: envelope.payload.text, turn: envelope.sequence_number });
       await this.remote.acknowledge(envelope.id);
-      if (response.status !== "complete" && envelope.sequence_number < 8) {
+      if (envelope.payload.status !== "complete" && envelope.sequence_number < 8) {
         const me = await this.remote.identity();
         const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
         const sequence = envelope.sequence_number + 1;
         await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
           payload: { text: response.message_to_peer, topic: envelope.payload.topic, status: response.status, sharedSummary: response.shared_summary }, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
         this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
+        if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages);
       } else {
         await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages);
       }

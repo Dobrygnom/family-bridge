@@ -5,12 +5,13 @@
 ## Первоначальная настройка
 
 1. Через встроенный `list_threads` найди указанный владельцем проект и чат. Не используй браузер.
-2. Сохрани source thread ID в `memory/sync-state.json`.
-3. Через `read_thread` выгрузи всю историю страницами до конца.
-4. Сохрани сообщения без изменения в append-only `memory/transcript.jsonl`.
-5. Запиши устойчивый ID/время последней реплики.
-6. Построй `memory/topic-index.json`, `memory/topic-summaries/*.md` и `memory/personal-profile.md`.
-7. Никогда не копируй исходный transcript во внешний транспорт.
+2. Определи каталог данных приложения: `%APPDATA%/Family Bridge/psychologist-memory` на Windows или `~/Library/Application Support/Family Bridge/psychologist-memory` на macOS. Далее под `memory/` понимается именно этот каталог.
+3. Сохрани source thread ID в `memory/sync-state.json`.
+4. Через `read_thread` выгрузи всю историю страницами до конца.
+5. Сохрани сообщения без изменения в append-only `memory/transcript.jsonl`.
+6. Запиши устойчивый ID/время последней реплики.
+7. Построй `memory/topic-index.json`, `memory/topic-summaries/*.md` и `memory/personal-profile.md`.
+8. Никогда не копируй исходный transcript во внешний транспорт.
 
 ## Ежедневное обновление
 
