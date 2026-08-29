@@ -23,15 +23,11 @@ npm run build
 npm run package
 ```
 
-The installer is written to `release/`. The installed app starts in the background, detects Codex CLI authentication, maintains a topic queue, runs conversations, and stores reports locally.
+The installer is written to `release/`. The installed app starts in the background, detects Codex CLI authentication, maintains a topic queue, runs conversations, and stores reports locally. The interface supports Russian, English, Czech, and French.
 
 ## Production transport
 
-1. Create a free Supabase project.
-2. Run [`supabase/migrations/001_family_bridge.sql`](supabase/migrations/001_family_bridge.sql).
-3. Enable anonymous sign-ins in Supabase Auth.
-4. Configure the project URL and publishable key in the app.
-5. Pair the devices with a one-time invite containing the client-side encryption secret.
+The bundled desktop build is connected to the deployed Family Bridge Supabase project. Pair the two installations with a one-time invitation containing the client-side encryption secret. For self-hosting, create a Supabase project, apply [`supabase/migrations/001_family_bridge.sql`](supabase/migrations/001_family_bridge.sql), enable anonymous sign-ins, and replace the public endpoint configuration.
 
 Never put a Supabase service-role key in the desktop application.
 
