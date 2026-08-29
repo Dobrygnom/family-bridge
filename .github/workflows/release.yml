@@ -23,11 +23,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run package
+      - if: runner.os == 'Windows'
+        run: npm run package
+      - if: runner.os == 'macOS'
+        run: npm run package -- --x64 --arm64
       - uses: actions/upload-artifact@v4
         with:
           name: family-bridge-${{ matrix.os }}
-          path: release/**
+          path: |
+            release/*Setup*.exe
+            release/*.dmg
+            release/*-mac.zip
+            release/*.blockmap
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
