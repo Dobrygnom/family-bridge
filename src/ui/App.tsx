@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { AppState } from "../global.js";
 import type { ConversationReport } from "../core/types.js";
+import { languageNames, translations, type Language } from "./i18n.js";
 
 const fallback: AppState = {
   owner: "dima",
@@ -40,6 +41,13 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
+  const t = translations[language];
+
+  function changeLanguage(value: Language) {
+    setLanguage(value);
+    localStorage.setItem("family-bridge-language", value);
+  }
 
   const api = window.familyBridge;
   useEffect(() => {
@@ -106,95 +114,95 @@ export function App() {
       <aside className="sidebar">
         <div className="brand"><MessageCircleHeart size={25} /><span>Family Bridge</span></div>
         <nav>
-          <button className="active"><Activity size={18} />Обзор</button>
-          <button><Sparkles size={18} />Темы</button>
-          <button><Radio size={18} />Разговор</button>
-          <button><ScrollText size={18} />Итоги</button>
-          <button><BookHeart size={18} />Память</button>
-          <button><Settings2 size={18} />Настройки</button>
+          <button className="active"><Activity size={18} />{t.overview}</button>
+          <button><Sparkles size={18} />{t.topics}</button>
+          <button><Radio size={18} />{t.conversation}</button>
+          <button><ScrollText size={18} />{t.reports}</button>
+          <button><BookHeart size={18} />{t.memory}</button>
+          <button><Settings2 size={18} />{t.settings}</button>
         </nav>
         <div className="sidebar-status">
           <span className={health ? "status-dot online" : "status-dot"} />
-          <div><strong>{health ? "Система готова" : "Нужна настройка"}</strong><small>{state.codex.version}</small></div>
+          <div><strong>{health ? t.ready : t.setup}</strong><small>{state.codex.version}</small></div>
         </div>
       </aside>
 
       <main>
         <header>
-          <div><p className="eyebrow">АВТОНОМНЫЙ РЕЖИМ</p><h1>Спокойный канал между агентами</h1></div>
-          <div className="live-pill"><CircleDot size={14} />Работает в фоне</div>
+          <div><p className="eyebrow">{t.autonomous}</p><h1>{t.title}</h1></div>
+          <div className="header-tools"><label>{t.language}<select value={language} onChange={(e) => changeLanguage(e.target.value as Language)}>{(Object.keys(languageNames) as Language[]).map((key) => <option value={key} key={key}>{languageNames[key]}</option>)}</select></label><div className="live-pill"><CircleDot size={14} />{t.background}</div></div>
         </header>
 
         <section className="hero-card">
           <div>
             <span className="hero-icon"><ShieldCheck /></span>
-            <p className="eyebrow">СОСТОЯНИЕ</p>
-            <h2>{busy ? "Агенты разговаривают" : "Ожидаем подходящую тему"}</h2>
-            <p>Личные архивы остаются на ваших компьютерах. Между агентами передаются только подготовленные реплики.</p>
+            <p className="eyebrow">{t.state}</p>
+            <h2>{busy ? t.talking : t.waiting}</h2>
+            <p>{t.privacy}</p>
           </div>
           <div className="hero-metrics">
-            <div><span>Codex</span><strong>{health ? "Подключён" : "Не готов"}</strong></div>
-            <div><span>Тем в очереди</span><strong>{state.pendingTopics.length}</strong></div>
-            <div><span>Последний разговор</span><strong>{state.lastConversationAt ? new Date(state.lastConversationAt).toLocaleDateString("ru") : "—"}</strong></div>
+            <div><span>Codex</span><strong>{health ? t.connected : t.notReady}</strong></div>
+            <div><span>{t.queued}</span><strong>{state.pendingTopics.length}</strong></div>
+            <div><span>{t.last}</span><strong>{state.lastConversationAt ? new Date(state.lastConversationAt).toLocaleDateString(language) : "—"}</strong></div>
           </div>
         </section>
 
         <section className="panel pairing-panel">
-          <div className="panel-title"><div><p className="eyebrow">СОЕДИНЕНИЕ</p><h3>{state.remote.connected ? "Агенты соединены" : "Связать два компьютера"}</h3></div><Radio size={20} /></div>
-          {!state.remote.configured && <button className="primary" onClick={async () => api && setState(await api.createPair())}>Создать приглашение</button>}
-          {state.remote.invite && <><p className="muted">Передайте Кате этот одноразовый код:</p><textarea readOnly value={state.remote.invite} onFocus={(e) => e.currentTarget.select()} /></>}
-          {!state.remote.connected && <div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder="Вставить код приглашения"/><button onClick={async () => api && setState(await api.joinPair(inviteCode))}>Подключиться</button></div>}
-          {state.remote.connected && <p className="muted">Облачный канал активен. Новые реплики проверяются каждые 2 секунды.</p>}
+          <div className="panel-title"><div><p className="eyebrow">{t.connection}</p><h3>{state.remote.connected ? t.agentsConnected : t.linkComputers}</h3></div><Radio size={20} /></div>
+          {!state.remote.configured && <button className="primary" onClick={async () => api && setState(await api.createPair())}>{t.createInvite}</button>}
+          {state.remote.invite && <><p className="muted">{t.shareCode}</p><textarea readOnly value={state.remote.invite} onFocus={(e) => e.currentTarget.select()} /></>}
+          {!state.remote.connected && <div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button onClick={async () => api && setState(await api.joinPair(inviteCode))}>{t.connect}</button></div>}
+          {state.remote.connected && <p className="muted">{t.channelActive}</p>}
         </section>
 
         <div className="grid">
           <section className="panel topics-panel">
-            <div className="panel-title"><div><p className="eyebrow">ПОВЕСТКА</p><h3>Предложить тему</h3></div><Plus size={20} /></div>
+            <div className="panel-title"><div><p className="eyebrow">{t.agenda}</p><h3>{t.propose}</h3></div><Plus size={20} /></div>
             <div className="input-row">
-              <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Что агентам стоит обсудить?" onKeyDown={(e) => e.key === "Enter" && void addTopic()} />
-              <button onClick={() => void addTopic()}>Добавить</button>
+              <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={t.topicPlaceholder} onKeyDown={(e) => e.key === "Enter" && void addTopic()} />
+              <button onClick={() => void addTopic()}>{t.add}</button>
             </div>
             <div className="topic-list">
               {state.pendingTopics.map((item, index) => (
-                <div className="topic" key={`${item}-${index}`}><span>{item}</span><small>{index === 0 ? "следующая" : "в очереди"}</small></div>
+                <div className="topic" key={`${item}-${index}`}><span>{item}</span><small>{index === 0 ? t.next : t.inQueue}</small></div>
               ))}
-              {!state.pendingTopics.length && <div className="empty">Агенты добавят важные темы автоматически.</div>}
+              {!state.pendingTopics.length && <div className="empty">{t.autoTopics}</div>}
             </div>
             <div className="actions">
-              <button className="primary" disabled={busy || !state.pendingTopics.length} onClick={() => void runConversation(true)}><Sparkles size={17} />Запустить через Codex</button>
-              <button className="primary" disabled={busy || !state.pendingTopics.length || !state.remote.connected} onClick={() => void runRemote()}><Radio size={17} />Поговорить с агентом Кати</button>
-              <button className="ghost" disabled={busy || !state.pendingTopics.length} onClick={() => void runConversation(false)}>Быстрый demo</button>
+              <button className="primary" disabled={busy || !state.pendingTopics.length} onClick={() => void runConversation(true)}><Sparkles size={17} />{t.runCodex}</button>
+              <button className="primary" disabled={busy || !state.pendingTopics.length || !state.remote.connected} onClick={() => void runRemote()}><Radio size={17} />{t.talkPartner}</button>
+              <button className="ghost" disabled={busy || !state.pendingTopics.length} onClick={() => void runConversation(false)}>{t.quickDemo}</button>
             </div>
           </section>
 
           <section className="panel privacy-panel">
-            <div className="panel-title"><div><p className="eyebrow">ГРАНИЦЫ</p><h3>Не обсуждать</h3></div><Ban size={20} /></div>
+            <div className="panel-title"><div><p className="eyebrow">{t.boundaries}</p><h3>{t.doNotDiscuss}</h3></div><Ban size={20} /></div>
             <div className="input-row compact">
-              <input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder="Тема или ключевая фраза" onKeyDown={(e) => e.key === "Enter" && void blockTopic()} />
-              <button onClick={() => void blockTopic()}>Запретить</button>
+              <input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder={t.blockedPlaceholder} onKeyDown={(e) => e.key === "Enter" && void blockTopic()} />
+              <button onClick={() => void blockTopic()}>{t.block}</button>
             </div>
             {state.blockedTopics.map((item) => <span className="blocked-chip" key={item}>{item}</span>)}
-            {!state.blockedTopics.length && <p className="muted">Запретов пока нет. Локальная политика раскрытия всё равно не позволяет цитировать личные признания.</p>}
+            {!state.blockedTopics.length && <p className="muted">{t.noBlocks}</p>}
           </section>
 
           <section className="panel conversation-panel">
-            <div className="panel-title"><div><p className="eyebrow">ЖИВОЙ ДИАЛОГ</p><h3>Ход разговора</h3></div><Clock3 size={20} /></div>
+            <div className="panel-title"><div><p className="eyebrow">{t.live}</p><h3>{t.progress}</h3></div><Clock3 size={20} /></div>
             <div className="timeline">
               {timeline.map((item, index) => item.type === "status" ? (
                 <div className="timeline-status" key={index}>{item.text}</div>
               ) : (
                 <div className={`bubble ${item.from === "dima" ? "dima" : "katya"}`} key={index}>
-                  <strong>{item.from === "dima" ? "Агент Димы" : "Агент Кати"}</strong><p>{item.text}</p>
+                  <strong>{item.from === "dima" ? t.agentDima : t.agentKatya}</strong><p>{item.text}</p>
                 </div>
               ))}
-              {!timeline.length && <div className="empty tall"><Radio size={28} /><span>Здесь появятся только межагентные реплики — не личные архивы.</span></div>}
+              {!timeline.length && <div className="empty tall"><Radio size={28} /><span>{t.noMessages}</span></div>}
             </div>
           </section>
 
           <section className="panel report-panel">
-            <div className="panel-title"><div><p className="eyebrow">РЕЗУЛЬТАТ</p><h3>Последний итог</h3></div><Check size={20} /></div>
-            {report ? <><p className="summary">{report.sharedSummary || "Общий итог не опубликован."}</p><div className="report-meta"><span>{report.turns} ходов</span><span>{report.topics.length} тем</span></div></> : <div className="empty tall"><ScrollText size={28} /><span>После разговора здесь появится нейтральный общий итог.</span></div>}
-            <button className="link-button" onClick={() => void api?.openReports()}>Открыть все отчёты</button>
+            <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><Check size={20} /></div>
+            {report ? <><p className="summary">{report.sharedSummary || t.noSummary}</p><div className="report-meta"><span>{report.turns} {t.turns}</span><span>{report.topics.length} {t.topicCount}</span></div></> : <div className="empty tall"><ScrollText size={28} /><span>{t.noReport}</span></div>}
+            <button className="link-button" onClick={() => void api?.openReports()}>{t.openReports}</button>
           </section>
         </div>
 
