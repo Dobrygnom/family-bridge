@@ -10,6 +10,8 @@ export interface AppState {
   running: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
   remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string };
+  memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };
+  update: { available: boolean; version?: string; downloading: boolean };
 }
 
 declare global {
@@ -24,6 +26,7 @@ declare global {
       createPair(): Promise<AppState>;
       joinPair(invite: string): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
+      checkForUpdates(): Promise<void>;
       onEvent(listener: (event: unknown) => void): () => void;
     };
   }

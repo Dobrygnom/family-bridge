@@ -56,7 +56,9 @@ export class CodexCliAgent implements AgentRuntime {
 
   async start(initialPrompt: string): Promise<AgentResponse> {
     await mkdir(this.options.workspace, { recursive: true });
-    const prompt = `${SYSTEM_RULES}\n\nТебя зовут «Агент ${this.options.displayName}».\nЛокальная перспектива владельца:\n${this.options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+    const ownerName = this.id === "dima" ? "Дима" : "Катя";
+    const peerName = this.id === "dima" ? "Катя" : "Дима";
+    const prompt = `${SYSTEM_RULES}\n\nТебя зовут «Агент ${this.options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\nЛокальная перспектива ${ownerName}:\n${this.options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
     const result = await this.run([
       "exec",
       "--skip-git-repo-check",

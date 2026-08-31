@@ -40,4 +40,14 @@ h1, h2, h3, p { margin-top: 0; } h1 { font-family: 'Playfair Display', serif; fo
 .error { position: fixed; right: 24px; bottom: 24px; display: flex; gap: 9px; align-items: center; max-width: 480px; padding: 13px 16px; background: #4b242b; border: 1px solid #783d47; border-radius: 11px; box-shadow: 0 12px 40px #0008; font-size: 12px; }
 .pairing-panel { margin-top: 20px; }
 .pairing-panel textarea { width: 100%; min-height: 76px; resize: vertical; background: #0b151d; color: #9ee6ca; border: 1px solid #29414b; border-radius: 10px; padding: 12px; }
+.identity-card { margin-top: 16px; padding: 12px 14px; display: grid; gap: 5px; border-radius: 10px; background: #111f28; color: #9cb0b4; font-size: 12px; }
+.identity-card strong { color: #80d6b7; margin-bottom: 3px; }
+section[id] { scroll-margin-top: 24px; }
+.grid.single-screen { grid-template-columns: 1fr; }
+.screen-panel { margin-top: 20px; }
+.settings-actions, .memory-status, .report-list { margin-top: 18px; display: grid; gap: 10px; padding: 14px; background: #111f28; border-radius: 10px; color: #9cb0b4; font-size: 12px; }
+.settings-actions label { display: flex; gap: 9px; align-items: center; }
+.settings-actions button { width: max-content; border: 0; border-radius: 9px; padding: 9px 12px; background: #29443f; color: #bfe9db; }
+.memory-status strong { color: #80d6b7; }
+.report-list div { padding-bottom: 8px; border-bottom: 1px solid #20333d; }
 @media (max-width: 1050px) { .hero-card { grid-template-columns: 1fr; }.hero-metrics { border-left: 0; border-top: 1px solid #345356; padding-top: 14px; } }

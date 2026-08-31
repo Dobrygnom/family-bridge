@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
+import { autoUpdater } from "electron-updater";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BackgroundService } from "./background-service.js";
@@ -86,6 +87,17 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:create-pair", () => service.createPair());
   ipcMain.handle("bridge:join-pair", (_event, invite: string) => service.joinPair(invite));
   ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
+  ipcMain.handle("bridge:check-updates", async () => {
+    if (!app.isPackaged) return;
+    await autoUpdater.checkForUpdatesAndNotify();
+  });
+  if (app.isPackaged) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on("update-available", (info) => mainWindow?.webContents.send("bridge:event", { type: "update", available: true, version: info.version, downloading: true }));
+    autoUpdater.on("update-downloaded", (info) => mainWindow?.webContents.send("bridge:event", { type: "update", available: true, version: info.version, downloading: false }));
+    setTimeout(() => void autoUpdater.checkForUpdatesAndNotify(), 10_000);
+  }
 });
 
 app.on("window-all-closed", () => {

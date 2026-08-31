@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   createPair: () => ipcRenderer.invoke("bridge:create-pair"),
   joinPair: (invite: string) => ipcRenderer.invoke("bridge:join-pair", invite),
   runRemote: (topic: string) => ipcRenderer.invoke("bridge:run-remote", topic),
+  checkForUpdates: () => ipcRenderer.invoke("bridge:check-updates"),
   onEvent: (listener: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);
     ipcRenderer.on("bridge:event", handler);

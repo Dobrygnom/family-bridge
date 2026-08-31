@@ -1,4 +1,10 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
+
+export interface AuthStorage {
+  getItem(key: string): string | null | Promise<string | null>;
+  setItem(key: string, value: string): void | Promise<void>;
+  removeItem(key: string): void | Promise<void>;
+}
 import { decryptPayload, encryptPayload, generateSharedSecret, hashInviteSecret } from "./encryption.js";
 import type { AgentId } from "./types.js";
 
@@ -36,9 +42,10 @@ export class SupabaseTransport {
     url: string,
     publishableKey: string,
     private readonly encryptionSecret: string,
+    storage?: AuthStorage,
   ) {
     this.client = createClient(url, publishableKey, {
-      auth: { persistSession: true, autoRefreshToken: true },
+      auth: { persistSession: true, autoRefreshToken: true, storage },
     });
   }
 

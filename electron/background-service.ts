@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -8,7 +8,7 @@ import type { BrowserWindow } from "electron";
 import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
-import { SupabaseTransport, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
+import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
 import { AtomicStore } from "./store.js";
 
@@ -43,7 +43,13 @@ export class BackgroundService {
       version: 1, pairId: stored.remote.pairId, inviteSecret: stored.remote.inviteSecret,
       encryptionSecret: stored.remote.encryptionSecret,
     })).toString("base64url") : undefined;
-    return { ...stored, codex, running: this.running, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite } };
+    const memoryRoot = path.join(this.userData, "psychologist-memory");
+    let memory = { configured: false, messageCount: 0, lastCheckedAt: undefined as string | undefined, status: undefined as string | undefined };
+    try {
+      const raw = JSON.parse(readFileSync(path.join(memoryRoot, "sync-state.json"), "utf8")) as { transcript_message_count?: number; last_checked_at?: string; status?: string };
+      memory = { configured: true, messageCount: raw.transcript_message_count ?? 0, lastCheckedAt: raw.last_checked_at, status: raw.status };
+    } catch { /* memory is optional during setup */ }
+    return { ...stored, codex, running: this.running, memory, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite } };
   }
 
   async start() {
@@ -54,7 +60,7 @@ export class BackgroundService {
   async createPair() {
     const transport = this.configureRemote("");
     const invite = await transport.createPair();
-    await this.store.update({ remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret } });
+    await this.store.update({ owner: "dima", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret } });
     this.configureRemote(invite.encryptionSecret);
     return this.state();
   }
@@ -63,7 +69,7 @@ export class BackgroundService {
     const invite = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")) as PairingInvite;
     const transport = this.configureRemote(invite.encryptionSecret);
     await transport.joinPair(invite);
-    await this.store.update({ remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret } });
+    await this.store.update({ owner: "katya", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret } });
     return this.state();
   }
 
@@ -80,15 +86,38 @@ export class BackgroundService {
     this.remoteMessages.set(conversationId, [{ from: stored.owner, text: response.message_to_peer }]);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
       payload: { text: response.message_to_peer, topic, status: response.status, sharedSummary: response.shared_summary }, idempotencyKey: `${conversationId}:1` });
+    await this.store.update({ pendingTopics: stored.pendingTopics.filter((item) => item !== topic), lastConversationAt: new Date().toISOString() });
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: 1 });
   }
 
   private configureRemote(secret: string) {
     if (this.remoteTimer) clearInterval(this.remoteTimer);
-    this.remote = new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret);
+    this.remote = new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage());
     this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
     void this.pumpRemote();
     return this.remote;
+  }
+
+  private authStorage(): AuthStorage {
+    const file = path.join(this.userData, "supabase-auth.json");
+    const read = (): Record<string, string> => {
+      try { return JSON.parse(readFileSync(file, "utf8")) as Record<string, string>; }
+      catch { return {}; }
+    };
+    return {
+      getItem: (key) => read()[key] ?? null,
+      setItem: (key, value) => {
+        const data = read();
+        data[key] = value;
+        writeFileSync(file, JSON.stringify(data), "utf8");
+      },
+      removeItem: (key) => {
+        const data = read();
+        delete data[key];
+        if (Object.keys(data).length) writeFileSync(file, JSON.stringify(data), "utf8");
+        else rmSync(file, { force: true });
+      },
+    };
   }
 
   private localRemoteAgent(conversationId: string, owner: "dima" | "katya") {
@@ -127,16 +156,17 @@ export class BackgroundService {
       messages.push({ from: envelope.sender_agent as "dima" | "katya", text: envelope.payload.text }, { from: stored.owner, text: response.message_to_peer });
       this.remoteMessages.set(envelope.conversation_id, messages);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: envelope.payload.text, turn: envelope.sequence_number });
-      await this.remote.acknowledge(envelope.id);
       if (envelope.payload.status !== "complete" && envelope.sequence_number < 8) {
         const me = await this.remote.identity();
         const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
         const sequence = envelope.sequence_number + 1;
         await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
           payload: { text: response.message_to_peer, topic: envelope.payload.topic, status: response.status, sharedSummary: response.shared_summary }, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+        await this.remote.acknowledge(envelope.id);
         this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
         if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages);
       } else {
+        await this.remote.acknowledge(envelope.id);
         await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages);
       }
     } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
