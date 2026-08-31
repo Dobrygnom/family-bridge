@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",

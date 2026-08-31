@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { CodexHistoryClient, extractUserMessages } from "../src/core/codex-history.js";
-import { extractChatGptUserMessages, parseChatGptThreads } from "../src/core/codex-app-history.js";
-import { findWindowsCodexExecutable, selectWindowsCodexCommand } from "../src/core/codex-runtime.js";
+import { extractChatGptUserMessages, parseChatGptThreads, resolveCodexAppTransportCandidates } from "../src/core/codex-app-history.js";
+import { findMacCodexExecutable, findWindowsCodexExecutable, selectWindowsCodexCommand } from "../src/core/codex-runtime.js";
 
 test("context export keeps only user text messages", () => {
   const messages = extractUserMessages({ turns: [{ id: "turn-1", createdAt: 1_788_166_149, items: [
@@ -29,6 +29,29 @@ test("Windows command resolution finds the Codex Desktop executable outside PATH
   await mkdir(path.dirname(executable), { recursive: true });
   await writeFile(executable, "");
   assert.equal(findWindowsCodexExecutable(localAppData), executable);
+});
+
+test("macOS command resolution finds the Codex Desktop bundled executable", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "family-bridge-mac-codex-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const executable = path.join(root, "Codex.app", "Contents", "Resources", "codex");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "");
+  assert.equal(findMacCodexExecutable(root, [root]), executable);
+});
+
+test("Codex Desktop transport discovery uses Unix sockets on macOS", () => {
+  assert.deepEqual(
+    resolveCodexAppTransportCandidates(["first.sock", "ignore.txt", "second.sock"], "darwin", "/tmp/codex-browser-use"),
+    ["/tmp/codex-browser-use/first.sock", "/tmp/codex-browser-use/second.sock"],
+  );
+});
+
+test("Codex Desktop transport discovery keeps Windows named pipes", () => {
+  assert.deepEqual(
+    resolveCodexAppTransportCandidates(["codex-browser-use-one", "unrelated"], "win32", "\\\\.\\pipe\\"),
+    ["\\\\.\\pipe\\codex-browser-use-one"],
+  );
 });
 
 test("a missing Codex executable rejects without crashing the process", async () => {

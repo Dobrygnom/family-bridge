@@ -175,6 +175,17 @@ export function findWindowsCodexExecutable(localAppData = process.env.LOCALAPPDA
     .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0];
 }
 
+export function findMacCodexExecutable(
+  home = os.homedir(),
+  applicationRoots = ["/Applications", path.join(home, "Applications")],
+): string | undefined {
+  const candidates = applicationRoots.flatMap((root) => [
+    path.join(root, "Codex.app", "Contents", "Resources", "codex"),
+    path.join(root, "ChatGPT.app", "Contents", "Resources", "codex"),
+  ]);
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
 export function defaultCodexCommand(): string {
   if (process.env.CODEX_CLI_PATH && existsSync(process.env.CODEX_CLI_PATH)) {
     return process.env.CODEX_CLI_PATH;
@@ -191,6 +202,10 @@ export function defaultCodexCommand(): string {
     } catch {
       return "codex.cmd";
     }
+  }
+  if (process.platform === "darwin") {
+    const desktopExecutable = findMacCodexExecutable();
+    if (desktopExecutable) return desktopExecutable;
   }
   const unixCandidates = [
     "/opt/homebrew/bin/codex",

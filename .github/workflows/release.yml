@@ -45,6 +45,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Generate checksums
+        run: |
+          find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed -E 's#  artifacts/[^/]+/#  #' > artifacts/SHA256SUMS.txt
       - name: Publish installers
         uses: softprops/action-gh-release@v2
         with:
@@ -55,3 +61,4 @@ jobs:
             artifacts/**/*.zip
             artifacts/**/*.blockmap
             artifacts/**/latest*.yml
+            artifacts/SHA256SUMS.txt

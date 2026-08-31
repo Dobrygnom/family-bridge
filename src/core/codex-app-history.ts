@@ -1,12 +1,38 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import type { ContextMessage, ContextThread } from "./codex-history.js";
 
 type JsonObject = Record<string, unknown>;
 
-const pipeRoot = "\\\\.\\pipe\\";
+const windowsPipeRoot = "\\\\.\\pipe\\";
+const unixSocketRoot = "/tmp/codex-browser-use";
 const maxFrameBytes = 8 * 1024 * 1024;
+
+export function resolveCodexAppTransportCandidates(
+  entries: string[],
+  platform: NodeJS.Platform = process.platform,
+  root = platform === "win32" ? windowsPipeRoot : unixSocketRoot,
+): string[] {
+  if (platform === "win32") {
+    return entries
+      .filter((name) => name.startsWith("codex-browser-use-"))
+      .map((name) => `${root}${name}`);
+  }
+  return entries
+    .filter((name) => name.endsWith(".sock"))
+    .map((name) => path.posix.join(root, name));
+}
+
+export function listCodexAppTransportCandidates(platform: NodeJS.Platform = process.platform): string[] {
+  const root = platform === "win32" ? windowsPipeRoot : unixSocketRoot;
+  try {
+    return resolveCodexAppTransportCandidates(readdirSync(root), platform, root);
+  } catch {
+    return [];
+  }
+}
 
 function object(value: unknown): JsonObject {
   return value && typeof value === "object" ? value as JsonObject : {};
@@ -190,9 +216,9 @@ export class CodexAppHistoryClient {
 
   private async withClient<T>(operation: (client: NativePipeClient) => Promise<T>): Promise<T> {
     let lastError: Error | undefined;
-    const pipes = readdirSync(pipeRoot).filter((name) => name.startsWith("codex-browser-use-"));
-    for (const pipe of pipes) {
-      const client = new NativePipeClient(`${pipeRoot}${pipe}`);
+    const transports = listCodexAppTransportCandidates();
+    for (const transport of transports) {
+      const client = new NativePipeClient(transport);
       try {
         await client.connect();
         const listed = object(await client.request("tools/list", { threadStartKind: "all" }));
