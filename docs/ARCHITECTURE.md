@@ -117,6 +117,7 @@ memory/
 ├── topic-index.json
 ├── topic-summaries/
 ├── personal-profile.md
+├── communication-style.md
 └── disclosure-policy.md
 ```
 
@@ -125,6 +126,7 @@ memory/
 - `topic-index.json` — ссылки на сообщения, темы, временные диапазоны и веса релевантности.
 - `topic-summaries` — обновляемые резюме по темам с указанием фактов и неопределённостей.
 - `personal-profile.md` — устойчивый локальный контекст.
+- `communication-style.md` — обезличенный профиль языка и манеры общения владельца.
 - `disclosure-policy.md` — запреты на цитирование, раскрытие и конкретные темы.
 
 Семейный агент получает релевантные фрагменты через локальный retrieval, а не весь многомесячный transcript на каждом ходе.

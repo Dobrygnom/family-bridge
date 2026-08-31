@@ -10,7 +10,7 @@ import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coor
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
-import { AtomicStore } from "./store.js";
+import { AtomicStore, type AppLanguage, type OwnerId } from "./store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,31 +57,50 @@ export class BackgroundService {
     if (state.remote) this.configureRemote(state.remote.encryptionSecret);
   }
 
+  async setOwner(owner: unknown) {
+    if (owner !== "dima" && owner !== "katya") throw new Error("Выберите Диму или Катю");
+    await this.store.update({ owner, identityConfigured: true });
+    return this.state();
+  }
+
+  async setLanguage(language: unknown) {
+    if (language !== "ru" && language !== "en" && language !== "cs" && language !== "fr") {
+      throw new Error("Неизвестный язык приложения");
+    }
+    await this.store.update({ language });
+    return this.state();
+  }
+
   async createPair() {
+    const stored = await this.store.read();
+    if (!stored.identityConfigured) throw new Error("Сначала укажите, кто пользуется этим компьютером");
     const transport = this.configureRemote("");
     const invite = await transport.createPair();
-    await this.store.update({ owner: "dima", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret } });
+    await this.store.update({ remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret } });
     this.configureRemote(invite.encryptionSecret);
     return this.state();
   }
 
   async joinPair(encoded: string) {
+    const stored = await this.store.read();
+    if (!stored.identityConfigured) throw new Error("Сначала укажите, кто пользуется этим компьютером");
     const invite = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")) as PairingInvite;
     const transport = this.configureRemote(invite.encryptionSecret);
     await transport.joinPair(invite);
-    await this.store.update({ owner: "katya", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret } });
+    await this.store.update({ remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret } });
     return this.state();
   }
 
   async runRemote(topic: string) {
     const stored = await this.store.read();
+    if (!stored.identityConfigured) throw new Error("Сначала укажите, кто пользуется этим компьютером");
     if (!stored.remote || !this.remote) throw new Error("Сначала соедините два приложения");
     const pair = await this.remote.pairState(stored.remote.pairId);
     const me = await this.remote.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
     if (!recipientId) throw new Error("Второй участник ещё не подключился");
     const conversationId = randomUUID();
-    const agent = this.localRemoteAgent(conversationId, stored.owner);
+    const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language);
     const response = await agent.start(`Предложи второму семейному агенту обсудить тему: ${topic}`);
     this.remoteMessages.set(conversationId, [{ from: stored.owner, text: response.message_to_peer }]);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
@@ -120,20 +139,25 @@ export class BackgroundService {
     };
   }
 
-  private localRemoteAgent(conversationId: string, owner: "dima" | "katya") {
+  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage) {
     const existing = this.remoteAgents.get(conversationId);
     if (existing) return existing;
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
     const memoryRoot = path.join(this.userData, "psychologist-memory");
     let memory = "Личная память ещё не синхронизирована.";
+    let communicationStyle = "Профиль манеры общения ещё не синхронизирован.";
     try {
       const files = [path.join(memoryRoot, "personal-profile.md")];
       const topics = path.join(memoryRoot, "topic-summaries");
       if (existsSync(topics)) files.push(...readdirSync(topics).filter((x) => x.endsWith(".md")).map((x) => path.join(topics, x)));
       memory = files.filter(existsSync).map((file) => readFileSync(file, "utf8")).join("\n\n").slice(0, 80_000) || memory;
+      const styleFile = path.join(memoryRoot, "communication-style.md");
+      if (existsSync(styleFile)) communicationStyle = readFileSync(styleFile, "utf8").slice(0, 20_000);
     } catch { /* optional */ }
     const agent = new CodexCliAgent({ id: owner, displayName: owner === "dima" ? "Димы" : "Кати",
       perspective: `Используй локальную психологическую память как фон, не цитируя её дословно:\n${memory}`,
+      language,
+      communicationStyle,
       workspace: path.join(this.userData, "agents", owner, conversationId), schemaPath, codexCommand: defaultCodexCommand() });
     this.remoteAgents.set(conversationId, agent);
     return agent;
@@ -149,7 +173,8 @@ export class BackgroundService {
       if (!pair.partner_id) return;
       const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<{ text: string; topic: string; status: string; sharedSummary?: string }> | null;
       if (!envelope) return;
-      const agent = this.localRemoteAgent(envelope.conversation_id, stored.owner);
+      if (!stored.identityConfigured) return;
+      const agent = this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language);
       const isFirst = !this.remoteMessages.has(envelope.conversation_id);
       const response = isFirst ? await agent.start(envelope.payload.text) : await agent.respond(envelope.payload.text);
       const messages = this.remoteMessages.get(envelope.conversation_id) ?? [];
@@ -210,7 +235,7 @@ export class BackgroundService {
     this.running = true;
     this.emit({ type: "status", status: "agenda_negotiation" });
     try {
-      const [dima, katya] = realCodex ? this.codexAgents() : this.mockAgents();
+      const [dima, katya] = realCodex ? this.codexAgents(state.language) : this.mockAgents(state.language);
       const coordinator = new ConversationCoordinator(dima, katya, undefined, {
         maxTurns: 8,
         onEvent: (event) => this.emit(event),
@@ -251,7 +276,7 @@ export class BackgroundService {
     }
   }
 
-  private codexAgents(): [AgentRuntime, AgentRuntime] {
+  private codexAgents(language: AppLanguage): [AgentRuntime, AgentRuntime] {
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
     const root = path.join(this.userData, "agents");
     const command = defaultCodexCommand();
@@ -260,6 +285,7 @@ export class BackgroundService {
         id: "dima",
         displayName: "Димы",
         perspective: "Demo: владельцу важна предсказуемость и ясность ключевых договорённостей.",
+        language,
         workspace: path.join(root, "dima"),
         schemaPath,
         codexCommand: command,
@@ -268,6 +294,7 @@ export class BackgroundService {
         id: "katya",
         displayName: "Кати",
         perspective: "Demo: владельцу важны гибкость и свобода менять необязательные планы.",
+        language,
         workspace: path.join(root, "katya"),
         schemaPath,
         codexCommand: command,
@@ -275,7 +302,7 @@ export class BackgroundService {
     ];
   }
 
-  private mockAgents(): [AgentRuntime, AgentRuntime] {
+  private mockAgents(language: AppLanguage): [AgentRuntime, AgentRuntime] {
     const make = (
       message_to_peer: string,
       status: AgentResponse["status"],
@@ -288,14 +315,48 @@ export class BackgroundService {
       private_report,
       shared_summary,
     });
+    const dialogue = {
+      ru: [
+        "Предлагаю определить одну общую цель и по одному важному условию каждой стороны. Что для вашей стороны важнее всего?",
+        "Вижу совместимую основу. Предлагаю проверить договорённость две недели и затем оценить результат.",
+        "Для нашей стороны важно сохранить возможность корректировки. Готовы согласовать минимальное обязательное условие.",
+        "Согласны на ограниченный эксперимент с возможностью пересмотра без взаимных обвинений.",
+        "Сформулирована конкретная просьба без обвинения.", "Удалось сохранить гибкость и договориться о проверке.",
+        "Стороны выбрали небольшой двухнедельный эксперимент и договорились оценить его результат.",
+      ],
+      en: [
+        "Let's define one shared goal and one important condition for each side. What matters most to your side?",
+        "I see compatible ground. Let's test the agreement for two weeks and then evaluate the result.",
+        "It is important for our side to keep room for adjustment. We can agree on a minimum commitment.",
+        "We agree to a limited experiment that can be reviewed without mutual blame.",
+        "A specific request was made without blame.", "We preserved flexibility and agreed on a review.",
+        "Both sides chose a small two-week experiment and agreed to evaluate its result.",
+      ],
+      cs: [
+        "Navrhuji stanovit jeden společný cíl a jednu důležitou podmínku pro každou stranu. Co je pro vaši stranu nejdůležitější?",
+        "Vidím společný základ. Navrhuji dohodu vyzkoušet dva týdny a potom vyhodnotit výsledek.",
+        "Pro naši stranu je důležité zachovat možnost úprav. Můžeme se dohodnout na minimálním závazku.",
+        "Souhlasíme s omezeným pokusem, který lze přehodnotit bez vzájemného obviňování.",
+        "Konkrétní žádost byla formulována bez obviňování.", "Zachovali jsme flexibilitu a dohodli kontrolu výsledku.",
+        "Obě strany zvolily malý dvoutýdenní pokus a dohodly se na vyhodnocení výsledku.",
+      ],
+      fr: [
+        "Je propose de définir un objectif commun et une condition importante pour chaque partie. Qu'est-ce qui compte le plus pour vous ?",
+        "Je vois une base compatible. Essayons cet accord pendant deux semaines, puis évaluons le résultat.",
+        "Il est important pour nous de conserver une possibilité d'ajustement. Nous pouvons convenir d'un engagement minimal.",
+        "Nous acceptons une expérience limitée, révisable sans reproches mutuels.",
+        "Une demande concrète a été formulée sans reproche.", "Nous avons préservé la souplesse et convenu d'un bilan.",
+        "Les deux parties ont choisi une petite expérience de deux semaines et convenu d'en évaluer le résultat.",
+      ],
+    }[language];
     return [
       new MockAgent("dima", [
-        make("Предлагаю определить одну общую цель и по одному важному условию каждой стороны. Что для вашей стороны важнее всего?", "continue"),
-        make("Вижу совместимую основу. Предлагаю проверить договорённость две недели и затем оценить результат.", "complete", "Сформулирована конкретная просьба без обвинения.", "Стороны выбрали небольшой двухнедельный эксперимент и договорились оценить его результат."),
+        make(dialogue[0], "continue"),
+        make(dialogue[1], "complete", dialogue[4], dialogue[6]),
       ]),
       new MockAgent("katya", [
-        make("Для нашей стороны важно сохранить возможность корректировки. Готовы согласовать минимальное обязательное условие.", "continue"),
-        make("Согласны на ограниченный эксперимент с возможностью пересмотра без взаимных обвинений.", "complete", "Удалось сохранить гибкость и договориться о проверке.", "Стороны выбрали небольшой двухнедельный эксперимент и договорились оценить его результат."),
+        make(dialogue[2], "continue"),
+        make(dialogue[3], "complete", dialogue[5], dialogue[6]),
       ]),
     ];
   }

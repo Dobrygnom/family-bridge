@@ -2,6 +2,8 @@ import type { ConversationReport } from "./core/types.js";
 
 export interface AppState {
   owner: "dima" | "katya";
+  identityConfigured: boolean;
+  language: "ru" | "en" | "cs" | "fr";
   autoStart: boolean;
   pendingTopics: string[];
   blockedTopics: string[];
@@ -22,6 +24,8 @@ declare global {
       addTopic(topic: string): Promise<AppState>;
       blockTopic(topic: string): Promise<AppState>;
       setAutoStart(enabled: boolean): Promise<AppState>;
+      setOwner(owner: "dima" | "katya"): Promise<AppState>;
+      setLanguage(language: "ru" | "en" | "cs" | "fr"): Promise<AppState>;
       openReports(): Promise<void>;
       createPair(): Promise<AppState>;
       joinPair(invite: string): Promise<AppState>;

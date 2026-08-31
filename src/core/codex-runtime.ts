@@ -23,7 +23,11 @@ export interface CodexRuntimeOptions {
   workspace: string;
   schemaPath: string;
   codexCommand?: string;
+  language?: "ru" | "en" | "cs" | "fr";
+  communicationStyle?: string;
 }
+
+const languageNames = { ru: "русском", en: "английском", cs: "чешском", fr: "французском" } as const;
 
 const SYSTEM_RULES = `
 Ты — автономный семейный медиатор, представляющий перспективу своего владельца, но не являющийся его адвокатом.
@@ -42,6 +46,14 @@ const SYSTEM_RULES = `
 - никаких tool calls: верни только объект по заданной JSON Schema.
 `;
 
+export function buildInitialPrompt(options: CodexRuntimeOptions, initialPrompt: string): string {
+  const ownerName = options.id === "dima" ? "Дима" : "Катя";
+  const peerName = options.id === "dima" ? "Катя" : "Дима";
+  const language = options.language ?? "ru";
+  const style = options.communicationStyle ?? "Профиль манеры общения отсутствует: используй спокойный, прямой и естественный тон.";
+  return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена Дима и Катя не переводи.\n\nМанера общения ${ownerName}:\n${style}\nАдаптируй тон, длину фраз, прямоту, лексику, пунктуацию и уместный юмор по этому профилю. Не копируй чувствительные высказывания дословно, не изображай владельца и не переноси факты из примеров стиля в текущий разговор.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+}
+
 export class CodexCliAgent implements AgentRuntime {
   readonly id: AgentId;
   private sessionId?: string;
@@ -56,9 +68,7 @@ export class CodexCliAgent implements AgentRuntime {
 
   async start(initialPrompt: string): Promise<AgentResponse> {
     await mkdir(this.options.workspace, { recursive: true });
-    const ownerName = this.id === "dima" ? "Дима" : "Катя";
-    const peerName = this.id === "dima" ? "Катя" : "Дима";
-    const prompt = `${SYSTEM_RULES}\n\nТебя зовут «Агент ${this.options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\nЛокальная перспектива ${ownerName}:\n${this.options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+    const prompt = buildInitialPrompt(this.options, initialPrompt);
     const result = await this.run([
       "exec",
       "--skip-git-repo-check",

@@ -42,6 +42,10 @@ h1, h2, h3, p { margin-top: 0; } h1 { font-family: 'Playfair Display', serif; fo
 .pairing-panel textarea { width: 100%; min-height: 76px; resize: vertical; background: #0b151d; color: #9ee6ca; border: 1px solid #29414b; border-radius: 10px; padding: 12px; }
 .identity-card { margin-top: 16px; padding: 12px 14px; display: grid; gap: 5px; border-radius: 10px; background: #111f28; color: #9cb0b4; font-size: 12px; }
 .identity-card strong { color: #80d6b7; margin-bottom: 3px; }
+.identity-setup { margin-bottom: 14px; padding: 16px; display: grid; gap: 8px; border: 1px solid #3b5d5a; border-radius: 12px; background: #14272b; color: #9cb0b4; font-size: 12px; }
+.identity-setup strong { color: #e4f3ee; font-size: 15px; }
+.identity-setup > div { display: flex; gap: 9px; margin-top: 5px; }
+.identity-setup button { border-radius: 9px; padding: 9px 14px; }
 section[id] { scroll-margin-top: 24px; }
 .grid.single-screen { grid-template-columns: 1fr; }
 .screen-panel { margin-top: 20px; }

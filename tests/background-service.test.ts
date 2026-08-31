@@ -24,3 +24,17 @@ test("background service persists a completed mock report and consumes its topic
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("mock conversation follows the selected language", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-language-test-"));
+  try {
+    const store = new AtomicStore(directory);
+    await store.update({ language: "en" });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null);
+    const report = await service.run("neutral test topic", false);
+    assert.match(report.messages[0].payload, /Let's define one shared goal/);
+    assert.match(report.sharedSummary, /two-week experiment/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -1,8 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+export type OwnerId = "dima" | "katya";
+export type AppLanguage = "ru" | "en" | "cs" | "fr";
+
 export interface StoredState {
-  owner: "dima" | "katya";
+  owner: OwnerId;
+  identityConfigured: boolean;
+  language: AppLanguage;
   autoStart: boolean;
   pendingTopics: string[];
   blockedTopics: string[];
@@ -17,6 +22,8 @@ export interface StoredState {
 
 const defaults: StoredState = {
   owner: "dima",
+  identityConfigured: false,
+  language: "ru",
   autoStart: true,
   pendingTopics: [],
   blockedTopics: [],
