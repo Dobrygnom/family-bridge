@@ -53,5 +53,13 @@ section[id] { scroll-margin-top: 24px; }
 .settings-actions label { display: flex; gap: 9px; align-items: center; }
 .settings-actions button { width: max-content; border: 0; border-radius: 9px; padding: 9px 12px; background: #29443f; color: #bfe9db; }
 .memory-status strong { color: #80d6b7; }
+.context-current { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.context-current div { display: grid; gap: 4px; padding: 11px 12px; border-radius: 10px; background: #111f28; }
+.context-current span { color: #718991; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.context-current strong { color: #d8e8e3; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-empty { color: #d8e8e3; font-size: 13px; }
+.context-picker { margin-top: 13px; display: grid; grid-template-columns: 1fr auto; gap: 9px; color: #8ca2a7; font-size: 12px; }
+.context-picker select { min-width: 0; background: #0e1a22; border: 1px solid #2a3d47; color: white; padding: 10px 12px; border-radius: 10px; }
+.context-picker button { border-radius: 10px; padding: 0 14px; }
 .report-list div { padding-bottom: 8px; border-bottom: 1px solid #20333d; }
 @media (max-width: 1050px) { .hero-card { grid-template-columns: 1fr; }.hero-metrics { border-left: 0; border-top: 1px solid #345356; padding-top: 14px; } }

@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { BrowserWindow } from "electron";
 import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
+import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
@@ -14,10 +15,18 @@ import { AtomicStore, type AppLanguage, type OwnerId } from "./store.js";
 
 const execFileAsync = promisify(execFile);
 
+interface ContextSource extends ContextThread {
+  lastSyncedAt?: string;
+  messageCount?: number;
+  status?: "ready" | "syncing" | "error";
+  error?: string;
+}
+
 export class BackgroundService {
   private running = false;
   private remote?: SupabaseTransport;
   private remoteTimer?: NodeJS.Timeout;
+  private contextTimer?: NodeJS.Timeout;
   private remoteBusy = false;
   private readonly remoteAgents = new Map<string, AgentRuntime>();
   private readonly remoteMessages = new Map<string, Array<{ from: "dima" | "katya"; text: string }>>();
@@ -49,12 +58,70 @@ export class BackgroundService {
       const raw = JSON.parse(readFileSync(path.join(memoryRoot, "sync-state.json"), "utf8")) as { transcript_message_count?: number; last_checked_at?: string; status?: string };
       memory = { configured: true, messageCount: raw.transcript_message_count ?? 0, lastCheckedAt: raw.last_checked_at, status: raw.status };
     } catch { /* memory is optional during setup */ }
-    return { ...stored, codex, running: this.running, memory, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName } };
+    const context = this.readContextSource();
+    return { ...stored, codex, running: this.running, memory, context, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName } };
+  }
+
+  async listContextThreads() {
+    return new CodexHistoryClient(defaultCodexCommand()).listThreads();
+  }
+
+  async selectContextThread(threadId: unknown) {
+    if (typeof threadId !== "string" || !threadId.trim()) throw new Error("Выберите базовый чат");
+    const threads = await this.listContextThreads();
+    const selected = threads.find((thread) => thread.id === threadId);
+    if (!selected) throw new Error("Выбранный чат больше не найден в Codex");
+    await this.writeContextSource({ ...selected, status: "syncing" });
+    return this.syncContext();
+  }
+
+  async syncContext() {
+    const selected = this.readContextSource();
+    if (!selected?.id) throw new Error("Сначала выберите базовый чат");
+    try {
+      const messages = await new CodexHistoryClient(defaultCodexCommand()).readUserMessages(selected.id);
+      const memoryRoot = path.join(this.userData, "psychologist-memory");
+      await mkdir(memoryRoot, { recursive: true });
+      const samples = path.join(memoryRoot, "style-samples.jsonl");
+      const temporary = `${samples}.tmp`;
+      await writeFile(temporary, messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
+      await rename(temporary, samples);
+      const completed: ContextSource = { ...selected, lastSyncedAt: new Date().toISOString(), messageCount: messages.length, status: "ready", error: undefined };
+      await this.writeContextSource(completed);
+      this.emit({ type: "context", context: completed });
+      return this.state();
+    } catch (error) {
+      const failed: ContextSource = { ...selected, status: "error", error: error instanceof Error ? error.message : String(error) };
+      await this.writeContextSource(failed);
+      this.emit({ type: "context", context: failed });
+      throw error;
+    }
+  }
+
+  private contextSourcePath() {
+    return path.join(this.userData, "psychologist-memory", "context-source.json");
+  }
+
+  private readContextSource(): ContextSource | undefined {
+    try { return JSON.parse(readFileSync(this.contextSourcePath(), "utf8")) as ContextSource; }
+    catch { return undefined; }
+  }
+
+  private async writeContextSource(source: ContextSource) {
+    const file = this.contextSourcePath();
+    await mkdir(path.dirname(file), { recursive: true });
+    const temporary = `${file}.tmp`;
+    await writeFile(temporary, JSON.stringify(source, null, 2), "utf8");
+    await rename(temporary, file);
   }
 
   async start() {
     const state = await this.store.read();
     if (state.remote) this.configureRemote(state.remote.encryptionSecret);
+    if (this.readContextSource()?.id) {
+      void this.syncContext().catch(() => undefined);
+      this.contextTimer = setInterval(() => void this.syncContext().catch(() => undefined), 6 * 60 * 60 * 1_000);
+    }
   }
 
   async setDisplayName(value: unknown) {
@@ -264,7 +331,7 @@ export class BackgroundService {
     }
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string }) {
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource }) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 

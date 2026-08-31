@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
 import electronUpdater from "electron-updater";
 import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { BackgroundService } from "./background-service.js";
 import { AtomicStore } from "./store.js";
@@ -83,8 +84,12 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
   ipcMain.handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
+  ipcMain.handle("bridge:list-context-threads", () => service.listContextThreads());
+  ipcMain.handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
+  ipcMain.handle("bridge:sync-context", () => service.syncContext());
   ipcMain.handle("bridge:open-reports", async () => {
     const reports = path.join(app.getPath("userData"), "reports");
+    await mkdir(reports, { recursive: true });
     await shell.openPath(reports);
   });
   ipcMain.handle("bridge:create-pair", () => service.createPair());

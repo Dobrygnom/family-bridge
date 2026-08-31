@@ -48,6 +48,10 @@ export function App() {
   const [error, setError] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [contextThreads, setContextThreads] = useState<Array<{ id: string; title: string; project: string; cwd?: string; updatedAt?: number }>>([]);
+  const [selectedContextId, setSelectedContextId] = useState("");
+  const [contextLoading, setContextLoading] = useState(false);
+  const [showContextPicker, setShowContextPicker] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
@@ -56,6 +60,12 @@ export function App() {
     en: { identity: "Participants", local: "this computer", partner: "partner computer", question: "What should we call you?", hint: "Only your partner's agent will see this name. You can change it in settings.", placeholder: "Your name", save: "Save", partnerName: "Partner's agent", agent: "Agent" },
     cs: { identity: "Účastníci", local: "tento počítač", partner: "počítač partnera", question: "Jak vám máme říkat?", hint: "Toto jméno uvidí pouze agent partnera. Lze ho změnit v nastavení.", placeholder: "Vaše jméno", save: "Uložit", partnerName: "Agent partnera", agent: "Agent" },
     fr: { identity: "Participants", local: "cet ordinateur", partner: "ordinateur du partenaire", question: "Comment devons-nous vous appeler ?", hint: "Seul l'agent de votre partenaire verra ce nom. Vous pourrez le modifier.", placeholder: "Votre prénom", save: "Enregistrer", partnerName: "Agent du partenaire", agent: "Agent" },
+  }[language];
+  const contextText = {
+    ru: { eyebrow: "БАЗОВЫЙ ЧАТ", title: "Контекст агента", none: "Базовый чат ещё не выбран", explanation: "Приложение берёт из него контекст и примеры вашей манеры общения.", project: "Проект", chat: "Чат", messages: "Ваших реплик", synced: "Выгружено", choose: "Выбрать чат", change: "Выбрать другой", refresh: "Обновить выгрузку", loading: "Читаем список чатов…", apply: "Использовать этот чат", select: "Выберите проект и чат" },
+    en: { eyebrow: "BASE CHAT", title: "Agent context", none: "No base chat selected", explanation: "The app uses it for context and examples of your communication style.", project: "Project", chat: "Chat", messages: "Your messages", synced: "Exported", choose: "Choose chat", change: "Choose another", refresh: "Refresh export", loading: "Loading chats…", apply: "Use this chat", select: "Choose a project and chat" },
+    cs: { eyebrow: "ZÁKLADNÍ CHAT", title: "Kontext agenta", none: "Základní chat ještě není vybrán", explanation: "Aplikace z něj čerpá kontext a příklady vašeho stylu komunikace.", project: "Projekt", chat: "Chat", messages: "Vašich zpráv", synced: "Exportováno", choose: "Vybrat chat", change: "Vybrat jiný", refresh: "Obnovit export", loading: "Načítání chatů…", apply: "Použít tento chat", select: "Vyberte projekt a chat" },
+    fr: { eyebrow: "CHAT DE BASE", title: "Contexte de l’agent", none: "Aucun chat de base sélectionné", explanation: "L’application l’utilise comme contexte et comme exemples de votre manière de communiquer.", project: "Projet", chat: "Chat", messages: "Vos messages", synced: "Exporté", choose: "Choisir un chat", change: "En choisir un autre", refresh: "Actualiser l’export", loading: "Chargement des chats…", apply: "Utiliser ce chat", select: "Choisissez un projet et un chat" },
   }[language];
 
   function goTo(section: SectionId) {
@@ -84,7 +94,7 @@ export function App() {
       setDisplayName(next.displayName);
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; from?: string; text?: string; status?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string };
+      const event = raw as { type?: string; from?: string; text?: string; status?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"] };
       if (event.type === "message" && event.text) {
         setTimeline((items) => [...items, { type: "message", from: event.from, text: event.text! }]);
       }
@@ -92,6 +102,7 @@ export function App() {
         setTimeline((items) => [...items, { type: "status", text: event.status! }]);
       }
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
+      if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "update") setState((current) => ({ ...current, update: { available: Boolean(event.available), version: event.version, downloading: Boolean(event.downloading) } }));
     });
   }, [api]);
@@ -140,6 +151,33 @@ export function App() {
     try { await api.runRemote(selected); setState(await api.getState()); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
+  }
+
+  async function loadContextThreads() {
+    if (!api) return;
+    setContextLoading(true); setError(""); setShowContextPicker(true);
+    try {
+      const threads = await api.listContextThreads();
+      setContextThreads(threads);
+      setSelectedContextId(state.context?.id && threads.some((thread) => thread.id === state.context?.id) ? state.context.id : threads[0]?.id ?? "");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setContextLoading(false); }
+  }
+
+  async function selectContext() {
+    if (!api || !selectedContextId) return;
+    setContextLoading(true); setError("");
+    try { setState(await api.selectContextThread(selectedContextId)); setShowContextPicker(false); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setContextLoading(false); }
+  }
+
+  async function syncContext() {
+    if (!api) return;
+    setContextLoading(true); setError("");
+    try { setState(await api.syncContext()); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setContextLoading(false); }
   }
 
   return (
@@ -194,6 +232,20 @@ export function App() {
         </section>}
 
         <div className={`grid ${activeSection !== "overview" ? "single-screen" : ""}`}>
+          {(activeSection === "overview" || activeSection === "memory") && <section className="panel context-panel">
+            <div className="panel-title"><div><p className="eyebrow">{contextText.eyebrow}</p><h3>{contextText.title}</h3></div><BookHeart size={20} /></div>
+            {state.context ? <div className="context-current">
+              <div><span>{contextText.project}</span><strong>{state.context.project}</strong></div>
+              <div><span>{contextText.chat}</span><strong>{state.context.title}</strong></div>
+              <div><span>{contextText.messages}</span><strong>{state.context.messageCount ?? "—"}</strong></div>
+              <div><span>{contextText.synced}</span><strong>{state.context.lastSyncedAt ? new Date(state.context.lastSyncedAt).toLocaleString(language) : "—"}</strong></div>
+            </div> : <><strong className="context-empty">{contextText.none}</strong><p className="muted">{contextText.explanation}</p></>}
+            <div className="actions"><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{state.context ? contextText.change : contextText.choose}</button>{state.context && <button className="ghost" disabled={contextLoading} onClick={() => void syncContext()}>{contextText.refresh}</button>}</div>
+            {showContextPicker && <div className="context-picker">
+              {contextLoading && !contextThreads.length ? <span>{contextText.loading}</span> : <><select value={selectedContextId} onChange={(e) => setSelectedContextId(e.target.value)}><option value="">{contextText.select}</option>{contextThreads.map((thread) => <option value={thread.id} key={thread.id}>{thread.project} — {thread.title}</option>)}</select><button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button></>}
+            </div>}
+            {state.context?.status === "error" && <p className="muted">{state.context.error}</p>}
+          </section>}
           {(activeSection === "overview" || activeSection === "topics") && <section className="panel topics-panel" id="topics">
             <div className="panel-title"><div><p className="eyebrow">{t.agenda}</p><h3>{t.propose}</h3></div><Plus size={20} /></div>
             <div className="input-row">

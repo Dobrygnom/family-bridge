@@ -23,7 +23,7 @@ npm run build
 npm run package
 ```
 
-The installer is written to `release/`. The installed app starts in the background, detects Codex CLI authentication, maintains a topic queue, runs conversations, and stores reports locally. The interface supports Russian, English, Czech, and French.
+The installer is written to `release/`. The installed app starts in the background, detects Codex CLI authentication, lets the owner choose a Codex chat as the visible context source, refreshes the owner's raw messages locally, maintains a topic queue, runs conversations, and stores reports locally. The interface supports Russian, English, Czech, and French.
 
 ## Production transport
 
@@ -35,7 +35,7 @@ Never put a Supabase service-role key in the desktop application.
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — complete architecture and security model.
 - [`INSTALL_FOR_CODEX.md`](INSTALL_FOR_CODEX.md) — one-file setup instruction for Codex Desktop on the second computer.
-- [`docs/DESKTOP_SYNC_PROMPT.md`](docs/DESKTOP_SYNC_PROMPT.md) — persistent memory-sync task instruction.
+- [`docs/DESKTOP_SYNC_PROMPT.md`](docs/DESKTOP_SYNC_PROMPT.md) — legacy migration reference for installations created before in-app context selection.
 
 ## Safety
 
