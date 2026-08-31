@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { CodexHistoryClient, extractUserMessages } from "../src/core/codex-history.js";
+import { extractChatGptUserMessages, parseChatGptThreads } from "../src/core/codex-app-history.js";
 import { findWindowsCodexExecutable, selectWindowsCodexCommand } from "../src/core/codex-runtime.js";
 
 test("context export keeps only user text messages", () => {
@@ -33,4 +34,26 @@ test("Windows command resolution finds the Codex Desktop executable outside PATH
 test("a missing Codex executable rejects without crashing the process", async () => {
   const client = new CodexHistoryClient("C:\\definitely-missing\\codex.exe");
   await assert.rejects(client.listThreads(), /ENOENT|not found/i);
+});
+
+test("ChatGPT chats keep their project labels and exclude Codex tasks", () => {
+  const threads = parseChatGptThreads({
+    pinnedThreads: [{ id: "chat-1", kind: "chatgpt", title: "Карманный психолог", projectId: "project-1" }],
+    threads: [
+      { id: "chat-1", kind: "chatgpt", title: "Карманный психолог", projectId: "project-1" },
+      { id: "task-1", kind: "codex", title: "Build" },
+    ],
+  }, { projects: [{ projectId: "project-1", label: "Живи" }] });
+  assert.deepEqual(threads, [{ id: "chat-1", title: "Карманный психолог", project: "Живи", source: "chatgpt", updatedAt: undefined }]);
+});
+
+test("ChatGPT pages are restored in chronological order and keep only user text", () => {
+  const messages = extractChatGptUserMessages([
+    { turns: [{ id: "new", startedAt: 2, items: [{ id: "u2", type: "userMessage", content: [{ type: "text", text: "Второе" }] }] }] },
+    { turns: [{ id: "old", startedAt: 1, items: [
+      { id: "u1", type: "userMessage", content: [{ type: "text", text: "Первое" }] },
+      { id: "a1", type: "agentMessage", text: "Ответ" },
+    ] }] },
+  ]);
+  assert.deepEqual(messages.map((message) => message.text), ["Первое", "Второе"]);
 });

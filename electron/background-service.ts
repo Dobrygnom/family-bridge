@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { BrowserWindow } from "electron";
 import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
+import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
 import { CodexContextAnalyzer, contextSourceHash, routeSensitivity, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
@@ -82,7 +83,16 @@ export class BackgroundService {
   }
 
   async listContextThreads() {
-    return new CodexHistoryClient(defaultCodexCommand()).listThreads();
+    const codex = new CodexHistoryClient(defaultCodexCommand());
+    const localThreads = await codex.listThreads();
+    const callingThreadId = localThreads[0]?.id;
+    if (!callingThreadId) return localThreads;
+    try {
+      const chatGptThreads = await new CodexAppHistoryClient(callingThreadId).listThreads();
+      return [...chatGptThreads, ...localThreads];
+    } catch {
+      return localThreads;
+    }
   }
 
   async selectContextThread(threadId: unknown) {
@@ -101,7 +111,9 @@ export class BackgroundService {
     const selected = this.readContextSource();
     if (!selected?.id) throw new Error("Сначала выберите базовый чат");
     try {
-      const messages = await new CodexHistoryClient(defaultCodexCommand()).readUserMessages(selected.id);
+      const messages = selected.source === "chatgpt"
+        ? await this.readChatGptMessages(selected.id)
+        : await new CodexHistoryClient(defaultCodexCommand()).readUserMessages(selected.id);
       const memoryRoot = path.join(this.userData, "psychologist-memory");
       await mkdir(memoryRoot, { recursive: true });
       const samples = path.join(memoryRoot, "style-samples.jsonl");
@@ -113,7 +125,7 @@ export class BackgroundService {
       this.emit({ type: "context", context: completed });
       const hash = contextSourceHash(messages);
       const previous = this.readContextAnalysis();
-      if (!previous || previous.sourceId !== selected.id || previous.sourceHash !== hash || previous.status === "error") {
+      if (!previous || previous.sourceId !== selected.id || previous.sourceHash !== hash || previous.status !== "ready") {
         await this.analyzeContext(selected.id, hash, messages, previous?.sourceId === selected.id ? previous : undefined);
       }
       return this.state();
@@ -123,6 +135,13 @@ export class BackgroundService {
       this.emit({ type: "context", context: failed });
       throw error;
     }
+  }
+
+  private async readChatGptMessages(threadId: string) {
+    const localThreads = await new CodexHistoryClient(defaultCodexCommand()).listThreads();
+    const callingThreadId = localThreads[0]?.id;
+    if (!callingThreadId) throw new Error("Codex Desktop не нашёл локальную задачу для доступа к чатам ChatGPT");
+    return new CodexAppHistoryClient(callingThreadId).readUserMessages(threadId);
   }
 
   private contextSourcePath() {
@@ -166,7 +185,14 @@ export class BackgroundService {
     try {
       const stored = await this.store.read();
       const analyzer = new CodexContextAnalyzer(defaultCodexCommand(), path.join(this.userData, "context-analysis"), path.join(this.resourcesPath, "schemas", "context-analysis.schema.json"));
-      const analysis = await analyzer.analyze({ sourceId, sourceHash, ownerName: stored.displayName, language: stored.language, messages, previous });
+      const analysis = await analyzer.analyze({
+        sourceId, sourceHash, ownerName: stored.displayName, language: stored.language, messages, previous,
+        onProgress: async (progress) => {
+          const progressing: ContextAnalysis = { ...analyzing, progress };
+          await this.writeContextAnalysis(progressing);
+          this.emit({ type: "context-analysis", analysis: progressing });
+        },
+      });
       await this.writeContextAnalysis(analysis);
       this.emit({ type: "context-analysis", analysis });
       return analysis;

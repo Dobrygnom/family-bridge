@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeContextAnalysis, routeSensitivity, topicsForCounterpart } from "../src/core/context-analysis.js";
+import { normalizeContextAnalysis, routeSensitivity, splitContextMessages, topicsForCounterpart } from "../src/core/context-analysis.js";
 
 test("context topics keep subject and intended counterpart separate", () => {
   const analysis = normalizeContextAnalysis({
@@ -26,4 +26,11 @@ test("routing sensitivity follows the corrected subject and counterpart", () => 
   assert.equal(routeSensitivity(["husband"], "husband"), "direct");
   assert.equal(routeSensitivity(["lover"], "husband"), "cross_person");
   assert.equal(routeSensitivity([], "husband"), "unclear");
+});
+
+test("long context is split without dropping its beginning or end", () => {
+  const chunks = splitContextMessages([{ text: "Начало" }, { text: "x".repeat(40) }, { text: "Конец" }], 30);
+  assert.ok(chunks.length > 1);
+  assert.match(chunks.join(""), /Начало/);
+  assert.match(chunks.join(""), /Конец/);
 });

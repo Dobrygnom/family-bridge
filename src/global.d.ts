@@ -15,13 +15,14 @@ export interface AppState {
   codex: { installed: boolean; authenticated: boolean; version: string };
   remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };
-  context?: { id: string; title: string; project: string; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error"; error?: string };
+  context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error"; error?: string };
   contextAnalysis?: {
     sourceId: string;
     sourceHash: string;
     analyzedAt: string;
     status: "ready" | "analyzing" | "error";
     error?: string;
+    progress?: { stage: "analyzing" | "consolidating"; current: number; total: number };
     people: Array<{ id: string; label: string; relationship: string; aliases: string[] }>;
     topics: Array<{ id: string; title: string; aboutPersonIds: string[]; discussWithPersonId: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string; approved: boolean }>;
   };
@@ -38,7 +39,7 @@ declare global {
       setAutoStart(enabled: boolean): Promise<AppState>;
       setDisplayName(name: string): Promise<AppState>;
       setLanguage(language: "ru" | "en" | "cs" | "fr"): Promise<AppState>;
-      listContextThreads(): Promise<Array<{ id: string; title: string; project: string; cwd?: string; updatedAt?: number }>>;
+      listContextThreads(): Promise<Array<{ id: string; title: string; project: string; source: "codex" | "chatgpt"; cwd?: string; updatedAt?: number }>>;
       selectContextThread(threadId: string): Promise<AppState>;
       syncContext(): Promise<AppState>;
       completeOnboarding(): Promise<AppState>;

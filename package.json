@@ -15,7 +15,9 @@
     "package": "npm run build && electron-builder --publish never",
     "package:dir": "npm run build && electron-builder --dir",
     "verify:installed-ui": "tsx scripts/verify-installed-ui.ts",
-    "verify:fresh-ui": "tsx scripts/verify-fresh-ui.ts"
+    "verify:fresh-ui": "tsx scripts/verify-fresh-ui.ts",
+    "test:select-context": "tsx scripts/select-context-for-test.ts",
+    "verify:context-source": "tsx scripts/verify-context-source.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

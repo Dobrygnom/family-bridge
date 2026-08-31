@@ -46,7 +46,8 @@ export function App() {
   const [error, setError] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [contextThreads, setContextThreads] = useState<Array<{ id: string; title: string; project: string; cwd?: string; updatedAt?: number }>>([]);
+  const [contextThreads, setContextThreads] = useState<Array<{ id: string; title: string; project: string; source: "codex" | "chatgpt"; cwd?: string; updatedAt?: number }>>([]);
+  const [selectedContextProject, setSelectedContextProject] = useState("");
   const [selectedContextId, setSelectedContextId] = useState("");
   const [contextLoading, setContextLoading] = useState(false);
   const [showContextPicker, setShowContextPicker] = useState(false);
@@ -78,7 +79,7 @@ export function App() {
     fr: { connection: "CONNEXION", link: "Relier deux ordinateurs", who: "À quelle personne de votre contexte correspond l’autre ordinateur ?", choosePerson: "Choisir une personne", create: "Créer une invitation", recreate: "Créer un nouveau code", copy: "Copier le code", copied: "Code copié", orJoin: "Ou collez un code créé sur l’autre ordinateur", connect: "Connecter", connected: "Ordinateurs reliés", mapped: "Dans votre contexte, il s’agit de", needContext: "Choisissez d’abord un chat de base et attendez l’identification des personnes.", openContext: "Ouvrir le contexte", topics: "SUJETS POUR CETTE PAIRE", topicTitle: "Ce que les agents vont discuter", topicHint: "Les sujets approuvés des deux ordinateurs sont réunis ici. Chaque sujet a sa propre conversation.", noTopics: "Aucun sujet correspondant pour l’instant.", addTopic: "Ajouter un sujet pour cette paire", discuss: "Discuter tous les sujets", discussing: "Les agents discutent…", analysis: "PERSONNES ET SUJETS", analysisTitle: "Préparé à partir du chat de base", analyzing: "Codex identifie les personnes et prépare les sujets…", noAnalysis: "Les personnes et sujets apparaîtront ici après l’export.", people: "Personnes du contexte", about: "À propos de", with: "Discuter avec", approve: "Autoriser la discussion", cross: "Ce sujet concerne une autre personne — vérifiez soigneusement le destinataire.", unclear: "Le destinataire est incertain — vérifiez avant d’autoriser." },
   }[language];
   const onboardingText = {
-    ru: { eyebrow: "ПЕРВЫЙ ЗАПУСК", title: "Сначала подготовим ваш контекст", lead: "Выберите один чат, который агент будет использовать как личную основу. Исходные реплики останутся на этом компьютере.", chooseTitle: "1. Выберите базовый чат", chooseHint: "Откроем список ваших проектов и чатов Codex.", processingTitle: "Подготавливаем контекст", export: "Получаем ваши реплики", people: "Определяем людей", topics: "Готовим возможные темы", waiting: "Это может занять несколько минут. Можно оставить приложение открытым.", reviewTitle: "Проверьте людей и темы", reviewHint: "Исправьте, о ком тема и с кем её можно обсуждать. Ничего не передаётся без вашего разрешения.", finish: "Темы проверены — перейти к подключению", noPeople: "Люди пока не определены. Обновите выгрузку или выберите другой чат." },
+    ru: { eyebrow: "ПЕРВЫЙ ЗАПУСК", title: "Сначала подготовим ваш контекст", lead: "Выберите один чат, который Codex проанализирует как личную основу агента. Другому компьютеру исходные реплики не передаются.", chooseTitle: "1. Выберите базовый чат", chooseHint: "Откроем список ваших проектов и чатов Codex и ChatGPT.", processingTitle: "Подготавливаем контекст", export: "Получаем ваши реплики", people: "Определяем людей", topics: "Готовим возможные темы", waiting: "Это может занять несколько минут. Можно оставить приложение открытым.", reviewTitle: "Проверьте людей и темы", reviewHint: "Исправьте, о ком тема и с кем её можно обсуждать. Ничего не передаётся без вашего разрешения.", finish: "Темы проверены — перейти к подключению", noPeople: "Люди пока не определены. Обновите выгрузку или выберите другой чат." },
     en: { eyebrow: "FIRST RUN", title: "First, prepare your context", lead: "Choose one chat as your agent's private foundation. Raw messages remain on this computer.", chooseTitle: "1. Choose a base chat", chooseHint: "We'll open your Codex projects and chats.", processingTitle: "Preparing context", export: "Reading your messages", people: "Identifying people", topics: "Preparing possible topics", waiting: "This can take a few minutes. You may leave the app open.", reviewTitle: "Review people and topics", reviewHint: "Correct who a topic is about and who may discuss it. Nothing is shared without your approval.", finish: "Topics reviewed — continue to connection", noPeople: "No people were identified. Refresh the export or choose another chat." },
     cs: { eyebrow: "PRVNÍ SPUŠTĚNÍ", title: "Nejprve připravíme váš kontext", lead: "Vyberte jeden chat jako soukromý základ agenta. Původní zprávy zůstanou v tomto počítači.", chooseTitle: "1. Vyberte základní chat", chooseHint: "Otevřeme seznam vašich projektů a chatů Codex.", processingTitle: "Připravujeme kontext", export: "Načítáme vaše zprávy", people: "Rozpoznáváme osoby", topics: "Připravujeme možná témata", waiting: "Může to trvat několik minut. Aplikaci můžete nechat otevřenou.", reviewTitle: "Zkontrolujte osoby a témata", reviewHint: "Opravte, koho se téma týká a s kým je lze probírat. Bez vašeho svolení se nic nesdílí.", finish: "Témata zkontrolována — pokračovat k propojení", noPeople: "Nebyly rozpoznány žádné osoby. Obnovte export nebo vyberte jiný chat." },
     fr: { eyebrow: "PREMIER DÉMARRAGE", title: "Préparons d'abord votre contexte", lead: "Choisissez un chat comme base privée de votre agent. Les messages bruts restent sur cet ordinateur.", chooseTitle: "1. Choisissez un chat de base", chooseHint: "Nous ouvrirons vos projets et chats Codex.", processingTitle: "Préparation du contexte", export: "Lecture de vos messages", people: "Identification des personnes", topics: "Préparation des sujets possibles", waiting: "Cela peut prendre quelques minutes. Vous pouvez laisser l'application ouverte.", reviewTitle: "Vérifiez les personnes et les sujets", reviewHint: "Corrigez qui est concerné et avec qui le sujet peut être discuté. Rien n'est partagé sans votre accord.", finish: "Sujets vérifiés — passer à la connexion", noPeople: "Aucune personne n'a été identifiée. Actualisez l'export ou choisissez un autre chat." },
@@ -169,9 +170,27 @@ export function App() {
     try {
       const threads = await api.listContextThreads();
       setContextThreads(threads);
-      setSelectedContextId(state.context?.id && threads.some((thread) => thread.id === state.context?.id) ? state.context.id : threads[0]?.id ?? "");
+      const preferred = state.context?.id ? threads.find((thread) => thread.id === state.context?.id) : undefined;
+      const selected = preferred ?? threads[0];
+      setSelectedContextProject(selected?.project ?? "");
+      setSelectedContextId(selected?.id ?? "");
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setContextLoading(false); }
+  }
+
+  function contextPicker() {
+    if (contextLoading && !contextThreads.length) return <span>{contextText.loading}</span>;
+    const projects = [...new Set(contextThreads.map((thread) => thread.project))].sort((left, right) => left.localeCompare(right, language));
+    const chats = contextThreads.filter((thread) => thread.project === selectedContextProject);
+    return <>
+      <select aria-label={contextText.project} value={selectedContextProject} onChange={(event) => {
+        const project = event.target.value;
+        setSelectedContextProject(project);
+        setSelectedContextId(contextThreads.find((thread) => thread.project === project)?.id ?? "");
+      }}><option value="">{contextText.project}</option>{projects.map((project) => <option value={project} key={project}>{project}</option>)}</select>
+      <select aria-label={contextText.chat} value={selectedContextId} onChange={(event) => setSelectedContextId(event.target.value)}><option value="">{contextText.chat}</option>{chats.map((thread) => <option value={thread.id} key={thread.id}>{thread.title}</option>)}</select>
+      <button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button>
+    </>;
   }
 
   async function selectContext() {
@@ -227,9 +246,9 @@ export function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }
 
-  async function approveSafeTopics() {
-    if (!api || !state.contextAnalysis || !reviewPersonId) return;
-    const topicIds = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === reviewPersonId && item.sensitivity === "direct").map((item) => item.id);
+  async function approveSafeTopics(personId: string) {
+    if (!api || !state.contextAnalysis) return;
+    const topicIds = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === personId && item.sensitivity === "direct").map((item) => item.id);
     if (!topicIds.length) return;
     setError("");
     try { setState(await api.updateContextTopics({ topicIds, approved: true })); }
@@ -249,25 +268,25 @@ export function App() {
     return person?.label || "—";
   }
 
-  const selectedPersonTopics = (state.contextAnalysis?.topics ?? [])
-    .filter((item) => item.discussWithPersonId === reviewPersonId)
-    .filter((item) => topicFilter === "all" || topicFilter === "approved" && item.approved || topicFilter === "review" && item.sensitivity !== "direct")
-    .filter((item) => !topicSearch.trim() || `${item.title} ${item.reason}`.toLocaleLowerCase(language).includes(topicSearch.trim().toLocaleLowerCase(language)))
-    .sort((left, right) => Number(left.sensitivity === "direct") - Number(right.sensitivity === "direct") || left.title.localeCompare(right.title, language));
-
   function topicRegistry() {
     if (!state.contextAnalysis?.people.length) return <div className="empty">{onboardingText.noPeople}</div>;
-    const selectedPerson = state.contextAnalysis.people.find((person) => person.id === reviewPersonId) ?? state.contextAnalysis.people[0];
+    const topicPeople = state.contextAnalysis.people.filter((person) => state.contextAnalysis!.topics.some((topic) => topic.discussWithPersonId === person.id));
+    if (!topicPeople.length) return <div className="empty">{registryText.noFilteredTopics}</div>;
+    const selectedPerson = topicPeople.find((person) => person.id === reviewPersonId) ?? topicPeople[0];
     const allForPerson = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === selectedPerson.id);
+    const selectedPersonTopics = allForPerson
+      .filter((item) => topicFilter === "all" || topicFilter === "approved" && item.approved || topicFilter === "review" && item.sensitivity !== "direct")
+      .filter((item) => !topicSearch.trim() || `${item.title} ${item.reason}`.toLocaleLowerCase(language).includes(topicSearch.trim().toLocaleLowerCase(language)))
+      .sort((left, right) => Number(left.sensitivity === "direct") - Number(right.sensitivity === "direct") || left.title.localeCompare(right.title, language));
     const reviewCount = allForPerson.filter((item) => item.sensitivity !== "direct").length;
     const approvedCount = allForPerson.filter((item) => item.approved).length;
     return <div className="topic-registry">
-      <div className="person-tabs" role="tablist">{state.contextAnalysis.people.map((person) => {
+      <div className="person-tabs" role="tablist">{topicPeople.map((person) => {
         const count = state.contextAnalysis!.topics.filter((item) => item.discussWithPersonId === person.id).length;
         return <button type="button" role="tab" aria-selected={person.id === selectedPerson.id} className={person.id === selectedPerson.id ? "active" : ""} key={person.id} onClick={() => setReviewPersonId(person.id)}>{personLabel(person.id)} <span>{count}</span></button>;
       })}</div>
       <div className="registry-heading"><div><h4>{registryText.topicsFor}: {personLabel(selectedPerson.id)}</h4><p>{allForPerson.length} · {reviewCount} {registryText.needReview}</p></div><div className="registry-controls"><input value={topicSearch} onChange={(event) => setTopicSearch(event.target.value)} placeholder={registryText.search} aria-label={registryText.search} /><div className="registry-filters"><button className={topicFilter === "all" ? "active" : ""} onClick={() => setTopicFilter("all")}>{registryText.all}</button><button className={topicFilter === "review" ? "active" : ""} onClick={() => setTopicFilter("review")}>{registryText.review}</button><button className={topicFilter === "approved" ? "active" : ""} onClick={() => setTopicFilter("approved")}>{registryText.approved}</button></div></div></div>
-      <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span><button className="ghost" onClick={() => void approveSafeTopics()}>{registryText.allowSafe}</button></div>
+      <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span><button className="ghost" onClick={() => void approveSafeTopics(selectedPerson.id)}>{registryText.allowSafe}</button></div>
       <div className="topic-rows">{selectedPersonTopics.map((item) => {
         const expanded = expandedTopicIds.has(item.id);
         const about = item.aboutPersonIds.map(personLabel).join(", ") || "—";
@@ -295,7 +314,7 @@ export function App() {
         </div>
       </aside>
 
-      <main id="overview" className={!state.onboardingComplete && activeSection === "overview" ? "onboarding-main" : ""}>
+      <main id="overview" className={`${!state.onboardingComplete && activeSection === "overview" ? "onboarding-main" : ""} ${activeSection === "context" ? "context-main" : ""}`.trim()}>
         <header>
           <div><h1>{pageTitle}</h1></div>
           <div className="header-tools"><label>{t.language}<select value={language} onChange={(e) => void changeLanguage(e.target.value as Language)}>{(Object.keys(languageNames) as Language[]).map((key) => <option value={key} key={key}>{languageNames[key]}</option>)}</select></label><div className="live-pill"><CircleDot size={14} />{t.background}</div></div>
@@ -305,9 +324,9 @@ export function App() {
           {state.contextAnalysis?.status !== "ready" && <div className="onboarding-intro"><p>{onboardingText.lead}</p></div>}
           <div className="onboarding-steps"><div className={state.context ? "done" : "active"}><span>{state.context ? <Check size={16} /> : "1"}</span>{onboardingText.chooseTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "done" : state.context ? "active" : ""}><span>{state.contextAnalysis?.status === "ready" ? <Check size={16} /> : "2"}</span>{onboardingText.processingTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "active" : ""}><span>3</span>{onboardingText.reviewTitle}</div></div>
           {!state.context && <div className="onboarding-stage"><h3>{onboardingText.chooseTitle}</h3><p>{onboardingText.chooseHint}</p><button className="primary" disabled={contextLoading} onClick={() => void loadContextThreads()}>{contextText.choose}</button></div>}
-          {showContextPicker && !state.context && <div className="context-picker onboarding-picker">{contextLoading && !contextThreads.length ? <span>{contextText.loading}</span> : <><select value={selectedContextId} onChange={(e) => setSelectedContextId(e.target.value)}><option value="">{contextText.select}</option>{contextThreads.map((thread) => <option value={thread.id} key={thread.id}>{thread.project} — {thread.title}</option>)}</select><button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button></>}</div>}
-          {state.context && state.contextAnalysis?.status !== "ready" && <div className="onboarding-stage processing-stage"><h3>{onboardingText.processingTitle}</h3><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="processing-list"><div className={state.context.status === "ready" ? "done" : "active"}>{state.context.status === "ready" ? <Check size={18} /> : <LoaderCircle className="spin" size={18} />}<span>{onboardingText.export}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{onboardingText.people}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{onboardingText.topics}</span></div></div><p className="muted">{onboardingText.waiting}</p>{state.contextAnalysis?.status === "error" && <div className="analysis-error">{state.contextAnalysis.error}</div>}</div>}
-          {state.contextAnalysis?.status === "ready" && <div className="onboarding-stage review-stage"><div className="review-intro"><div><h3>{onboardingText.reviewTitle}</h3><p>{onboardingText.reviewHint}</p></div><button className="ghost" onClick={() => void loadContextThreads()}>{contextText.change}</button></div>{showContextPicker && <div className="context-picker onboarding-picker">{contextLoading && !contextThreads.length ? <span>{contextText.loading}</span> : <><select value={selectedContextId} onChange={(e) => setSelectedContextId(e.target.value)}><option value="">{contextText.select}</option>{contextThreads.map((thread) => <option value={thread.id} key={thread.id}>{thread.project} — {thread.title}</option>)}</select><button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button></>}</div>}{topicRegistry()}<div className="onboarding-finish"><button className="primary" onClick={() => void completeOnboarding()}>{onboardingText.finish}</button></div></div>}
+          {showContextPicker && !state.context && <div className="context-picker onboarding-picker">{contextPicker()}</div>}
+          {state.context && state.contextAnalysis?.status !== "ready" && <div className="onboarding-stage processing-stage"><h3>{onboardingText.processingTitle}</h3><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="processing-list"><div className={state.context.status === "ready" ? "done" : "active"}>{state.context.status === "ready" ? <Check size={18} /> : <LoaderCircle className="spin" size={18} />}<span>{onboardingText.export}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{onboardingText.people}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{onboardingText.topics}{state.contextAnalysis?.progress ? ` · ${state.contextAnalysis.progress.current}/${state.contextAnalysis.progress.total}` : ""}</span></div></div><p className="muted">{onboardingText.waiting}</p>{state.contextAnalysis?.status === "error" && <div className="analysis-error">{state.contextAnalysis.error}</div>}</div>}
+          {state.contextAnalysis?.status === "ready" && <div className="onboarding-stage review-stage"><div className="review-intro"><div><h3>{onboardingText.reviewTitle}</h3><p>{onboardingText.reviewHint}</p></div><button className="ghost" onClick={() => void loadContextThreads()}>{contextText.change}</button></div>{showContextPicker && <div className="context-picker onboarding-picker">{contextPicker()}</div>}{topicRegistry()}<div className="onboarding-finish"><button className="primary" onClick={() => void completeOnboarding()}>{onboardingText.finish}</button></div></div>}
         </section>}
 
         {activeSection === "overview" && state.onboardingComplete && <section className="hero-card">
@@ -349,7 +368,7 @@ export function App() {
             </div> : <><strong className="context-empty">{contextText.none}</strong><p className="muted">{contextText.explanation}</p></>}
             <div className="actions"><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{state.context ? contextText.change : contextText.choose}</button>{state.context && <button className="ghost" disabled={contextLoading} onClick={() => void syncContext()}>{contextText.refresh}</button>}</div>
             {showContextPicker && <div className="context-picker">
-              {contextLoading && !contextThreads.length ? <span>{contextText.loading}</span> : <><select value={selectedContextId} onChange={(e) => setSelectedContextId(e.target.value)}><option value="">{contextText.select}</option>{contextThreads.map((thread) => <option value={thread.id} key={thread.id}>{thread.project} — {thread.title}</option>)}</select><button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button></>}
+              {contextPicker()}
             </div>}
             {state.context?.status === "error" && <p className="muted">{state.context.error}</p>}
           </section>}
@@ -359,7 +378,7 @@ export function App() {
             {!state.contextAnalysis && <div className="empty">{workflowText.noAnalysis}</div>}
             {state.contextAnalysis?.status === "error" && <div className="analysis-error">{state.contextAnalysis.error}</div>}
             {state.contextAnalysis && <>
-              <div className="people-block"><strong>{workflowText.people}</strong><div>{state.contextAnalysis.people.map((person) => <span className="person-chip" key={person.id}>{personLabel(person.id)}</span>)}</div></div>
+              <details className="people-block"><summary>{workflowText.people} · {state.contextAnalysis.people.length}</summary><div>{state.contextAnalysis.people.map((person) => <span className="person-chip" key={person.id}>{personLabel(person.id)}</span>)}</div></details>
               {topicRegistry()}
             </>}
           </section>}

@@ -5,6 +5,7 @@ export interface ContextThread {
   id: string;
   title: string;
   project: string;
+  source: "codex" | "chatgpt";
   cwd?: string;
   updatedAt?: number;
 }
@@ -62,7 +63,7 @@ export class CodexHistoryClient {
             : typeof item.preview === "string" && item.preview.trim()
               ? item.preview.trim().split(/\r?\n/, 1)[0].slice(0, 100)
               : "Без названия";
-          threads.push({ id: item.id, title, project: cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd : "Без проекта", cwd,
+          threads.push({ id: item.id, title, project: cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd : "Без проекта", source: "codex", cwd,
             updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : undefined });
         }
         cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
