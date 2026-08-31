@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeContextAnalysis, routeSensitivity, splitContextMessages, topicsForCounterpart } from "../src/core/context-analysis.js";
+import { CONTEXT_ANALYSIS_VERSION, contextAnalysisNeedsRefresh, normalizeContextAnalysis, routeSensitivity, splitContextMessages, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
 
 test("context topics keep subject and intended counterpart separate", () => {
   const analysis = normalizeContextAnalysis({
@@ -14,6 +14,7 @@ test("context topics keep subject and intended counterpart separate", () => {
     ],
   }, "thread", "hash");
   const husband = analysis.people.find((person) => person.id === "husband")!;
+  assert.equal(analysis.analysisVersion, CONTEXT_ANALYSIS_VERSION);
   const cross = analysis.topics.find((topic) => topic.sensitivity === "cross_person")!;
   assert.deepEqual(cross.aboutPersonIds, ["lover"]);
   assert.equal(cross.discussWithPersonId, husband.id);
@@ -33,4 +34,11 @@ test("long context is split without dropping its beginning or end", () => {
   assert.ok(chunks.length > 1);
   assert.match(chunks.join(""), /Начало/);
   assert.match(chunks.join(""), /Конец/);
+});
+
+test("an analysis from the old summarizing prompt is recalculated", () => {
+  const legacy = { sourceId: "thread", sourceHash: "hash", status: "ready" } as ContextAnalysis;
+  assert.equal(contextAnalysisNeedsRefresh(legacy, "thread", "hash"), true);
+  const current = { ...legacy, analysisVersion: CONTEXT_ANALYSIS_VERSION };
+  assert.equal(contextAnalysisNeedsRefresh(current, "thread", "hash"), false);
 });

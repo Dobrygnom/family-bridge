@@ -21,6 +21,7 @@ export interface RoutedTopic {
 }
 
 export interface ContextAnalysis {
+  analysisVersion: number;
   sourceId: string;
   sourceHash: string;
   analyzedAt: string;
@@ -36,8 +37,18 @@ interface RawAnalysis {
   topics: Array<{ title: string; about_people: string[]; discuss_with: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string }>;
 }
 
+export const CONTEXT_ANALYSIS_VERSION = 2;
+
 export function contextSourceHash(messages: Array<{ text: string }>): string {
   return createHash("sha256").update(messages.map((message) => message.text).join("\n\u0000\n"), "utf8").digest("hex");
+}
+
+export function contextAnalysisNeedsRefresh(analysis: ContextAnalysis | undefined, sourceId: string, sourceHash: string): boolean {
+  return !analysis
+    || analysis.analysisVersion !== CONTEXT_ANALYSIS_VERSION
+    || analysis.sourceId !== sourceId
+    || analysis.sourceHash !== sourceHash
+    || analysis.status !== "ready";
 }
 
 export function splitContextMessages(messages: Array<{ text: string }>, maxCharacters = 50_000): string[] {
@@ -81,7 +92,7 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
     const id = `topic-${createHash("sha256").update(`${topic.title}\u0000${discussWithPersonId}`).digest("hex").slice(0, 12)}-${index + 1}`;
     return [{ id, title: topic.title.trim(), aboutPersonIds, discussWithPersonId, sensitivity: topic.sensitivity, reason: topic.reason.trim(), approved: previousApproval.get(`${topic.title.trim()}\u0000${discussWithPersonId}`) ?? false }];
   });
-  return { sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "ready", people, topics };
+  return { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "ready", people, topics };
 }
 
 export function topicsForCounterpart(analysis: ContextAnalysis | undefined, personId: string | undefined): RoutedTopic[] {
@@ -101,7 +112,7 @@ export class CodexContextAnalyzer {
     await mkdir(this.workspace, { recursive: true });
     const chunks = splitContextMessages(input.messages);
     if (!chunks.length) throw new Error("В выбранном чате нет текстовых реплик пользователя");
-    const total = chunks.length + (chunks.length > 1 ? 1 : 0);
+    const total = chunks.length + 1;
     let completed = 0;
     const rawParts = await this.mapConcurrent(chunks, 2, async (transcript) => {
       const raw = await this.runCached(this.analysisPrompt(input.ownerName, input.language, transcript));
@@ -109,41 +120,56 @@ export class CodexContextAnalyzer {
       await input.onProgress?.({ stage: "analyzing", current: completed, total });
       return raw;
     });
-    let raw = rawParts[0];
-    if (rawParts.length > 1) {
-      await input.onProgress?.({ stage: "consolidating", current: total, total });
-      raw = await this.consolidate(rawParts, input.language);
-    }
+    await input.onProgress?.({ stage: "consolidating", current: total, total });
+    const raw = await this.consolidate(rawParts, input.ownerName, input.language);
     return normalizeContextAnalysis(raw, input.sourceId, input.sourceHash, input.previous);
   }
 
   private analysisPrompt(ownerName: string, language: string, transcript: string) {
-    return `Проанализируй только локальный личный контекст владельца ${ownerName || "приложения"} и подготовь маршрутизацию будущих разговоров между семейными агентами.
+    return `Ты выполняешь первый, исследовательский этап семейно-психологического анализа личного чата владельца ${ownerName || "приложения"}. Это не итоговый список тем и не суммаризация сообщений. Твоя задача — сохранить материал, из которого следующий этап сможет рекомендовать содержательные разговоры.
 
 Найди упоминаемых близких людей, кроме самого владельца. Для каждого дай короткий стабильный key латиницей, отображаемое имя или нейтральную роль, тип отношений и встречающиеся формы имени.
 
-Подготовь все различимые конкретные нейтральные темы, которые действительно стоит обсудить. Не объединяй разные конфликты, потребности или договорённости в одну общую тему. Для каждой темы обязательно раздели:
+В topics запиши не названия сообщений, а предварительные психологические гипотезы о динамике отношений: повторяющиеся эпизоды, неудовлетворённые потребности, болезненные циклы, противоречивые ожидания, нерешённые решения, попытки сближения или защиты и то, что уже пробовали делать. Одиночную бытовую реплику не превращай в тему без признака напряжения, повторения, важного выбора или потребности в восстановлении отношений.
+
+Для каждой предварительной гипотезы обязательно раздели:
 - about_people: о ком эта тема;
 - discuss_with: с кем её следует обсуждать.
 
-Если тема о любовнике предназначена мужу или наоборот, это cross_person. Не цитируй интимные признания, не раскрывай детали в названии, не ставь диагнозов и не выдумывай людей. Если адресат неясен, используй sensitivity=unclear, но discuss_with всё равно должен ссылаться на наиболее вероятного человека. Язык названий и объяснений: ${language}.
+В title кратко назови предполагаемую динамику. В reason зафиксируй наблюдаемую основу гипотезы, но не копируй сообщения дословно. Не объявляй одностороннюю версию владельца объективной истиной. Если тема о третьем человеке предназначена партнёру, это cross_person. Не ставь диагнозов и не выдумывай людей. Если адресат неясен, используй sensitivity=unclear, но discuss_with всё равно должен ссылаться на наиболее вероятного человека. Язык названий и объяснений: ${language}.
 
 Верни только JSON по схеме. Исходные реплики владельца:
 ${transcript}`;
   }
 
-  private async consolidate(parts: RawAnalysis[], language: string): Promise<RawAnalysis> {
+  private async consolidate(parts: RawAnalysis[], ownerName: string, language: string): Promise<RawAnalysis> {
     const serialized = JSON.stringify(parts);
     if (serialized.length > 120_000 && parts.length > 2) {
       const middle = Math.ceil(parts.length / 2);
       return this.consolidate([
-        await this.consolidate(parts.slice(0, middle), language),
-        await this.consolidate(parts.slice(middle), language),
-      ], language);
+        await this.consolidate(parts.slice(0, middle), ownerName, language),
+        await this.consolidate(parts.slice(middle), ownerName, language),
+      ], ownerName, language);
     }
-    return this.runCached(`Объедини результаты анализа частей одного личного чата в единый реестр людей и тем.
+    return this.runCached(`Выступи как опытный семейный психолог и преврати исследовательские заметки по личному чату ${ownerName || "владельца"} в рекомендуемую повестку разговоров между двумя семейными агентами.
+
+Это не суммаризация сообщений и не каталог слов, которые встречались в чате. Сначала мысленно восстанови происходившую динамику отношений: что повторяется, где стороны застряли, какая потребность не услышана, какое решение откладывается, что требует прояснения, восстановления доверия или практической договорённости. Затем выбери именно те разговоры, которые ты как семейный психолог действительно посоветовал бы провести.
+
+Каждая итоговая тема должна одновременно иметь:
+- конкретное напряжение, паттерн, нерешённый выбор или потребность;
+- понятного адресата discuss_with;
+- конструктивную цель, которой агенты могут достичь в разговоре;
+- достаточную опору в заметках, без выдуманных фактов и диагнозов.
+
+Не создавай тему из каждого сообщения. Объединяй разные эпизоды одного повторяющегося цикла, но не склеивай разные решения, травмы или договорённости. Исключи простые новости, уже завершённые вопросы, общий эмоциональный выплеск без запроса к другому человеку и сугубо индивидуальные темы, для которых разговор с указанным человеком ничего не может изменить.
+
+Title — это узнаваемая конкретная задача разговора, а не рубрика и не абстрактное существительное. Формулируй его как действие и желаемый результат. Плохо: «Доверие», «Границы в браке», «Общение после расставания», «Отношения с мужем». Хорошо: «Согласовать, какие контакты после расставания допустимы и как сообщать о них», «Обсудить, что каждый считает изменой и какие границы нужны дальше», «Договориться, как сообщать болезненные факты без давления и допроса».
+
+Reason должен помогать владельцу понять рекомендацию и состоять из трёх коротких частей: «Наблюдаемая динамика: … Психологическая цель: … Первый вопрос: …». Описывай динамику как обоснованную гипотезу, а не установленную истину. Не цитируй интимные признания дословно, но и не обезличивай формулировку настолько, что владелец не узнает, о чём речь.
 
 Одинаковых людей объедини, сохранив известные имена, роли и aliases. Удали только настоящие дубликаты тем. Не склеивай разные конфликты, потребности и договорённости в одну общую формулировку. Сохрани все различимые темы из всех частей. about_people и discuss_with должны ссылаться только на итоговые key людей. Пересчитай sensitivity: cross_person, если тема хотя бы об одном человеке, отличном от discuss_with; direct, если она только об адресате; unclear, если уверенности недостаточно. Не добавляй новых фактов. Язык: ${language}.
+
+Расположи темы в порядке ожидаемой пользы: сначала разговоры, которые сильнее всего влияют на безопасность, доверие, повторяющиеся конфликты и важные решения, затем менее срочные.
 
 Верни только JSON по схеме. Частичные результаты:
 ${serialized}`);

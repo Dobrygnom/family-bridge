@@ -17,6 +17,7 @@ export interface AppState {
   memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };
   context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error"; error?: string };
   contextAnalysis?: {
+    analysisVersion: number;
     sourceId: string;
     sourceHash: string;
     analyzedAt: string;

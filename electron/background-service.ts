@@ -8,7 +8,7 @@ import type { BrowserWindow } from "electron";
 import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
-import { CodexContextAnalyzer, contextSourceHash, routeSensitivity, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
+import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, routeSensitivity, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
@@ -125,7 +125,7 @@ export class BackgroundService {
       this.emit({ type: "context", context: completed });
       const hash = contextSourceHash(messages);
       const previous = this.readContextAnalysis();
-      if (!previous || previous.sourceId !== selected.id || previous.sourceHash !== hash || previous.status !== "ready") {
+      if (contextAnalysisNeedsRefresh(previous, selected.id, hash)) {
         await this.analyzeContext(selected.id, hash, messages, previous?.sourceId === selected.id ? previous : undefined);
       }
       return this.state();
@@ -179,7 +179,7 @@ export class BackgroundService {
   }
 
   private async analyzeContext(sourceId: string, sourceHash: string, messages: Array<{ text: string }>, previous?: ContextAnalysis) {
-    const analyzing: ContextAnalysis = { sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], topics: previous?.topics ?? [] };
+    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], topics: previous?.topics ?? [] };
     await this.writeContextAnalysis(analyzing);
     this.emit({ type: "context-analysis", analysis: analyzing });
     try {
