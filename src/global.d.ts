@@ -46,6 +46,7 @@ declare global {
       listContextThreads(): Promise<Array<{ id: string; title: string; project: string; source: "codex" | "chatgpt"; cwd?: string; updatedAt?: number }>>;
       selectContextThread(threadId: string): Promise<AppState>;
       syncContext(): Promise<AppState>;
+      refreshContextNow(): Promise<AppState>;
       completeOnboarding(): Promise<AppState>;
       openReports(): Promise<void>;
       createPair(counterpartPersonId: string): Promise<AppState>;

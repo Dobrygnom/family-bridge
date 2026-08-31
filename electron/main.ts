@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray } from "electron";
 import electronUpdater from "electron-updater";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -79,6 +79,7 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   await service.start();
+  powerMonitor.on("resume", () => void service.checkContextForUpdates());
   const state = await store.read();
   app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
@@ -102,6 +103,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:list-context-threads", () => service.listContextThreads());
   ipcMain.handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
   ipcMain.handle("bridge:sync-context", () => service.syncContext());
+  ipcMain.handle("bridge:refresh-context-now", () => service.refreshContextNow());
   ipcMain.handle("bridge:complete-onboarding", () => service.completeOnboarding());
   ipcMain.handle("bridge:open-reports", async () => {
     const reports = path.join(app.getPath("userData"), "reports");

@@ -75,6 +75,7 @@ export class BackgroundService {
   private contextSyncing = false;
   private contextSyncProgress = 0;
   private contextCheckBusy = false;
+  private lastContextCheckAt = 0;
   private syncedTopicsForPair?: string;
   private remoteBusy = false;
   private readonly remoteAgents = new Map<string, AgentRuntime>();
@@ -323,24 +324,31 @@ export class BackgroundService {
     const context = this.readContextSource();
     if (context?.id) {
       setTimeout(() => void this.checkContextForUpdates(), 5_000);
-      this.contextTimer = setInterval(() => void this.checkContextForUpdates(), 60_000);
+      this.contextTimer = setInterval(() => void this.checkContextForUpdates(), 24 * 60 * 60 * 1_000);
     }
   }
 
-  private async checkContextForUpdates() {
+  async checkContextForUpdates(force = false) {
     if (this.contextCheckBusy || this.contextSyncing) return;
+    if (!force && this.lastContextCheckAt && Date.now() - this.lastContextCheckAt < contextFallbackRefreshMs) return;
     const selected = this.readContextSource();
     if (!selected?.id) return;
     this.contextCheckBusy = true;
+    this.lastContextCheckAt = Date.now();
     try {
       const threads = await this.listContextThreads();
       const latest = threads.find((thread) => thread.id === selected.id);
-      if (contextNeedsSync(selected, latest)) await this.syncContext(latest);
+      if (force || contextNeedsSync(selected, latest)) await this.syncContext(latest);
     } catch (error) {
       this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
     } finally {
       this.contextCheckBusy = false;
     }
+  }
+
+  async refreshContextNow() {
+    await this.checkContextForUpdates(true);
+    return this.state();
   }
 
   async setDisplayName(value: unknown) {

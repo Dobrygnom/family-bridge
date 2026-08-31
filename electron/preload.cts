@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   listContextThreads: () => ipcRenderer.invoke("bridge:list-context-threads"),
   selectContextThread: (threadId: string) => ipcRenderer.invoke("bridge:select-context-thread", threadId),
   syncContext: () => ipcRenderer.invoke("bridge:sync-context"),
+  refreshContextNow: () => ipcRenderer.invoke("bridge:refresh-context-now"),
   completeOnboarding: () => ipcRenderer.invoke("bridge:complete-onboarding"),
   openReports: () => ipcRenderer.invoke("bridge:open-reports"),
   createPair: (counterpartPersonId: string) => ipcRenderer.invoke("bridge:create-pair", counterpartPersonId),
