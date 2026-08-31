@@ -4,6 +4,7 @@ import { ConversationCoordinator } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 
 const base = {
+  owner_question: "",
   topics: ["topic"],
   private_report: "",
   shared_summary: "",

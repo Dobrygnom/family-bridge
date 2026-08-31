@@ -45,6 +45,11 @@ const SYSTEM_RULES = `
 - для demo достаточно 2–4 реплик каждого агента;
 - private_report предназначен только владельцу;
 - shared_summary должен быть нейтральным и допустимым для обоих;
+- если для содержательного ответа действительно не хватает важного факта, который знает только твой владелец, не додумывай его: поставь status="paused" и задай владельцу один конкретный, нейтральный вопрос в owner_question;
+- используй паузу редко: только когда без ответа существенно меняется вывод или договорённость, а не для любой мелкой неопределённости;
+- owner_question видит только твой владелец. Не копируй этот вопрос в message_to_peer и не проси второго агента передать его человеку;
+- после ответа владельца, «не знаю» или отказа не задавай тот же вопрос повторно. Продолжи с доступными фактами и при необходимости сформулируй условный вывод;
+- если status не paused, owner_question должен быть пустой строкой;
 - никаких tool calls: верни только объект по заданной JSON Schema.
 `;
 
@@ -53,7 +58,7 @@ export function buildInitialPrompt(options: CodexRuntimeOptions, initialPrompt: 
   const peerName = options.peerName ?? (options.id === "dima" ? "Катя" : "Дима");
   const language = options.language ?? "ru";
   const examples = options.communicationExamples ?? "Примеры отсутствуют: используй спокойный, прямой и естественный тон.";
-  return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения и уместный юмор. Веди текущий разговор в узнаваемой манере, но не копируй чувствительные высказывания дословно, не изображай владельца и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+  return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, owner_question, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения и уместный юмор. Веди текущий разговор в узнаваемой манере, но не копируй чувствительные высказывания дословно, не изображай владельца и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
 }
 
 export class CodexCliAgent implements AgentRuntime {
@@ -89,6 +94,14 @@ export class CodexCliAgent implements AgentRuntime {
   }
 
   async respond(peerMessage: string): Promise<AgentResponse> {
+    return this.resume(`Сообщение второго семейного агента:\n${peerMessage}\n\nПродолжи переговоры по правилам сессии. Верни только JSON.`);
+  }
+
+  async respondToOwner(ownerMessage: string): Promise<AgentResponse> {
+    return this.resume(`Локальный ответ владельца на твой вопрос. Это не реплика второго агента:\n${ownerMessage}\n\nВозобнови переговоры по правилам сессии. Не пересылай сырой ответ дословно. Верни только JSON.`);
+  }
+
+  private async resume(prompt: string): Promise<AgentResponse> {
     if (!this.sessionId) throw new Error(`Agent ${this.id} has not been started`);
     const result = await this.run([
       "exec",
@@ -98,7 +111,7 @@ export class CodexCliAgent implements AgentRuntime {
       "--output-schema",
       this.options.schemaPath,
       this.sessionId,
-      `Сообщение второго семейного агента:\n${peerMessage}\n\nПродолжи переговоры по правилам сессии. Верни только JSON.`,
+      prompt,
     ]);
     return result.response;
   }

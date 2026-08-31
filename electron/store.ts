@@ -3,6 +3,18 @@ import path from "node:path";
 
 export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
+export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
+
+export interface PendingOwnerQuestion {
+  id: string;
+  conversationId: string;
+  topic: string;
+  question: string;
+  createdAt: string;
+  peerName?: string;
+  nextSequence: number;
+  transcript: Array<{ from: OwnerId; text: string }>;
+}
 
 export interface StoredState {
   owner: OwnerId;
@@ -14,6 +26,7 @@ export interface StoredState {
   pendingTopics: string[];
   blockedTopics: string[];
   reports: string[];
+  pendingOwnerQuestions: PendingOwnerQuestion[];
   lastConversationAt?: string;
   remote?: {
     pairId: string;
@@ -34,6 +47,7 @@ const defaults: StoredState = {
   pendingTopics: [],
   blockedTopics: [],
   reports: [],
+  pendingOwnerQuestions: [],
 };
 
 export class AtomicStore {

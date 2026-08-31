@@ -4,6 +4,7 @@
   "additionalProperties": false,
   "properties": {
     "message_to_peer": { "type": "string" },
+    "owner_question": { "type": "string" },
     "status": {
       "type": "string",
       "enum": ["continue", "complete", "paused", "unsafe"]
@@ -14,6 +15,7 @@
   },
   "required": [
     "message_to_peer",
+    "owner_question",
     "status",
     "topics",
     "private_report",

@@ -12,6 +12,15 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BackgroundService;
 let isQuitting = false;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) app.quit();
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -54,12 +63,18 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   const store = new AtomicStore(app.getPath("userData"));
   service = new BackgroundService(
     app.getPath("userData"),
     app.isPackaged ? process.resourcesPath : path.resolve(dirname, ".."),
     store,
     () => mainWindow,
+    () => {
+      if (Notification.isSupported()) {
+        new Notification({ title: "Family Bridge ждёт вашего ответа", body: "Один из разговоров поставлен на паузу. Откройте приложение, чтобы продолжить." }).show();
+      }
+    },
   );
   createWindow();
   createTray();
@@ -99,6 +114,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:update-context-topics", (_event, input: unknown) => service.updateContextTopics(input));
   ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
   ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
+  ipcMain.handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
   ipcMain.handle("bridge:check-updates", async () => {
     if (!app.isPackaged) return;
     await autoUpdater.checkForUpdatesAndNotify();

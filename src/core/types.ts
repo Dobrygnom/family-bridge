@@ -12,6 +12,7 @@ export type ConversationStatus =
 export interface AgentResponse {
   message_to_peer: string;
   status: "continue" | "complete" | "paused" | "unsafe";
+  owner_question: string;
   topics: string[];
   private_report: string;
   shared_summary: string;
@@ -46,4 +47,5 @@ export interface AgentRuntime {
   readonly id: AgentId;
   start(initialPrompt: string): Promise<AgentResponse>;
   respond(peerMessage: string): Promise<AgentResponse>;
+  respondToOwner?(ownerMessage: string): Promise<AgentResponse>;
 }

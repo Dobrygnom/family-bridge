@@ -10,6 +10,7 @@ export interface AppState {
   pendingTopics: string[];
   blockedTopics: string[];
   reports: string[];
+  ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   lastConversationAt?: string;
   running: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
@@ -51,6 +52,7 @@ declare global {
       updateContextTopics(input: { topicIds: string[]; approved: boolean }): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
       discussAllTopics(): Promise<AppState>;
+      answerOwnerQuestion(input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }): Promise<AppState>;
       checkForUpdates(): Promise<void>;
       onEvent(listener: (event: unknown) => void): () => void;
     };

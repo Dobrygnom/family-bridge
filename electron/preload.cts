@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   updateContextTopics: (input: { topicIds: string[]; approved: boolean }) => ipcRenderer.invoke("bridge:update-context-topics", input),
   runRemote: (topic: string) => ipcRenderer.invoke("bridge:run-remote", topic),
   discussAllTopics: () => ipcRenderer.invoke("bridge:discuss-all-topics"),
+  answerOwnerQuestion: (input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }) => ipcRenderer.invoke("bridge:answer-owner-question", input),
   checkForUpdates: () => ipcRenderer.invoke("bridge:check-updates"),
   onEvent: (listener: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);

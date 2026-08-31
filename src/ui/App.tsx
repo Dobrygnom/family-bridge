@@ -29,6 +29,7 @@ const fallback: AppState = {
   pendingTopics: ["Как сделать бытовые договорённости спокойнее"],
   blockedTopics: [],
   reports: [],
+  ownerQuestions: [],
   running: false,
   codex: { installed: true, authenticated: true, version: "preview mode" },
   remote: { configured: false, connected: false },
@@ -57,6 +58,8 @@ export function App() {
   const [topicSearch, setTopicSearch] = useState("");
   const [expandedTopicIds, setExpandedTopicIds] = useState<Set<string>>(() => new Set());
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [ownerAnswers, setOwnerAnswers] = useState<Record<string, string>>({});
+  const [answeringQuestionId, setAnsweringQuestionId] = useState("");
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
@@ -96,6 +99,12 @@ export function App() {
     cs: { start: "První spuštění", connection: "Propojení", context: "Zdrojový chat a témata", reports: "Výsledky rozhovorů", settings: "Jméno a spuštění", setupTitle: "Příprava prvního rozhovoru", connectionTitle: "Propojení a témata", contextTitle: "Zdrojový chat a témata", reportsTitle: "Výsledky rozhovorů", settingsTitle: "Jméno a spuštění" },
     fr: { start: "Premier démarrage", connection: "Connexion", context: "Chat source et sujets", reports: "Résultats des conversations", settings: "Nom et démarrage", setupTitle: "Préparer la première conversation", connectionTitle: "Connexion et sujets", contextTitle: "Chat source et sujets", reportsTitle: "Résultats des conversations", settingsTitle: "Nom et démarrage" },
   }[language];
+  const ownerQuestionText = {
+    ru: { eyebrow: "НУЖЕН ВАШ ОТВЕТ", title: "Агент не хочет додумывать", paused: "Разговор поставлен на паузу", privacy: "Ответ сначала получит только ваш агент. Второму агенту уйдёт лишь аккуратный вывод своими словами.", placeholder: "Ваш ответ", answer: "Ответить и продолжить", unknown: "Не знаю", decline: "Не хочу отвечать", processing: "Продолжаем разговор…" },
+    en: { eyebrow: "YOUR ANSWER IS NEEDED", title: "The agent does not want to guess", paused: "The conversation is paused", privacy: "Only your agent receives the raw answer. The other agent receives a careful paraphrased conclusion.", placeholder: "Your answer", answer: "Answer and continue", unknown: "I don't know", decline: "I don't want to answer", processing: "Continuing the conversation…" },
+    cs: { eyebrow: "JE POTŘEBA VAŠE ODPOVĚĎ", title: "Agent nechce hádat", paused: "Rozhovor je pozastaven", privacy: "Původní odpověď obdrží pouze váš agent. Druhý agent dostane jen opatrně formulovaný závěr.", placeholder: "Vaše odpověď", answer: "Odpovědět a pokračovat", unknown: "Nevím", decline: "Nechci odpovědět", processing: "Pokračujeme v rozhovoru…" },
+    fr: { eyebrow: "VOTRE RÉPONSE EST NÉCESSAIRE", title: "L’agent ne veut pas deviner", paused: "La conversation est en pause", privacy: "Seul votre agent reçoit la réponse brute. L’autre agent reçoit uniquement une conclusion reformulée avec précaution.", placeholder: "Votre réponse", answer: "Répondre et continuer", unknown: "Je ne sais pas", decline: "Je ne veux pas répondre", processing: "Reprise de la conversation…" },
+  }[language];
   const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
 
   function goTo(section: SectionId) {
@@ -123,7 +132,7 @@ export function App() {
       setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; running?: boolean };
+      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean };
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -132,6 +141,10 @@ export function App() {
         setReviewPersonId((current) => current && event.analysis?.people.some((person) => person.id === current) ? current : event.analysis?.people[0]?.id || "");
       }
       if (event.type === "topics" && event.topics) setState((current) => ({ ...current, pendingTopics: event.topics! }));
+      if (event.type === "owner-questions" && event.questions) {
+        setState((current) => ({ ...current, ownerQuestions: event.questions! }));
+        if (event.questions.length) setActiveSection("overview");
+      }
       if (event.type === "runtime") { setBusy(Boolean(event.running)); setState((current) => ({ ...current, running: Boolean(event.running) })); }
       if (event.type === "update") setState((current) => ({ ...current, update: { available: Boolean(event.available), version: event.version, downloading: Boolean(event.downloading) } }));
     });
@@ -162,6 +175,17 @@ export function App() {
     try { setState(await api.discussAllTopics()); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
+  }
+
+  async function answerOwnerQuestion(id: string, disposition: "answer" | "unknown" | "decline") {
+    if (!api) return;
+    setAnsweringQuestionId(id); setError("");
+    try {
+      const answer = ownerAnswers[id]?.trim() || "";
+      setState(await api.answerOwnerQuestion({ id, disposition, answer }));
+      setOwnerAnswers((current) => { const next = { ...current }; delete next[id]; return next; });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setAnsweringQuestionId(""); }
   }
 
   async function loadContextThreads() {
@@ -303,7 +327,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand"><MessageCircleHeart size={25} /><span>Family Bridge</span></div>
         <nav>
-          <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} />{state.onboardingComplete ? navigationText.connection : navigationText.start}</button>
+          <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} /><span>{state.onboardingComplete ? navigationText.connection : navigationText.start}</span>{state.ownerQuestions.length > 0 && <b className="nav-badge">{state.ownerQuestions.length}</b>}</button>
           <button className={activeSection === "context" ? "active" : ""} onClick={() => goTo("context")}><BookHeart size={18} />{navigationText.context}</button>
           <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{navigationText.reports}</button>
           <button className={activeSection === "settings" ? "active" : ""} onClick={() => goTo("settings")}><Settings2 size={18} />{navigationText.settings}</button>
@@ -319,6 +343,19 @@ export function App() {
           <div><h1>{pageTitle}</h1></div>
           <div className="header-tools"><label>{t.language}<select value={language} onChange={(e) => void changeLanguage(e.target.value as Language)}>{(Object.keys(languageNames) as Language[]).map((key) => <option value={key} key={key}>{languageNames[key]}</option>)}</select></label><div className="live-pill"><CircleDot size={14} />{t.background}</div></div>
         </header>
+
+        {activeSection === "overview" && state.ownerQuestions.map((item) => <section className="panel owner-question-panel" key={item.id}>
+          <div className="owner-question-heading"><div><p className="eyebrow">{ownerQuestionText.eyebrow}</p><h3>{ownerQuestionText.title}</h3></div><Bell size={21} /></div>
+          <div className="owner-question-topic"><span>{ownerQuestionText.paused}</span><strong>{item.topic}</strong></div>
+          <p className="owner-question">{item.question}</p>
+          <p className="owner-question-privacy"><ShieldCheck size={15} />{ownerQuestionText.privacy}</p>
+          <textarea value={ownerAnswers[item.id] || ""} onChange={(event) => setOwnerAnswers((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={ownerQuestionText.placeholder} disabled={answeringQuestionId === item.id} />
+          <div className="owner-question-actions">
+            <button className="primary" disabled={!ownerAnswers[item.id]?.trim() || answeringQuestionId === item.id} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id ? ownerQuestionText.processing : ownerQuestionText.answer}</button>
+            <button className="ghost" disabled={answeringQuestionId === item.id} onClick={() => void answerOwnerQuestion(item.id, "unknown")}>{ownerQuestionText.unknown}</button>
+            <button className="ghost" disabled={answeringQuestionId === item.id} onClick={() => void answerOwnerQuestion(item.id, "decline")}>{ownerQuestionText.decline}</button>
+          </div>
+        </section>)}
 
         {activeSection === "overview" && !state.onboardingComplete && <section className="panel onboarding-panel">
           {state.contextAnalysis?.status !== "ready" && <div className="onboarding-intro"><p>{onboardingText.lead}</p></div>}

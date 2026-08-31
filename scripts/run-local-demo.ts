@@ -20,6 +20,7 @@ const response = (
 ): AgentResponse => ({
   message_to_peer,
   status,
+  owner_question: "",
   topics: ["предсказуемость и гибкость"],
   private_report,
   shared_summary,

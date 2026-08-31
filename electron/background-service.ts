@@ -13,7 +13,7 @@ import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coor
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
-import { AtomicStore, type AppLanguage, type OwnerId } from "./store.js";
+import { AtomicStore, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion } from "./store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +39,14 @@ interface DialoguePayload {
   senderName?: string;
 }
 
+interface OwnerQuestionView {
+  id: string;
+  topic: string;
+  question: string;
+  createdAt: string;
+  peerName?: string;
+}
+
 export class BackgroundService {
   private running = false;
   private remote?: SupabaseTransport;
@@ -48,6 +56,7 @@ export class BackgroundService {
   private remoteBusy = false;
   private readonly remoteAgents = new Map<string, AgentRuntime>();
   private readonly remoteMessages = new Map<string, Array<{ from: "dima" | "katya"; text: string }>>();
+  private readonly answeringQuestions = new Set<string>();
 
   private static readonly supabaseUrl = "https://knqaygvvqrwmtyqucbsz.supabase.co";
   private static readonly supabaseKey = "sb_publishable_igxXq8mdFjW-wKJGSKhtnA_iINygezS";
@@ -57,10 +66,12 @@ export class BackgroundService {
     private readonly resourcesPath: string,
     private readonly store: AtomicStore,
     private readonly windowProvider: () => BrowserWindow | null,
+    private readonly ownerQuestionNotifier: () => void = () => undefined,
   ) {}
 
   async state() {
     const stored = await this.store.read();
+    const { pendingOwnerQuestions, ...publicStored } = stored;
     const codex = await this.codexStatus();
     let connected = false;
     if (stored.remote && this.remote) {
@@ -79,7 +90,8 @@ export class BackgroundService {
     const context = this.readContextSource();
     const contextAnalysis = this.readContextAnalysis();
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
-    return { ...stored, codex, running: this.running, memory, context, contextAnalysis, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
+    return { ...publicStored, ownerQuestions, codex, running: this.running, memory, context, contextAnalysis, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   async listContextThreads() {
@@ -387,6 +399,10 @@ export class BackgroundService {
     const conversationId = randomUUID();
     const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName);
     const response = await agent.start(`Предложи второму семейному агенту обсудить тему: ${topic}`);
+    if (this.hasOwnerQuestion(response)) {
+      await this.queueOwnerQuestion({ conversationId, topic, question: response.owner_question, peerName: stored.remote.peerName, nextSequence: 1, transcript: [] });
+      return;
+    }
     this.remoteMessages.set(conversationId, [{ from: stored.owner, text: response.message_to_peer }]);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
       payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
@@ -506,9 +522,15 @@ export class BackgroundService {
       const isFirst = !this.remoteMessages.has(envelope.conversation_id);
       const response = isFirst ? await agent.start(envelope.payload.text) : await agent.respond(envelope.payload.text);
       const messages = this.remoteMessages.get(envelope.conversation_id) ?? [];
-      messages.push({ from: envelope.sender_agent as "dima" | "katya", text: envelope.payload.text }, { from: stored.owner, text: response.message_to_peer });
+      messages.push({ from: envelope.sender_agent as "dima" | "katya", text: envelope.payload.text });
       this.remoteMessages.set(envelope.conversation_id, messages);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: envelope.payload.text, turn: envelope.sequence_number });
+      if (this.hasOwnerQuestion(response)) {
+        await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: envelope.payload.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
+      messages.push({ from: stored.owner, text: response.message_to_peer });
       if (envelope.payload.status !== "complete" && envelope.sequence_number < 8) {
         const me = await this.remote.identity();
         const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
@@ -524,6 +546,97 @@ export class BackgroundService {
       }
     } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
     finally { this.remoteBusy = false; }
+  }
+
+  private hasOwnerQuestion(response: AgentResponse) {
+    return response.status === "paused" && Boolean(response.owner_question.trim());
+  }
+
+  private publicOwnerQuestions(questions: PendingOwnerQuestion[]): OwnerQuestionView[] {
+    return questions.map(({ transcript: _transcript, nextSequence: _nextSequence, conversationId: _conversationId, ...question }) => question);
+  }
+
+  private async queueOwnerQuestion(question: Omit<PendingOwnerQuestion, "id" | "createdAt">) {
+    const stored = await this.store.read();
+    const existing = stored.pendingOwnerQuestions.find((item) => item.conversationId === question.conversationId);
+    const pending: PendingOwnerQuestion = {
+      ...question,
+      id: existing?.id ?? randomUUID(),
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      transcript: question.transcript.map((message) => ({ ...message })),
+    };
+    const pendingOwnerQuestions = [...stored.pendingOwnerQuestions.filter((item) => item.conversationId !== question.conversationId), pending];
+    await this.store.update({ pendingOwnerQuestions });
+    this.emit({ type: "owner-questions", questions: this.publicOwnerQuestions(pendingOwnerQuestions) });
+    this.ownerQuestionNotifier();
+  }
+
+  async answerOwnerQuestion(input: unknown) {
+    const value = input && typeof input === "object"
+      ? input as { id?: unknown; disposition?: unknown; answer?: unknown }
+      : {};
+    const id = typeof value.id === "string" ? value.id : "";
+    const disposition = value.disposition as OwnerQuestionDisposition;
+    const answer = typeof value.answer === "string" ? value.answer.trim() : "";
+    if (!id || !["answer", "unknown", "decline"].includes(disposition)) throw new Error("Не удалось распознать ответ");
+    if (disposition === "answer" && !answer) throw new Error("Введите ответ или выберите «Не знаю»");
+    if (this.answeringQuestions.has(id)) throw new Error("Ответ уже обрабатывается");
+    this.answeringQuestions.add(id);
+    try {
+      const stored = await this.store.read();
+      const pending = stored.pendingOwnerQuestions.find((item) => item.id === id);
+      if (!pending) return this.state();
+      if (!stored.remote || !this.remote) throw new Error("Сначала восстановите соединение со вторым компьютером");
+      const pair = await this.remote.pairState(stored.remote.pairId);
+      const me = await this.remote.identity();
+      const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
+      if (!recipientId) throw new Error("Второй участник сейчас не подключён");
+
+      const reply = disposition === "answer"
+        ? `Владелец ответил на твой локальный вопрос: ${answer}`
+        : disposition === "unknown"
+          ? "Владелец ответил: «Не знаю». Больше не задавай этот вопрос и продолжи с условным выводом."
+          : "Владелец не хочет отвечать на этот вопрос. Уважай границу, не задавай его снова и продолжи без этого факта.";
+      const privacyInstruction = "Используй ответ только для собственного рассуждения. Второму агенту передай лишь минимально необходимый вывод своими словами: не цитируй сырой ответ и не сообщай лишние личные детали. owner_question оставь пустым, если нового действительно необходимого вопроса нет.";
+      const existingAgent = this.remoteAgents.get(pending.conversationId);
+      const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName);
+      const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
+      const response = existingAgent
+        ? await (agent.respondToOwner?.(`${reply}\n\n${privacyInstruction}`) ?? agent.respond(`${reply}\n\n${privacyInstruction}`))
+        : await agent.start(`Возобнови поставленный на паузу разговор по теме «${pending.topic}».\n\nУже переданные между агентами реплики:\n${transcript}\n\nТвой локальный вопрос был: ${pending.question}\n${reply}\n\n${privacyInstruction}`);
+
+      if (this.hasOwnerQuestion(response)) {
+        await this.queueOwnerQuestion({
+          conversationId: pending.conversationId,
+          topic: pending.topic,
+          question: response.owner_question,
+          peerName: pending.peerName,
+          nextSequence: pending.nextSequence,
+          transcript: pending.transcript,
+        });
+        return this.state();
+      }
+
+      await this.remote.send({
+        pairId: pair.id,
+        conversationId: pending.conversationId,
+        sequence: pending.nextSequence,
+        recipientId,
+        senderAgent: stored.owner,
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload,
+        idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,
+      });
+      const messages = [...pending.transcript, { from: stored.owner, text: response.message_to_peer }];
+      this.remoteMessages.set(pending.conversationId, messages);
+      const pendingOwnerQuestions = stored.pendingOwnerQuestions.filter((item) => item.id !== id);
+      await this.store.update({ pendingOwnerQuestions });
+      this.emit({ type: "owner-questions", questions: this.publicOwnerQuestions(pendingOwnerQuestions) });
+      this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: pending.nextSequence });
+      if (response.status === "complete") await this.saveRemoteReport(pending.conversationId, pending.topic, response.shared_summary, messages);
+      return this.state();
+    } finally {
+      this.answeringQuestions.delete(id);
+    }
   }
 
   private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>) {
@@ -590,7 +703,7 @@ export class BackgroundService {
     }
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "topics"; topics: string[] }) {
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "topics"; topics: string[] } | { type: "owner-questions"; questions: OwnerQuestionView[] }) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 
@@ -644,6 +757,7 @@ export class BackgroundService {
     ): AgentResponse => ({
       message_to_peer,
       status,
+      owner_question: "",
       topics: ["ручная тема"],
       private_report,
       shared_summary,
