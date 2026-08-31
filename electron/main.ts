@@ -1,11 +1,12 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
-import { autoUpdater } from "electron-updater";
+import electronUpdater from "electron-updater";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BackgroundService } from "./background-service.js";
 import { AtomicStore } from "./store.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+const { autoUpdater } = electronUpdater;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BackgroundService;
