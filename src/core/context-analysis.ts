@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 export interface ContextPerson {
   id: string;
@@ -103,7 +104,7 @@ export class CodexContextAnalyzer {
     const total = chunks.length + (chunks.length > 1 ? 1 : 0);
     let completed = 0;
     const rawParts = await this.mapConcurrent(chunks, 2, async (transcript) => {
-      const raw = await this.run(this.analysisPrompt(input.ownerName, input.language, transcript));
+      const raw = await this.runCached(this.analysisPrompt(input.ownerName, input.language, transcript));
       completed += 1;
       await input.onProgress?.({ stage: "analyzing", current: completed, total });
       return raw;
@@ -140,12 +141,24 @@ ${transcript}`;
         await this.consolidate(parts.slice(middle), language),
       ], language);
     }
-    return this.run(`Объедини результаты анализа частей одного личного чата в единый реестр людей и тем.
+    return this.runCached(`Объедини результаты анализа частей одного личного чата в единый реестр людей и тем.
 
 Одинаковых людей объедини, сохранив известные имена, роли и aliases. Удали только настоящие дубликаты тем. Не склеивай разные конфликты, потребности и договорённости в одну общую формулировку. Сохрани все различимые темы из всех частей. about_people и discuss_with должны ссылаться только на итоговые key людей. Пересчитай sensitivity: cross_person, если тема хотя бы об одном человеке, отличном от discuss_with; direct, если она только об адресате; unclear, если уверенности недостаточно. Не добавляй новых фактов. Язык: ${language}.
 
 Верни только JSON по схеме. Частичные результаты:
 ${serialized}`);
+  }
+
+  private async runCached(prompt: string): Promise<RawAnalysis> {
+    const key = createHash("sha256").update(prompt).digest("hex");
+    const file = path.join(this.workspace, `analysis-${key}.json`);
+    try { return JSON.parse(await readFile(file, "utf8")) as RawAnalysis; }
+    catch { /* a missing or invalid partial result is recalculated */ }
+    const result = await this.run(prompt);
+    const temporary = `${file}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(result), "utf8");
+    await rename(temporary, file);
+    return result;
   }
 
   private async mapConcurrent<T, R>(items: T[], concurrency: number, operation: (item: T) => Promise<R>): Promise<R[]> {
@@ -169,7 +182,7 @@ ${serialized}`);
       const timeout = setTimeout(() => {
         child.kill();
         reject(new Error("Codex context analysis timed out"));
-      }, 15 * 60_000);
+      }, 30 * 60_000);
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });

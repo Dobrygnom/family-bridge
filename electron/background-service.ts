@@ -188,6 +188,7 @@ export class BackgroundService {
       const analysis = await analyzer.analyze({
         sourceId, sourceHash, ownerName: stored.displayName, language: stored.language, messages, previous,
         onProgress: async (progress) => {
+          analyzing.progress = progress;
           const progressing: ContextAnalysis = { ...analyzing, progress };
           await this.writeContextAnalysis(progressing);
           this.emit({ type: "context-analysis", analysis: progressing });
