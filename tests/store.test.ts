@@ -5,18 +5,20 @@ import path from "node:path";
 import test from "node:test";
 import { AtomicStore } from "../electron/store.js";
 
-test("identity starts unconfigured and explicit choices persist", async () => {
+test("identity starts unconfigured and an explicit display name persists", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-test-"));
   try {
     const store = new AtomicStore(directory);
     const initial = await store.read();
     assert.equal(initial.identityConfigured, false);
+    assert.equal(initial.displayName, "");
     assert.equal(initial.language, "ru");
 
-    await store.update({ owner: "katya", identityConfigured: true, language: "cs" });
+    await store.update({ owner: "katya", identityConfigured: true, displayName: "Катя", language: "cs" });
     const persisted = await new AtomicStore(directory).read();
     assert.equal(persisted.owner, "katya");
     assert.equal(persisted.identityConfigured, true);
+    assert.equal(persisted.displayName, "Катя");
     assert.equal(persisted.language, "cs");
   } finally {
     await rm(directory, { recursive: true, force: true });

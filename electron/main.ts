@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
     await store.update({ autoStart: enabled });
     return service.state();
   });
-  ipcMain.handle("bridge:set-owner", (_event, owner: unknown) => service.setOwner(owner));
+  ipcMain.handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
   ipcMain.handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
   ipcMain.handle("bridge:open-reports", async () => {
     const reports = path.join(app.getPath("userData"), "reports");

@@ -19,12 +19,14 @@ interface CodexJsonEvent {
 export interface CodexRuntimeOptions {
   id: AgentId;
   displayName: string;
+  ownerName?: string;
+  peerName?: string;
   perspective: string;
   workspace: string;
   schemaPath: string;
   codexCommand?: string;
   language?: "ru" | "en" | "cs" | "fr";
-  communicationStyle?: string;
+  communicationExamples?: string;
 }
 
 const languageNames = { ru: "русском", en: "английском", cs: "чешском", fr: "французском" } as const;
@@ -47,11 +49,11 @@ const SYSTEM_RULES = `
 `;
 
 export function buildInitialPrompt(options: CodexRuntimeOptions, initialPrompt: string): string {
-  const ownerName = options.id === "dima" ? "Дима" : "Катя";
-  const peerName = options.id === "dima" ? "Катя" : "Дима";
+  const ownerName = options.ownerName ?? (options.id === "dima" ? "Дима" : "Катя");
+  const peerName = options.peerName ?? (options.id === "dima" ? "Катя" : "Дима");
   const language = options.language ?? "ru";
-  const style = options.communicationStyle ?? "Профиль манеры общения отсутствует: используй спокойный, прямой и естественный тон.";
-  return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена Дима и Катя не переводи.\n\nМанера общения ${ownerName}:\n${style}\nАдаптируй тон, длину фраз, прямоту, лексику, пунктуацию и уместный юмор по этому профилю. Не копируй чувствительные высказывания дословно, не изображай владельца и не переноси факты из примеров стиля в текущий разговор.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+  const examples = options.communicationExamples ?? "Примеры отсутствуют: используй спокойный, прямой и естественный тон.";
+  return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения и уместный юмор. Веди текущий разговор в узнаваемой манере, но не копируй чувствительные высказывания дословно, не изображай владельца и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
 }
 
 export class CodexCliAgent implements AgentRuntime {

@@ -7,6 +7,7 @@ export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export interface StoredState {
   owner: OwnerId;
   identityConfigured: boolean;
+  displayName: string;
   language: AppLanguage;
   autoStart: boolean;
   pendingTopics: string[];
@@ -17,12 +18,14 @@ export interface StoredState {
     pairId: string;
     encryptionSecret: string;
     inviteSecret?: string;
+    peerName?: string;
   };
 }
 
 const defaults: StoredState = {
   owner: "dima",
   identityConfigured: false,
+  displayName: "",
   language: "ru",
   autoStart: true,
   pendingTopics: [],

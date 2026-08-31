@@ -3,6 +3,7 @@ import type { ConversationReport } from "./core/types.js";
 export interface AppState {
   owner: "dima" | "katya";
   identityConfigured: boolean;
+  displayName: string;
   language: "ru" | "en" | "cs" | "fr";
   autoStart: boolean;
   pendingTopics: string[];
@@ -11,7 +12,7 @@ export interface AppState {
   lastConversationAt?: string;
   running: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
-  remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string };
+  remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string };
   memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };
   update: { available: boolean; version?: string; downloading: boolean };
 }
@@ -24,7 +25,7 @@ declare global {
       addTopic(topic: string): Promise<AppState>;
       blockTopic(topic: string): Promise<AppState>;
       setAutoStart(enabled: boolean): Promise<AppState>;
-      setOwner(owner: "dima" | "katya"): Promise<AppState>;
+      setDisplayName(name: string): Promise<AppState>;
       setLanguage(language: "ru" | "en" | "cs" | "fr"): Promise<AppState>;
       openReports(): Promise<void>;
       createPair(): Promise<AppState>;

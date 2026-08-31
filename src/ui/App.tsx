@@ -22,6 +22,7 @@ import { languageNames, translations, type Language } from "./i18n.js";
 const fallback: AppState = {
   owner: "dima",
   identityConfigured: false,
+  displayName: "",
   language: "ru",
   autoStart: true,
   pendingTopics: ["Как сделать бытовые договорённости спокойнее"],
@@ -46,14 +47,15 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
   const deviceText = {
-    ru: { identity: "Кто есть кто", local: "этот компьютер", partner: "компьютер партнёра", question: "Кто пользуется этим компьютером?", hint: "Выберите себя. На втором компьютере партнёр выберет себя отдельно.", dima: "Я — Дима", katya: "Я — Катя" },
-    en: { identity: "Who is who", local: "this computer", partner: "partner computer", question: "Who uses this computer?", hint: "Choose yourself. Your partner will choose themselves on the other computer.", dima: "I'm Dima", katya: "I'm Katya" },
-    cs: { identity: "Kdo je kdo", local: "tento počítač", partner: "počítač partnera", question: "Kdo používá tento počítač?", hint: "Vyberte sebe. Partner se vybere samostatně na druhém počítači.", dima: "Jsem Dima", katya: "Jsem Katya" },
-    fr: { identity: "Qui est qui", local: "cet ordinateur", partner: "ordinateur du partenaire", question: "Qui utilise cet ordinateur ?", hint: "Choisissez-vous. Votre partenaire fera son choix sur l'autre ordinateur.", dima: "Je suis Dima", katya: "Je suis Katya" },
+    ru: { identity: "Участники", local: "этот компьютер", partner: "компьютер партнёра", question: "Как вас называть?", hint: "Это имя увидит только партнёрский агент. Его можно изменить в настройках.", placeholder: "Ваше имя", save: "Сохранить", partnerName: "Агент партнёра", agent: "Агент" },
+    en: { identity: "Participants", local: "this computer", partner: "partner computer", question: "What should we call you?", hint: "Only your partner's agent will see this name. You can change it in settings.", placeholder: "Your name", save: "Save", partnerName: "Partner's agent", agent: "Agent" },
+    cs: { identity: "Účastníci", local: "tento počítač", partner: "počítač partnera", question: "Jak vám máme říkat?", hint: "Toto jméno uvidí pouze agent partnera. Lze ho změnit v nastavení.", placeholder: "Vaše jméno", save: "Uložit", partnerName: "Agent partnera", agent: "Agent" },
+    fr: { identity: "Participants", local: "cet ordinateur", partner: "ordinateur du partenaire", question: "Comment devons-nous vous appeler ?", hint: "Seul l'agent de votre partenaire verra ce nom. Vous pourrez le modifier.", placeholder: "Votre prénom", save: "Enregistrer", partnerName: "Agent du partenaire", agent: "Agent" },
   }[language];
 
   function goTo(section: SectionId) {
@@ -62,7 +64,7 @@ export function App() {
   }
 
   function agentLabel(from?: string) {
-    const name = from === "dima" ? t.agentDima : t.agentKatya;
+    const name = from === state.owner ? `${deviceText.agent} ${state.displayName}` : (state.remote.peerName ? `${deviceText.agent} ${state.remote.peerName}` : deviceText.partnerName);
     return from === state.owner ? `${name} · ${deviceText.local}` : `${name} · ${deviceText.partner}`;
   }
 
@@ -79,15 +81,17 @@ export function App() {
       const next = saved && saved !== current.language ? await api.setLanguage(saved) : current;
       setState(next);
       setLanguage(next.language);
+      setDisplayName(next.displayName);
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; from?: string; text?: string; status?: string; available?: boolean; version?: string; downloading?: boolean };
+      const event = raw as { type?: string; from?: string; text?: string; status?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string };
       if (event.type === "message" && event.text) {
         setTimeline((items) => [...items, { type: "message", from: event.from, text: event.text! }]);
       }
       if (event.type === "status" && event.status) {
         setTimeline((items) => [...items, { type: "status", text: event.status! }]);
       }
+      if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "update") setState((current) => ({ ...current, update: { available: Boolean(event.available), version: event.version, downloading: Boolean(event.downloading) } }));
     });
   }, [api]);
@@ -178,13 +182,13 @@ export function App() {
 
         {(activeSection === "overview" || activeSection === "settings") && <section className="panel pairing-panel screen-panel" id="settings">
           <div className="panel-title"><div><p className="eyebrow">{t.connection}</p><h3>{state.remote.connected ? t.agentsConnected : t.linkComputers}</h3></div><Radio size={20} /></div>
-          {(!state.identityConfigured || activeSection === "settings") && <div className="identity-setup"><strong>{deviceText.question}</strong><span>{deviceText.hint}</span><div><button className={state.identityConfigured && state.owner === "dima" ? "primary" : "ghost"} onClick={async () => api && setState(await api.setOwner("dima"))}>{deviceText.dima}</button><button className={state.identityConfigured && state.owner === "katya" ? "primary" : "ghost"} onClick={async () => api && setState(await api.setOwner("katya"))}>{deviceText.katya}</button></div></div>}
+          {(!state.identityConfigured || activeSection === "settings") && <div className="identity-setup"><strong>{deviceText.question}</strong><span>{deviceText.hint}</span><div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} onKeyDown={async (e) => { if (e.key === "Enter" && api && displayName.trim()) setState(await api.setDisplayName(displayName)); }} /><button className="primary" disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div></div>}
           {state.identityConfigured && <>
             {!state.remote.configured && <button className="primary" onClick={async () => api && setState(await api.createPair())}>{t.createInvite}</button>}
             {state.remote.invite && <><p className="muted">{t.shareCode}</p><textarea readOnly value={state.remote.invite} onFocus={(e) => e.currentTarget.select()} /></>}
             {!state.remote.connected && <div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button onClick={async () => api && setState(await api.joinPair(inviteCode))}>{t.connect}</button></div>}
             {state.remote.connected && <p className="muted">{t.channelActive}</p>}
-            <div className="identity-card"><strong>{deviceText.identity}</strong><span>{state.owner === "dima" ? t.agentDima : t.agentKatya} · {deviceText.local}</span><span>{state.owner === "dima" ? t.agentKatya : t.agentDima} · {deviceText.partner}</span></div>
+            <div className="identity-card"><strong>{deviceText.identity}</strong><span>{deviceText.agent} {state.displayName} · {deviceText.local}</span><span>{state.remote.peerName ? `${deviceText.agent} ${state.remote.peerName}` : deviceText.partnerName} · {deviceText.partner}</span></div>
           </>}
           {activeSection === "settings" && <div className="settings-actions"><label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label><button onClick={() => void api?.checkForUpdates()}>Проверить обновления</button><small>{state.update.available ? `Доступна версия ${state.update.version}` : "Установлена актуальная версия"}</small></div>}
         </section>}
