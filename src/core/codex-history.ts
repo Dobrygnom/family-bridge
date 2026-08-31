@@ -88,8 +88,17 @@ export class CodexHistoryClient {
     const lines = readline.createInterface({ input: child.stdout });
     let nextId = 1;
     let stderr = "";
+    let processError: Error | undefined;
     const pending = new Map<number, { resolve: (value: JsonObject) => void; reject: (reason: Error) => void }>();
+    const rejectPending = (error: Error) => {
+      for (const waiting of pending.values()) waiting.reject(error);
+      pending.clear();
+    };
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-8_000); });
+    child.once("error", (error) => {
+      processError = error;
+      rejectPending(error);
+    });
     lines.on("line", (line) => {
       try {
         const message = JSON.parse(line) as { id?: number; result?: JsonObject; error?: { message?: string } };
@@ -102,17 +111,25 @@ export class CodexHistoryClient {
       } catch { /* ignore non-protocol output */ }
     });
     const request = (method: string, params: JsonObject = {}) => new Promise<JsonObject>((resolve, reject) => {
+      if (processError) {
+        reject(processError);
+        return;
+      }
       const id = nextId++;
       pending.set(id, { resolve, reject });
-      child.stdin.write(`${JSON.stringify({ method, id, params })}\n`);
+      child.stdin.write(`${JSON.stringify({ method, id, params })}\n`, (error) => {
+        if (!error) return;
+        const waiting = pending.get(id);
+        pending.delete(id);
+        waiting?.reject(error);
+      });
     });
     const timeout = setTimeout(() => {
-      for (const waiting of pending.values()) waiting.reject(new Error(`Codex app-server timeout. ${stderr}`));
-      pending.clear();
+      rejectPending(new Error(`Codex app-server timeout. ${stderr}`));
       child.kill();
     }, 30_000);
     try {
-      await request("initialize", { clientInfo: { name: "family_bridge", title: "Family Bridge", version: "0.3.3" } });
+      await request("initialize", { clientInfo: { name: "family_bridge", title: "Family Bridge", version: "0.3.4" } });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
       return await operation(request);
     } finally {

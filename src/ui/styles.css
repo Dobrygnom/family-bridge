@@ -54,6 +54,7 @@ section[id] { scroll-margin-top: 24px; }
 .settings-actions button { width: max-content; border: 0; border-radius: 9px; padding: 9px 12px; background: #29443f; color: #bfe9db; }
 .memory-status strong { color: #80d6b7; }
 .context-current { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.context-panel { min-height: 360px; }
 .context-current div { display: grid; gap: 4px; padding: 11px 12px; border-radius: 10px; background: #111f28; }
 .context-current span { color: #718991; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .context-current strong { color: #d8e8e3; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

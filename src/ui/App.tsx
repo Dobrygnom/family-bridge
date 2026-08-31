@@ -36,7 +36,7 @@ const fallback: AppState = {
 };
 
 type TimelineItem = { from?: string; text: string; type: "message" | "status" };
-type SectionId = "overview" | "topics" | "conversation" | "reports" | "memory" | "settings";
+type SectionId = "overview" | "context" | "topics" | "conversation" | "reports" | "memory" | "settings";
 
 export function App() {
   const [state, setState] = useState<AppState>(fallback);
@@ -70,6 +70,7 @@ export function App() {
 
   function goTo(section: SectionId) {
     setActiveSection(section);
+    if (section === "context" && !contextThreads.length) void loadContextThreads();
     window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
@@ -186,6 +187,7 @@ export function App() {
         <div className="brand"><MessageCircleHeart size={25} /><span>Family Bridge</span></div>
         <nav>
           <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} />{t.overview}</button>
+          <button className={activeSection === "context" ? "active" : ""} onClick={() => goTo("context")}><BookHeart size={18} />{t.context}</button>
           <button className={activeSection === "topics" ? "active" : ""} onClick={() => goTo("topics")}><Sparkles size={18} />{t.topics}</button>
           <button className={activeSection === "conversation" ? "active" : ""} onClick={() => goTo("conversation")}><Radio size={18} />{t.conversation}</button>
           <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{t.reports}</button>
@@ -232,7 +234,7 @@ export function App() {
         </section>}
 
         <div className={`grid ${activeSection !== "overview" ? "single-screen" : ""}`}>
-          {(activeSection === "overview" || activeSection === "memory") && <section className="panel context-panel">
+          {activeSection === "context" && <section className="panel context-panel">
             <div className="panel-title"><div><p className="eyebrow">{contextText.eyebrow}</p><h3>{contextText.title}</h3></div><BookHeart size={20} /></div>
             {state.context ? <div className="context-current">
               <div><span>{contextText.project}</span><strong>{state.context.project}</strong></div>

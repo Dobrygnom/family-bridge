@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -153,17 +153,41 @@ export class CodexCliAgent implements AgentRuntime {
   }
 }
 
+export function selectWindowsCodexCommand(matches: string[]): string {
+  const normalized = matches.map((candidate) => candidate.trim()).filter(Boolean);
+  return normalized.find((candidate) => candidate.toLowerCase().endsWith(".exe"))
+    ?? normalized.find((candidate) => candidate.toLowerCase().endsWith(".cmd"))
+    ?? normalized.find((candidate) => candidate.toLowerCase().endsWith(".bat"))
+    ?? "codex.cmd";
+}
+
+export function findWindowsCodexExecutable(localAppData = process.env.LOCALAPPDATA): string | undefined {
+  if (!localAppData) return undefined;
+  const binRoot = path.join(localAppData, "OpenAI", "Codex", "bin");
+  const candidates = [path.join(binRoot, "codex.exe")];
+  try {
+    for (const entry of readdirSync(binRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) candidates.push(path.join(binRoot, entry.name, "codex.exe"));
+    }
+  } catch { /* Codex Desktop may not be installed */ }
+  return candidates
+    .filter((candidate) => existsSync(candidate))
+    .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0];
+}
+
 export function defaultCodexCommand(): string {
   if (process.env.CODEX_CLI_PATH && existsSync(process.env.CODEX_CLI_PATH)) {
     return process.env.CODEX_CLI_PATH;
   }
   if (process.platform === "win32") {
+    const desktopExecutable = findWindowsCodexExecutable();
+    if (desktopExecutable) return desktopExecutable;
     try {
       const matches = execFileSync("where.exe", ["codex"], { encoding: "utf8" })
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
-      return matches.find((candidate) => candidate.toLowerCase().endsWith(".exe")) ?? matches[0] ?? "codex.cmd";
+      return selectWindowsCodexCommand(matches);
     } catch {
       return "codex.cmd";
     }
