@@ -47,11 +47,34 @@ interface OwnerQuestionView {
   peerName?: string;
 }
 
+const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
+
+function timestampMs(value: number | undefined) {
+  if (!Number.isFinite(value)) return Number.NaN;
+  return value! < 10_000_000_000 ? value! * 1_000 : value!;
+}
+
+export function contextNeedsSync(
+  selected: Pick<ContextSource, "status" | "lastSyncedAt" | "updatedAt">,
+  latest: Pick<ContextThread, "updatedAt"> | undefined,
+  now = Date.now(),
+) {
+  if (selected.status !== "ready") return true;
+  const lastSyncedAt = selected.lastSyncedAt ? Date.parse(selected.lastSyncedAt) : Number.NaN;
+  const baseline = Number.isFinite(timestampMs(selected.updatedAt)) ? timestampMs(selected.updatedAt) : lastSyncedAt;
+  const latestUpdate = timestampMs(latest?.updatedAt);
+  if (Number.isFinite(latestUpdate) && Number.isFinite(baseline)) return latestUpdate > baseline + 1_000;
+  return !Number.isFinite(lastSyncedAt) || now - lastSyncedAt >= contextFallbackRefreshMs;
+}
+
 export class BackgroundService {
   private running = false;
   private remote?: SupabaseTransport;
   private remoteTimer?: NodeJS.Timeout;
   private contextTimer?: NodeJS.Timeout;
+  private contextSyncing = false;
+  private contextSyncProgress = 0;
+  private contextCheckBusy = false;
   private syncedTopicsForPair?: string;
   private remoteBusy = false;
   private readonly remoteAgents = new Map<string, AgentRuntime>();
@@ -91,7 +114,7 @@ export class BackgroundService {
     const contextAnalysis = this.readContextAnalysis();
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
-    return { ...publicStored, ownerQuestions, codex, running: this.running, memory, context, contextAnalysis, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    return { ...publicStored, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: { available: false, downloading: false }, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   async listContextThreads() {
@@ -119,34 +142,51 @@ export class BackgroundService {
     return this.syncContext();
   }
 
-  async syncContext() {
+  async syncContext(latestThread?: ContextThread) {
     const selected = this.readContextSource();
     if (!selected?.id) throw new Error("Сначала выберите базовый чат");
+    const refreshingReadyContext = selected.status === "ready" && Boolean(selected.lastSyncedAt);
+    if (refreshingReadyContext) {
+      this.updateContextSync(true, 5);
+    }
     try {
       const messages = selected.source === "chatgpt"
         ? await this.readChatGptMessages(selected.id)
         : await new CodexHistoryClient(defaultCodexCommand()).readUserMessages(selected.id);
+      if (refreshingReadyContext) this.updateContextSync(true, 35);
       const memoryRoot = path.join(this.userData, "psychologist-memory");
       await mkdir(memoryRoot, { recursive: true });
       const samples = path.join(memoryRoot, "style-samples.jsonl");
       const temporary = `${samples}.tmp`;
       await writeFile(temporary, messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
       await rename(temporary, samples);
-      const completed: ContextSource = { ...selected, lastSyncedAt: new Date().toISOString(), messageCount: messages.length, status: "ready", error: undefined };
+      const completed: ContextSource = { ...selected, ...latestThread, lastSyncedAt: new Date().toISOString(), messageCount: messages.length, status: "ready", error: undefined };
       await this.writeContextSource(completed);
       this.emit({ type: "context", context: completed });
       const hash = contextSourceHash(messages);
       const previous = this.readContextAnalysis();
+      if (refreshingReadyContext) this.updateContextSync(true, 50);
       if (contextAnalysisNeedsRefresh(previous, selected.id, hash)) {
         await this.analyzeContext(selected.id, hash, messages, previous?.sourceId === selected.id ? previous : undefined);
       }
+      if (refreshingReadyContext) this.updateContextSync(true, 100);
       return this.state();
     } catch (error) {
       const failed: ContextSource = { ...selected, status: "error", error: error instanceof Error ? error.message : String(error) };
       await this.writeContextSource(failed);
       this.emit({ type: "context", context: failed });
       throw error;
+    } finally {
+      if (refreshingReadyContext) {
+        this.updateContextSync(false, 0);
+      }
     }
+  }
+
+  private updateContextSync(syncing: boolean, progress: number) {
+    this.contextSyncing = syncing;
+    this.contextSyncProgress = Math.max(0, Math.min(100, Math.round(progress)));
+    this.emit({ type: "context-sync", syncing, progress: this.contextSyncProgress });
   }
 
   private async readChatGptMessages(threadId: string) {
@@ -204,6 +244,10 @@ export class BackgroundService {
           const progressing: ContextAnalysis = { ...analyzing, progress };
           await this.writeContextAnalysis(progressing);
           this.emit({ type: "context-analysis", analysis: progressing });
+          if (this.contextSyncing) {
+            const ratio = progress.total > 0 ? progress.current / progress.total : 0;
+            this.updateContextSync(true, 50 + ratio * 45);
+          }
         },
       });
       await this.writeContextAnalysis(analysis);
@@ -276,9 +320,26 @@ export class BackgroundService {
   async start() {
     const state = await this.store.read();
     if (state.remote) this.configureRemote(state.remote.encryptionSecret);
-    if (this.readContextSource()?.id) {
-      void this.syncContext().catch(() => undefined);
-      this.contextTimer = setInterval(() => void this.syncContext().catch(() => undefined), 6 * 60 * 60 * 1_000);
+    const context = this.readContextSource();
+    if (context?.id) {
+      setTimeout(() => void this.checkContextForUpdates(), 5_000);
+      this.contextTimer = setInterval(() => void this.checkContextForUpdates(), 60_000);
+    }
+  }
+
+  private async checkContextForUpdates() {
+    if (this.contextCheckBusy || this.contextSyncing) return;
+    const selected = this.readContextSource();
+    if (!selected?.id) return;
+    this.contextCheckBusy = true;
+    try {
+      const threads = await this.listContextThreads();
+      const latest = threads.find((thread) => thread.id === selected.id);
+      if (contextNeedsSync(selected, latest)) await this.syncContext(latest);
+    } catch (error) {
+      this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      this.contextCheckBusy = false;
     }
   }
 
@@ -703,7 +764,7 @@ export class BackgroundService {
     }
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "topics"; topics: string[] } | { type: "owner-questions"; questions: OwnerQuestionView[] }) {
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "topics"; topics: string[] } | { type: "owner-questions"; questions: OwnerQuestionView[] }) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 

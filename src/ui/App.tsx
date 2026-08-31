@@ -31,6 +31,8 @@ const fallback: AppState = {
   reports: [],
   ownerQuestions: [],
   running: false,
+  contextSyncing: false,
+  contextSyncProgress: 0,
   codex: { installed: true, authenticated: true, version: "preview mode" },
   remote: { configured: false, connected: false },
   memory: { configured: false, messageCount: 0 },
@@ -105,6 +107,12 @@ export function App() {
     cs: { eyebrow: "JE POTŘEBA VAŠE ODPOVĚĎ", title: "Agent nechce hádat", paused: "Rozhovor je pozastaven", privacy: "Původní odpověď obdrží pouze váš agent. Druhý agent dostane jen opatrně formulovaný závěr.", placeholder: "Vaše odpověď", answer: "Odpovědět a pokračovat", unknown: "Nevím", decline: "Nechci odpovědět", processing: "Pokračujeme v rozhovoru…" },
     fr: { eyebrow: "VOTRE RÉPONSE EST NÉCESSAIRE", title: "L’agent ne veut pas deviner", paused: "La conversation est en pause", privacy: "Seul votre agent reçoit la réponse brute. L’autre agent reçoit uniquement une conclusion reformulée avec précaution.", placeholder: "Votre réponse", answer: "Répondre et continuer", unknown: "Je ne sais pas", decline: "Je ne veux pas répondre", processing: "Reprise de la conversation…" },
   }[language];
+  const contextRefreshText = {
+    ru: { title: "Ваш контекст на месте", body: "Проверяем, появились ли в выбранном чате новые сообщения. Уже найденные люди и темы не сбрасываются." },
+    en: { title: "Your context is still here", body: "Checking the selected chat for new messages. Existing people and topics are not being reset." },
+    cs: { title: "Váš kontext zůstává zachován", body: "Kontrolujeme nové zprávy ve vybraném chatu. Již nalezené osoby a témata se nemažou." },
+    fr: { title: "Votre contexte est toujours là", body: "Nous vérifions les nouveaux messages du chat sélectionné. Les personnes et sujets déjà trouvés ne sont pas réinitialisés." },
+  }[language];
   const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
 
   function goTo(section: SectionId) {
@@ -132,7 +140,7 @@ export function App() {
       setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean };
+      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -145,6 +153,7 @@ export function App() {
         setState((current) => ({ ...current, ownerQuestions: event.questions! }));
         if (event.questions.length) setActiveSection("overview");
       }
+      if (event.type === "context-sync") setState((current) => ({ ...current, contextSyncing: Boolean(event.syncing), contextSyncProgress: event.progress ?? 0 }));
       if (event.type === "runtime") { setBusy(Boolean(event.running)); setState((current) => ({ ...current, running: Boolean(event.running) })); }
       if (event.type === "update") setState((current) => ({ ...current, update: { available: Boolean(event.available), version: event.version, downloading: Boolean(event.downloading) } }));
     });
@@ -222,14 +231,6 @@ export function App() {
     setContextLoading(true); setError("");
     setState((current) => ({ ...current, contextAnalysis: undefined }));
     try { setState(await api.selectContextThread(selectedContextId)); setShowContextPicker(false); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setContextLoading(false); }
-  }
-
-  async function syncContext() {
-    if (!api) return;
-    setContextLoading(true); setError("");
-    try { setState(await api.syncContext()); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setContextLoading(false); }
   }
@@ -344,6 +345,8 @@ export function App() {
           <div className="header-tools"><label>{t.language}<select value={language} onChange={(e) => void changeLanguage(e.target.value as Language)}>{(Object.keys(languageNames) as Language[]).map((key) => <option value={key} key={key}>{languageNames[key]}</option>)}</select></label><div className="live-pill"><CircleDot size={14} />{t.background}</div></div>
         </header>
 
+        {state.contextSyncing && state.context && <section className="context-refresh-note"><LoaderCircle className="spin" size={18} /><div><div className="context-refresh-title"><strong>{contextRefreshText.title}</strong><b>{state.contextSyncProgress}%</b></div><span>{contextRefreshText.body}</span><progress max="100" value={state.contextSyncProgress} /></div></section>}
+
         {activeSection === "overview" && state.ownerQuestions.map((item) => <section className="panel owner-question-panel" key={item.id}>
           <div className="owner-question-heading"><div><p className="eyebrow">{ownerQuestionText.eyebrow}</p><h3>{ownerQuestionText.title}</h3></div><Bell size={21} /></div>
           <div className="owner-question-topic"><span>{ownerQuestionText.paused}</span><strong>{item.topic}</strong></div>
@@ -403,7 +406,7 @@ export function App() {
               <div><span>{contextText.messages}</span><strong>{state.context.messageCount ?? "—"}</strong></div>
               <div><span>{contextText.synced}</span><strong>{state.context.lastSyncedAt ? new Date(state.context.lastSyncedAt).toLocaleString(language) : "—"}</strong></div>
             </div> : <><strong className="context-empty">{contextText.none}</strong><p className="muted">{contextText.explanation}</p></>}
-            <div className="actions"><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{state.context ? contextText.change : contextText.choose}</button>{state.context && <button className="ghost" disabled={contextLoading} onClick={() => void syncContext()}>{contextText.refresh}</button>}</div>
+            <div className="actions"><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{state.context ? contextText.change : contextText.choose}</button></div>
             {showContextPicker && <div className="context-picker">
               {contextPicker()}
             </div>}

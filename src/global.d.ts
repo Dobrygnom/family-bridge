@@ -13,6 +13,8 @@ export interface AppState {
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   lastConversationAt?: string;
   running: boolean;
+  contextSyncing: boolean;
+  contextSyncProgress: number;
   codex: { installed: boolean; authenticated: boolean; version: string };
   remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };

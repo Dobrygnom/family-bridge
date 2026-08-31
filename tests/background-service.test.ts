@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BackgroundService } from "../electron/background-service.js";
+import { BackgroundService, contextNeedsSync } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 
 test("background service persists a completed mock report and consumes its topic", async () => {
@@ -37,4 +37,14 @@ test("mock conversation follows the selected language", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("automatic context sync runs only for a changed or genuinely stale chat", () => {
+  const now = Date.parse("2026-08-31T20:00:00.000Z");
+  const selected = { status: "ready" as const, lastSyncedAt: "2026-08-31T18:00:00.000Z", updatedAt: 1_788_134_400 };
+  assert.equal(contextNeedsSync(selected, { updatedAt: selected.updatedAt }, now), false);
+  assert.equal(contextNeedsSync(selected, { updatedAt: selected.updatedAt + 60 }, now), true);
+  assert.equal(contextNeedsSync({ ...selected, updatedAt: undefined }, { updatedAt: undefined }, now), false);
+  assert.equal(contextNeedsSync({ ...selected, updatedAt: undefined, lastSyncedAt: "2026-08-31T10:00:00.000Z" }, { updatedAt: undefined }, now), true);
+  assert.equal(contextNeedsSync({ ...selected, status: "error" }, { updatedAt: selected.updatedAt }, now), true);
 });
