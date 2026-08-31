@@ -31,9 +31,9 @@ jobs:
         with:
           name: family-bridge-${{ matrix.os }}
           path: |
-            release/*Setup*.exe
+            release/*.exe
             release/*.dmg
-            release/*-mac.zip
+            release/*.zip
             release/*.blockmap
             release/latest*.yml
 
