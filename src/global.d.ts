@@ -2,6 +2,7 @@ import type { ConversationReport } from "./core/types.js";
 
 export interface AppState {
   owner: "dima" | "katya";
+  onboardingComplete: boolean;
   identityConfigured: boolean;
   displayName: string;
   language: "ru" | "en" | "cs" | "fr";
@@ -12,9 +13,18 @@ export interface AppState {
   lastConversationAt?: string;
   running: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
-  remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string };
+  remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };
   context?: { id: string; title: string; project: string; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error"; error?: string };
+  contextAnalysis?: {
+    sourceId: string;
+    sourceHash: string;
+    analyzedAt: string;
+    status: "ready" | "analyzing" | "error";
+    error?: string;
+    people: Array<{ id: string; label: string; relationship: string; aliases: string[] }>;
+    topics: Array<{ id: string; title: string; aboutPersonIds: string[]; discussWithPersonId: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string; approved: boolean }>;
+  };
   update: { available: boolean; version?: string; downloading: boolean };
 }
 
@@ -31,10 +41,14 @@ declare global {
       listContextThreads(): Promise<Array<{ id: string; title: string; project: string; cwd?: string; updatedAt?: number }>>;
       selectContextThread(threadId: string): Promise<AppState>;
       syncContext(): Promise<AppState>;
+      completeOnboarding(): Promise<AppState>;
       openReports(): Promise<void>;
-      createPair(): Promise<AppState>;
-      joinPair(invite: string): Promise<AppState>;
+      createPair(counterpartPersonId: string): Promise<AppState>;
+      joinPair(invite: string, counterpartPersonId: string): Promise<AppState>;
+      updateContextTopic(input: { topicId: string; aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean }): Promise<AppState>;
+      updateContextTopics(input: { topicIds: string[]; approved: boolean }): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
+      discussAllTopics(): Promise<AppState>;
       checkForUpdates(): Promise<void>;
       onEvent(listener: (event: unknown) => void): () => void;
     };

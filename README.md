@@ -23,7 +23,7 @@ npm run build
 npm run package
 ```
 
-The installer is written to `release/`. The installed app starts in the background, detects Codex CLI authentication, lets the owner choose a Codex chat as the visible context source, refreshes the owner's raw messages locally, maintains a topic queue, runs conversations, and stores reports locally. The interface supports Russian, English, Czech, and French.
+The installer is written to `release/`. On first launch, the app guides the owner through selecting a Codex chat, shows the export/analysis stages, and then opens a compact topic registry grouped by intended counterpart. Codex prepares topic drafts with two distinct fields: who the topic is about and who it may be discussed with. Rows stay collapsed by default; details open only when needed, cross-person topics are raised for review, and safe direct topics can be approved in bulk. Pairing appears only after this review is completed. During pairing, the owner selects which local-context person the other computer represents; only approved topics routed to that person enter the pair. Each pending topic is then discussed in its own parallel agent conversation. Raw context remains local. The interface supports Russian, English, Czech, and French.
 
 ## Production transport
 

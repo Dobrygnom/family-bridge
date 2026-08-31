@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["people", "topics"],
+  "properties": {
+    "people": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label", "relationship", "aliases"],
+        "properties": {
+          "key": { "type": "string" },
+          "label": { "type": "string" },
+          "relationship": { "type": "string" },
+          "aliases": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "about_people", "discuss_with", "sensitivity", "reason"],
+        "properties": {
+          "title": { "type": "string" },
+          "about_people": { "type": "array", "items": { "type": "string" } },
+          "discuss_with": { "type": "string" },
+          "sensitivity": { "type": "string", "enum": ["direct", "cross_person", "unclear"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

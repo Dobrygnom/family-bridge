@@ -129,7 +129,7 @@ export class CodexHistoryClient {
       child.kill();
     }, 30_000);
     try {
-      await request("initialize", { clientInfo: { name: "family_bridge", title: "Family Bridge", version: "0.3.4" } });
+      await request("initialize", { clientInfo: { name: "family_bridge", title: "Family Bridge", version: "0.3.5" } });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
       return await operation(request);
     } finally {

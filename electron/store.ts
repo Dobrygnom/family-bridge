@@ -6,6 +6,7 @@ export type AppLanguage = "ru" | "en" | "cs" | "fr";
 
 export interface StoredState {
   owner: OwnerId;
+  onboardingComplete: boolean;
   identityConfigured: boolean;
   displayName: string;
   language: AppLanguage;
@@ -19,11 +20,13 @@ export interface StoredState {
     encryptionSecret: string;
     inviteSecret?: string;
     peerName?: string;
+    counterpartPersonId?: string;
   };
 }
 
 const defaults: StoredState = {
   owner: "dima",
+  onboardingComplete: false,
   identityConfigured: false,
   displayName: "",
   language: "ru",

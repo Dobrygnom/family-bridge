@@ -12,10 +12,14 @@ contextBridge.exposeInMainWorld("familyBridge", {
   listContextThreads: () => ipcRenderer.invoke("bridge:list-context-threads"),
   selectContextThread: (threadId: string) => ipcRenderer.invoke("bridge:select-context-thread", threadId),
   syncContext: () => ipcRenderer.invoke("bridge:sync-context"),
+  completeOnboarding: () => ipcRenderer.invoke("bridge:complete-onboarding"),
   openReports: () => ipcRenderer.invoke("bridge:open-reports"),
-  createPair: () => ipcRenderer.invoke("bridge:create-pair"),
-  joinPair: (invite: string) => ipcRenderer.invoke("bridge:join-pair", invite),
+  createPair: (counterpartPersonId: string) => ipcRenderer.invoke("bridge:create-pair", counterpartPersonId),
+  joinPair: (invite: string, counterpartPersonId: string) => ipcRenderer.invoke("bridge:join-pair", { invite, counterpartPersonId }),
+  updateContextTopic: (input: { topicId: string; aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean }) => ipcRenderer.invoke("bridge:update-context-topic", input),
+  updateContextTopics: (input: { topicIds: string[]; approved: boolean }) => ipcRenderer.invoke("bridge:update-context-topics", input),
   runRemote: (topic: string) => ipcRenderer.invoke("bridge:run-remote", topic),
+  discussAllTopics: () => ipcRenderer.invoke("bridge:discuss-all-topics"),
   checkForUpdates: () => ipcRenderer.invoke("bridge:check-updates"),
   onEvent: (listener: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);

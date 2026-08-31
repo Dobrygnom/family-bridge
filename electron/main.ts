@@ -87,14 +87,18 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:list-context-threads", () => service.listContextThreads());
   ipcMain.handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
   ipcMain.handle("bridge:sync-context", () => service.syncContext());
+  ipcMain.handle("bridge:complete-onboarding", () => service.completeOnboarding());
   ipcMain.handle("bridge:open-reports", async () => {
     const reports = path.join(app.getPath("userData"), "reports");
     await mkdir(reports, { recursive: true });
     await shell.openPath(reports);
   });
-  ipcMain.handle("bridge:create-pair", () => service.createPair());
-  ipcMain.handle("bridge:join-pair", (_event, invite: string) => service.joinPair(invite));
+  ipcMain.handle("bridge:create-pair", (_event, counterpartPersonId: unknown) => service.createPair(counterpartPersonId));
+  ipcMain.handle("bridge:join-pair", (_event, input: { invite?: unknown; counterpartPersonId?: unknown }) => service.joinPair(String(input?.invite ?? ""), input?.counterpartPersonId));
+  ipcMain.handle("bridge:update-context-topic", (_event, input: unknown) => service.updateContextTopic(input));
+  ipcMain.handle("bridge:update-context-topics", (_event, input: unknown) => service.updateContextTopics(input));
   ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
+  ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
   ipcMain.handle("bridge:check-updates", async () => {
     if (!app.isPackaged) return;
     await autoUpdater.checkForUpdatesAndNotify();

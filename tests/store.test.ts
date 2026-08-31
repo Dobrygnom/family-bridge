@@ -11,6 +11,7 @@ test("identity starts unconfigured and an explicit display name persists", async
     const store = new AtomicStore(directory);
     const initial = await store.read();
     assert.equal(initial.identityConfigured, false);
+    assert.equal(initial.onboardingComplete, false);
     assert.equal(initial.displayName, "");
     assert.equal(initial.language, "ru");
 

@@ -5,8 +5,9 @@ import {
   Bell,
   BookHeart,
   Check,
+  ChevronDown,
   CircleDot,
-  Clock3,
+  LoaderCircle,
   MessageCircleHeart,
   Plus,
   Radio,
@@ -16,11 +17,11 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { AppState } from "../global.js";
-import type { ConversationReport } from "../core/types.js";
 import { languageNames, translations, type Language } from "./i18n.js";
 
 const fallback: AppState = {
   owner: "dima",
+  onboardingComplete: false,
   identityConfigured: false,
   displayName: "",
   language: "ru",
@@ -35,15 +36,12 @@ const fallback: AppState = {
   update: { available: false, downloading: false },
 };
 
-type TimelineItem = { from?: string; text: string; type: "message" | "status" };
-type SectionId = "overview" | "context" | "topics" | "conversation" | "reports" | "memory" | "settings";
+type SectionId = "overview" | "context" | "reports" | "settings";
 
 export function App() {
   const [state, setState] = useState<AppState>(fallback);
   const [topic, setTopic] = useState("");
   const [blocked, setBlocked] = useState("");
-  const [timeline, setTimeline] = useState<TimelineItem[]>([]);
-  const [report, setReport] = useState<ConversationReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -52,6 +50,12 @@ export function App() {
   const [selectedContextId, setSelectedContextId] = useState("");
   const [contextLoading, setContextLoading] = useState(false);
   const [showContextPicker, setShowContextPicker] = useState(false);
+  const [counterpartPersonId, setCounterpartPersonId] = useState("");
+  const [reviewPersonId, setReviewPersonId] = useState("");
+  const [topicFilter, setTopicFilter] = useState<"all" | "review" | "approved">("all");
+  const [topicSearch, setTopicSearch] = useState("");
+  const [expandedTopicIds, setExpandedTopicIds] = useState<Set<string>>(() => new Set());
+  const [inviteCopied, setInviteCopied] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
@@ -67,16 +71,37 @@ export function App() {
     cs: { eyebrow: "ZÁKLADNÍ CHAT", title: "Kontext agenta", none: "Základní chat ještě není vybrán", explanation: "Aplikace z něj čerpá kontext a příklady vašeho stylu komunikace.", project: "Projekt", chat: "Chat", messages: "Vašich zpráv", synced: "Exportováno", choose: "Vybrat chat", change: "Vybrat jiný", refresh: "Obnovit export", loading: "Načítání chatů…", apply: "Použít tento chat", select: "Vyberte projekt a chat" },
     fr: { eyebrow: "CHAT DE BASE", title: "Contexte de l’agent", none: "Aucun chat de base sélectionné", explanation: "L’application l’utilise comme contexte et comme exemples de votre manière de communiquer.", project: "Projet", chat: "Chat", messages: "Vos messages", synced: "Exporté", choose: "Choisir un chat", change: "En choisir un autre", refresh: "Actualiser l’export", loading: "Chargement des chats…", apply: "Utiliser ce chat", select: "Choisissez un projet et un chat" },
   }[language];
+  const workflowText = {
+    ru: { connection: "СОЕДИНЕНИЕ", link: "Связать два компьютера", who: "К кому из вашего контекста подключается второй компьютер?", choosePerson: "Выберите человека", create: "Создать приглашение", recreate: "Создать новый код", copy: "Копировать код", copied: "Код скопирован", orJoin: "Или вставьте код, созданный на другом компьютере", connect: "Подключиться", connected: "Компьютеры связаны", mapped: "В вашем контексте это", needContext: "Сначала выберите базовый чат и дождитесь определения людей.", openContext: "Открыть контекст", topics: "ТЕМЫ ДЛЯ ЭТОЙ ПАРЫ", topicTitle: "Что обсудят агенты", topicHint: "Одобренные темы от обоих компьютеров собираются здесь. Каждая тема обсуждается в отдельном диалоге.", noTopics: "Подходящих тем пока нет.", addTopic: "Добавить тему для этой пары", discuss: "Обсудить все темы", discussing: "Агенты обсуждают темы…", analysis: "ЛЮДИ И ТЕМЫ", analysisTitle: "Подготовлено из базового чата", analyzing: "Codex определяет людей и готовит черновики тем…", noAnalysis: "После выгрузки здесь появятся люди и черновики тем.", people: "Люди в контексте", about: "О ком", with: "Обсудить с", approve: "Разрешить обсуждение", cross: "Тема о другом человеке — проверьте адресата особенно внимательно.", unclear: "Адресат определён неуверенно — проверьте перед разрешением." },
+    en: { connection: "CONNECTION", link: "Link two computers", who: "Who in your context does the other computer belong to?", choosePerson: "Choose a person", create: "Create invitation", recreate: "Create a new code", copy: "Copy code", copied: "Code copied", orJoin: "Or paste a code created on the other computer", connect: "Connect", connected: "Computers linked", mapped: "In your context this is", needContext: "First choose a base chat and wait for people to be identified.", openContext: "Open context", topics: "TOPICS FOR THIS PAIR", topicTitle: "What the agents will discuss", topicHint: "Approved topics from both computers gather here. Each topic gets its own conversation.", noTopics: "No matching topics yet.", addTopic: "Add a topic for this pair", discuss: "Discuss all topics", discussing: "Agents are discussing topics…", analysis: "PEOPLE AND TOPICS", analysisTitle: "Prepared from the base chat", analyzing: "Codex is identifying people and preparing topic drafts…", noAnalysis: "People and topic drafts will appear here after export.", people: "People in context", about: "About", with: "Discuss with", approve: "Allow discussion", cross: "This topic is about someone else — verify the recipient carefully.", unclear: "The recipient is uncertain — verify before allowing." },
+    cs: { connection: "PROPOJENÍ", link: "Propojit dva počítače", who: "Komu ve vašem kontextu patří druhý počítač?", choosePerson: "Vyberte osobu", create: "Vytvořit pozvánku", recreate: "Vytvořit nový kód", copy: "Kopírovat kód", copied: "Kód zkopírován", orJoin: "Nebo vložte kód vytvořený na druhém počítači", connect: "Připojit", connected: "Počítače jsou propojeny", mapped: "Ve vašem kontextu je to", needContext: "Nejprve vyberte základní chat a počkejte na určení osob.", openContext: "Otevřít kontext", topics: "TÉMATA PRO TUTO DVOJICI", topicTitle: "O čem budou agenti mluvit", topicHint: "Schválená témata z obou počítačů se shromažďují zde. Každé téma má vlastní rozhovor.", noTopics: "Zatím nejsou vhodná témata.", addTopic: "Přidat téma pro tuto dvojici", discuss: "Probrat všechna témata", discussing: "Agenti probírají témata…", analysis: "LIDÉ A TÉMATA", analysisTitle: "Připraveno ze základního chatu", analyzing: "Codex rozpoznává osoby a připravuje návrhy témat…", noAnalysis: "Po exportu se zde zobrazí lidé a návrhy témat.", people: "Lidé v kontextu", about: "O kom", with: "Probrat s", approve: "Povolit diskusi", cross: "Téma je o jiné osobě — pečlivě ověřte adresáta.", unclear: "Adresát je nejistý — před povolením jej ověřte." },
+    fr: { connection: "CONNEXION", link: "Relier deux ordinateurs", who: "À quelle personne de votre contexte correspond l’autre ordinateur ?", choosePerson: "Choisir une personne", create: "Créer une invitation", recreate: "Créer un nouveau code", copy: "Copier le code", copied: "Code copié", orJoin: "Ou collez un code créé sur l’autre ordinateur", connect: "Connecter", connected: "Ordinateurs reliés", mapped: "Dans votre contexte, il s’agit de", needContext: "Choisissez d’abord un chat de base et attendez l’identification des personnes.", openContext: "Ouvrir le contexte", topics: "SUJETS POUR CETTE PAIRE", topicTitle: "Ce que les agents vont discuter", topicHint: "Les sujets approuvés des deux ordinateurs sont réunis ici. Chaque sujet a sa propre conversation.", noTopics: "Aucun sujet correspondant pour l’instant.", addTopic: "Ajouter un sujet pour cette paire", discuss: "Discuter tous les sujets", discussing: "Les agents discutent…", analysis: "PERSONNES ET SUJETS", analysisTitle: "Préparé à partir du chat de base", analyzing: "Codex identifie les personnes et prépare les sujets…", noAnalysis: "Les personnes et sujets apparaîtront ici après l’export.", people: "Personnes du contexte", about: "À propos de", with: "Discuter avec", approve: "Autoriser la discussion", cross: "Ce sujet concerne une autre personne — vérifiez soigneusement le destinataire.", unclear: "Le destinataire est incertain — vérifiez avant d’autoriser." },
+  }[language];
+  const onboardingText = {
+    ru: { eyebrow: "ПЕРВЫЙ ЗАПУСК", title: "Сначала подготовим ваш контекст", lead: "Выберите один чат, который агент будет использовать как личную основу. Исходные реплики останутся на этом компьютере.", chooseTitle: "1. Выберите базовый чат", chooseHint: "Откроем список ваших проектов и чатов Codex.", processingTitle: "Подготавливаем контекст", export: "Получаем ваши реплики", people: "Определяем людей", topics: "Готовим возможные темы", waiting: "Это может занять несколько минут. Можно оставить приложение открытым.", reviewTitle: "Проверьте людей и темы", reviewHint: "Исправьте, о ком тема и с кем её можно обсуждать. Ничего не передаётся без вашего разрешения.", finish: "Темы проверены — перейти к подключению", noPeople: "Люди пока не определены. Обновите выгрузку или выберите другой чат." },
+    en: { eyebrow: "FIRST RUN", title: "First, prepare your context", lead: "Choose one chat as your agent's private foundation. Raw messages remain on this computer.", chooseTitle: "1. Choose a base chat", chooseHint: "We'll open your Codex projects and chats.", processingTitle: "Preparing context", export: "Reading your messages", people: "Identifying people", topics: "Preparing possible topics", waiting: "This can take a few minutes. You may leave the app open.", reviewTitle: "Review people and topics", reviewHint: "Correct who a topic is about and who may discuss it. Nothing is shared without your approval.", finish: "Topics reviewed — continue to connection", noPeople: "No people were identified. Refresh the export or choose another chat." },
+    cs: { eyebrow: "PRVNÍ SPUŠTĚNÍ", title: "Nejprve připravíme váš kontext", lead: "Vyberte jeden chat jako soukromý základ agenta. Původní zprávy zůstanou v tomto počítači.", chooseTitle: "1. Vyberte základní chat", chooseHint: "Otevřeme seznam vašich projektů a chatů Codex.", processingTitle: "Připravujeme kontext", export: "Načítáme vaše zprávy", people: "Rozpoznáváme osoby", topics: "Připravujeme možná témata", waiting: "Může to trvat několik minut. Aplikaci můžete nechat otevřenou.", reviewTitle: "Zkontrolujte osoby a témata", reviewHint: "Opravte, koho se téma týká a s kým je lze probírat. Bez vašeho svolení se nic nesdílí.", finish: "Témata zkontrolována — pokračovat k propojení", noPeople: "Nebyly rozpoznány žádné osoby. Obnovte export nebo vyberte jiný chat." },
+    fr: { eyebrow: "PREMIER DÉMARRAGE", title: "Préparons d'abord votre contexte", lead: "Choisissez un chat comme base privée de votre agent. Les messages bruts restent sur cet ordinateur.", chooseTitle: "1. Choisissez un chat de base", chooseHint: "Nous ouvrirons vos projets et chats Codex.", processingTitle: "Préparation du contexte", export: "Lecture de vos messages", people: "Identification des personnes", topics: "Préparation des sujets possibles", waiting: "Cela peut prendre quelques minutes. Vous pouvez laisser l'application ouverte.", reviewTitle: "Vérifiez les personnes et les sujets", reviewHint: "Corrigez qui est concerné et avec qui le sujet peut être discuté. Rien n'est partagé sans votre accord.", finish: "Sujets vérifiés — passer à la connexion", noPeople: "Aucune personne n'a été identifiée. Actualisez l'export ou choisissez un autre chat." },
+  }[language];
+  const registryText = {
+    ru: { topicsFor: "Темы для", needReview: "нужно проверить", all: "Все", review: "Проверить", approved: "Разрешены", allowedOf: "разрешено из", allowSafe: "Разрешить безопасные", search: "Найти тему", collapse: "Свернуть", expand: "Показать подробности", noFilteredTopics: "В этом фильтре тем нет." },
+    en: { topicsFor: "Topics for", needReview: "need review", all: "All", review: "Review", approved: "Allowed", allowedOf: "allowed of", allowSafe: "Allow safe topics", search: "Find a topic", collapse: "Collapse", expand: "Show details", noFilteredTopics: "No topics match this filter." },
+    cs: { topicsFor: "Témata pro", needReview: "je třeba zkontrolovat", all: "Vše", review: "Zkontrolovat", approved: "Povoleno", allowedOf: "povoleno z", allowSafe: "Povolit bezpečná témata", search: "Najít téma", collapse: "Sbalit", expand: "Zobrazit podrobnosti", noFilteredTopics: "Tomuto filtru neodpovídají žádná témata." },
+    fr: { topicsFor: "Sujets pour", needReview: "à vérifier", all: "Tous", review: "Vérifier", approved: "Autorisés", allowedOf: "autorisés sur", allowSafe: "Autoriser les sujets sûrs", search: "Rechercher un sujet", collapse: "Réduire", expand: "Afficher les détails", noFilteredTopics: "Aucun sujet ne correspond à ce filtre." },
+  }[language];
+  const navigationText = {
+    ru: { start: "Первый запуск", connection: "Подключение", context: "Исходный чат и темы", reports: "Итоги разговоров", settings: "Имя и автозапуск", setupTitle: "Подготовка к первому разговору", connectionTitle: "Подключение и темы", contextTitle: "Исходный чат и темы", reportsTitle: "Итоги разговоров", settingsTitle: "Имя и автозапуск" },
+    en: { start: "First run", connection: "Connection", context: "Source chat and topics", reports: "Conversation results", settings: "Name and startup", setupTitle: "Prepare the first conversation", connectionTitle: "Connection and topics", contextTitle: "Source chat and topics", reportsTitle: "Conversation results", settingsTitle: "Name and startup" },
+    cs: { start: "První spuštění", connection: "Propojení", context: "Zdrojový chat a témata", reports: "Výsledky rozhovorů", settings: "Jméno a spuštění", setupTitle: "Příprava prvního rozhovoru", connectionTitle: "Propojení a témata", contextTitle: "Zdrojový chat a témata", reportsTitle: "Výsledky rozhovorů", settingsTitle: "Jméno a spuštění" },
+    fr: { start: "Premier démarrage", connection: "Connexion", context: "Chat source et sujets", reports: "Résultats des conversations", settings: "Nom et démarrage", setupTitle: "Préparer la première conversation", connectionTitle: "Connexion et sujets", contextTitle: "Chat source et sujets", reportsTitle: "Résultats des conversations", settingsTitle: "Nom et démarrage" },
+  }[language];
+  const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
 
   function goTo(section: SectionId) {
     setActiveSection(section);
-    if (section === "context" && !contextThreads.length) void loadContextThreads();
+    setShowContextPicker(false);
+    if (section === "context" && !state.context && !contextThreads.length) void loadContextThreads();
     window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
-  }
-
-  function agentLabel(from?: string) {
-    const name = from === state.owner ? `${deviceText.agent} ${state.displayName}` : (state.remote.peerName ? `${deviceText.agent} ${state.remote.peerName}` : deviceText.partnerName);
-    return from === state.owner ? `${name} · ${deviceText.local}` : `${name} · ${deviceText.partner}`;
   }
 
   async function changeLanguage(value: Language) {
@@ -93,17 +118,20 @@ export function App() {
       setState(next);
       setLanguage(next.language);
       setDisplayName(next.displayName);
+      setCounterpartPersonId(next.remote.counterpartPersonId || next.contextAnalysis?.people[0]?.id || "");
+      setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; from?: string; text?: string; status?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"] };
-      if (event.type === "message" && event.text) {
-        setTimeline((items) => [...items, { type: "message", from: event.from, text: event.text! }]);
-      }
-      if (event.type === "status" && event.status) {
-        setTimeline((items) => [...items, { type: "status", text: event.status! }]);
-      }
+      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; running?: boolean };
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
+      if (event.type === "context-analysis" && event.analysis) {
+        setState((current) => ({ ...current, contextAnalysis: event.analysis }));
+        setCounterpartPersonId((current) => current || event.analysis?.people[0]?.id || "");
+        setReviewPersonId((current) => current && event.analysis?.people.some((person) => person.id === current) ? current : event.analysis?.people[0]?.id || "");
+      }
+      if (event.type === "topics" && event.topics) setState((current) => ({ ...current, pendingTopics: event.topics! }));
+      if (event.type === "runtime") { setBusy(Boolean(event.running)); setState((current) => ({ ...current, running: Boolean(event.running) })); }
       if (event.type === "update") setState((current) => ({ ...current, update: { available: Boolean(event.available), version: event.version, downloading: Boolean(event.downloading) } }));
     });
   }, [api]);
@@ -127,29 +155,10 @@ export function App() {
     setBlocked("");
   }
 
-  async function runConversation(realCodex: boolean) {
-    const selected = state.pendingTopics[0] || topic.trim();
-    if (!selected || !api) return;
-    setBusy(true);
-    setError("");
-    setReport(null);
-    setTimeline([]);
-    try {
-      const result = await api.runConversation(selected, realCodex);
-      setReport(result);
-      setState(await api.getState());
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runRemote() {
-    const selected = state.pendingTopics[0] || topic.trim();
-    if (!selected || !api) return;
-    setBusy(true); setError(""); setTimeline([]);
-    try { await api.runRemote(selected); setState(await api.getState()); }
+  async function discussAllTopics() {
+    if (!api || !state.pendingTopics.length) return;
+    setBusy(true); setError("");
+    try { setState(await api.discussAllTopics()); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
   }
@@ -168,6 +177,7 @@ export function App() {
   async function selectContext() {
     if (!api || !selectedContextId) return;
     setContextLoading(true); setError("");
+    setState((current) => ({ ...current, contextAnalysis: undefined }));
     try { setState(await api.selectContextThread(selectedContextId)); setShowContextPicker(false); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setContextLoading(false); }
@@ -181,18 +191,103 @@ export function App() {
     finally { setContextLoading(false); }
   }
 
+  async function createInvite() {
+    if (!api || !counterpartPersonId) return;
+    setBusy(true); setError(""); setInviteCopied(false);
+    try { setState(await api.createPair(counterpartPersonId)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function connectWithInvite() {
+    if (!api || !counterpartPersonId || !inviteCode.trim()) return;
+    setBusy(true); setError("");
+    try { setState(await api.joinPair(inviteCode, counterpartPersonId)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function copyInvite() {
+    if (!state.remote.invite) return;
+    await navigator.clipboard.writeText(state.remote.invite);
+    setInviteCopied(true);
+  }
+
+  async function updateContextTopic(topicId: string, update: { aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean }) {
+    if (!api) return;
+    setError("");
+    try { setState(await api.updateContextTopic({ topicId, ...update })); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  async function completeOnboarding() {
+    if (!api) return;
+    setError("");
+    try { setState(await api.completeOnboarding()); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  async function approveSafeTopics() {
+    if (!api || !state.contextAnalysis || !reviewPersonId) return;
+    const topicIds = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === reviewPersonId && item.sensitivity === "direct").map((item) => item.id);
+    if (!topicIds.length) return;
+    setError("");
+    try { setState(await api.updateContextTopics({ topicIds, approved: true })); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  function toggleTopicDetails(topicId: string) {
+    setExpandedTopicIds((current) => {
+      const next = new Set(current);
+      if (next.has(topicId)) next.delete(topicId); else next.add(topicId);
+      return next;
+    });
+  }
+
+  function personLabel(personId: string) {
+    const person = state.contextAnalysis?.people.find((item) => item.id === personId);
+    return person?.label || "—";
+  }
+
+  const selectedPersonTopics = (state.contextAnalysis?.topics ?? [])
+    .filter((item) => item.discussWithPersonId === reviewPersonId)
+    .filter((item) => topicFilter === "all" || topicFilter === "approved" && item.approved || topicFilter === "review" && item.sensitivity !== "direct")
+    .filter((item) => !topicSearch.trim() || `${item.title} ${item.reason}`.toLocaleLowerCase(language).includes(topicSearch.trim().toLocaleLowerCase(language)))
+    .sort((left, right) => Number(left.sensitivity === "direct") - Number(right.sensitivity === "direct") || left.title.localeCompare(right.title, language));
+
+  function topicRegistry() {
+    if (!state.contextAnalysis?.people.length) return <div className="empty">{onboardingText.noPeople}</div>;
+    const selectedPerson = state.contextAnalysis.people.find((person) => person.id === reviewPersonId) ?? state.contextAnalysis.people[0];
+    const allForPerson = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === selectedPerson.id);
+    const reviewCount = allForPerson.filter((item) => item.sensitivity !== "direct").length;
+    const approvedCount = allForPerson.filter((item) => item.approved).length;
+    return <div className="topic-registry">
+      <div className="person-tabs" role="tablist">{state.contextAnalysis.people.map((person) => {
+        const count = state.contextAnalysis!.topics.filter((item) => item.discussWithPersonId === person.id).length;
+        return <button type="button" role="tab" aria-selected={person.id === selectedPerson.id} className={person.id === selectedPerson.id ? "active" : ""} key={person.id} onClick={() => setReviewPersonId(person.id)}>{personLabel(person.id)} <span>{count}</span></button>;
+      })}</div>
+      <div className="registry-heading"><div><h4>{registryText.topicsFor}: {personLabel(selectedPerson.id)}</h4><p>{allForPerson.length} · {reviewCount} {registryText.needReview}</p></div><div className="registry-controls"><input value={topicSearch} onChange={(event) => setTopicSearch(event.target.value)} placeholder={registryText.search} aria-label={registryText.search} /><div className="registry-filters"><button className={topicFilter === "all" ? "active" : ""} onClick={() => setTopicFilter("all")}>{registryText.all}</button><button className={topicFilter === "review" ? "active" : ""} onClick={() => setTopicFilter("review")}>{registryText.review}</button><button className={topicFilter === "approved" ? "active" : ""} onClick={() => setTopicFilter("approved")}>{registryText.approved}</button></div></div></div>
+      <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span><button className="ghost" onClick={() => void approveSafeTopics()}>{registryText.allowSafe}</button></div>
+      <div className="topic-rows">{selectedPersonTopics.map((item) => {
+        const expanded = expandedTopicIds.has(item.id);
+        const about = item.aboutPersonIds.map(personLabel).join(", ") || "—";
+        return <div className={`topic-row ${item.sensitivity} ${expanded ? "expanded" : ""}`} key={item.id}>
+          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span>{item.title}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
+          {expanded && <div className="topic-row-detail"><p>{item.reason}</p><div className="route-fields"><label>{workflowText.about}<select value={item.aboutPersonIds[0] || ""} onChange={(event) => void updateContextTopic(item.id, { aboutPersonIds: [event.target.value] })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label><label>{workflowText.with}<select value={item.discussWithPersonId} onChange={(event) => void updateContextTopic(item.id, { discussWithPersonId: event.target.value })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label></div>{item.sensitivity === "cross_person" && <small className="route-warning">{workflowText.cross}</small>}{item.sensitivity === "unclear" && <small className="route-warning">{workflowText.unclear}</small>}</div>}
+        </div>;
+      })}{!selectedPersonTopics.length && <div className="empty">{registryText.noFilteredTopics}</div>}</div>
+    </div>;
+  }
+
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand"><MessageCircleHeart size={25} /><span>Family Bridge</span></div>
         <nav>
-          <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} />{t.overview}</button>
-          <button className={activeSection === "context" ? "active" : ""} onClick={() => goTo("context")}><BookHeart size={18} />{t.context}</button>
-          <button className={activeSection === "topics" ? "active" : ""} onClick={() => goTo("topics")}><Sparkles size={18} />{t.topics}</button>
-          <button className={activeSection === "conversation" ? "active" : ""} onClick={() => goTo("conversation")}><Radio size={18} />{t.conversation}</button>
-          <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{t.reports}</button>
-          <button className={activeSection === "memory" ? "active" : ""} onClick={() => goTo("memory")}><BookHeart size={18} />{t.memory}</button>
-          <button className={activeSection === "settings" ? "active" : ""} onClick={() => goTo("settings")}><Settings2 size={18} />{t.settings}</button>
+          <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} />{state.onboardingComplete ? navigationText.connection : navigationText.start}</button>
+          <button className={activeSection === "context" ? "active" : ""} onClick={() => goTo("context")}><BookHeart size={18} />{navigationText.context}</button>
+          <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{navigationText.reports}</button>
+          <button className={activeSection === "settings" ? "active" : ""} onClick={() => goTo("settings")}><Settings2 size={18} />{navigationText.settings}</button>
         </nav>
         <div className="sidebar-status">
           <span className={health ? "status-dot online" : "status-dot"} />
@@ -200,13 +295,22 @@ export function App() {
         </div>
       </aside>
 
-      <main id="overview">
+      <main id="overview" className={!state.onboardingComplete && activeSection === "overview" ? "onboarding-main" : ""}>
         <header>
-          <div><p className="eyebrow">{t.autonomous}</p><h1>{t.title}</h1></div>
+          <div><h1>{pageTitle}</h1></div>
           <div className="header-tools"><label>{t.language}<select value={language} onChange={(e) => void changeLanguage(e.target.value as Language)}>{(Object.keys(languageNames) as Language[]).map((key) => <option value={key} key={key}>{languageNames[key]}</option>)}</select></label><div className="live-pill"><CircleDot size={14} />{t.background}</div></div>
         </header>
 
-        {activeSection === "overview" && <section className="hero-card">
+        {activeSection === "overview" && !state.onboardingComplete && <section className="panel onboarding-panel">
+          {state.contextAnalysis?.status !== "ready" && <div className="onboarding-intro"><p>{onboardingText.lead}</p></div>}
+          <div className="onboarding-steps"><div className={state.context ? "done" : "active"}><span>{state.context ? <Check size={16} /> : "1"}</span>{onboardingText.chooseTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "done" : state.context ? "active" : ""}><span>{state.contextAnalysis?.status === "ready" ? <Check size={16} /> : "2"}</span>{onboardingText.processingTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "active" : ""}><span>3</span>{onboardingText.reviewTitle}</div></div>
+          {!state.context && <div className="onboarding-stage"><h3>{onboardingText.chooseTitle}</h3><p>{onboardingText.chooseHint}</p><button className="primary" disabled={contextLoading} onClick={() => void loadContextThreads()}>{contextText.choose}</button></div>}
+          {showContextPicker && !state.context && <div className="context-picker onboarding-picker">{contextLoading && !contextThreads.length ? <span>{contextText.loading}</span> : <><select value={selectedContextId} onChange={(e) => setSelectedContextId(e.target.value)}><option value="">{contextText.select}</option>{contextThreads.map((thread) => <option value={thread.id} key={thread.id}>{thread.project} — {thread.title}</option>)}</select><button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button></>}</div>}
+          {state.context && state.contextAnalysis?.status !== "ready" && <div className="onboarding-stage processing-stage"><h3>{onboardingText.processingTitle}</h3><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="processing-list"><div className={state.context.status === "ready" ? "done" : "active"}>{state.context.status === "ready" ? <Check size={18} /> : <LoaderCircle className="spin" size={18} />}<span>{onboardingText.export}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{onboardingText.people}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{onboardingText.topics}</span></div></div><p className="muted">{onboardingText.waiting}</p>{state.contextAnalysis?.status === "error" && <div className="analysis-error">{state.contextAnalysis.error}</div>}</div>}
+          {state.contextAnalysis?.status === "ready" && <div className="onboarding-stage review-stage"><div className="review-intro"><div><h3>{onboardingText.reviewTitle}</h3><p>{onboardingText.reviewHint}</p></div><button className="ghost" onClick={() => void loadContextThreads()}>{contextText.change}</button></div>{showContextPicker && <div className="context-picker onboarding-picker">{contextLoading && !contextThreads.length ? <span>{contextText.loading}</span> : <><select value={selectedContextId} onChange={(e) => setSelectedContextId(e.target.value)}><option value="">{contextText.select}</option>{contextThreads.map((thread) => <option value={thread.id} key={thread.id}>{thread.project} — {thread.title}</option>)}</select><button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button></>}</div>}{topicRegistry()}<div className="onboarding-finish"><button className="primary" onClick={() => void completeOnboarding()}>{onboardingText.finish}</button></div></div>}
+        </section>}
+
+        {activeSection === "overview" && state.onboardingComplete && <section className="hero-card">
           <div>
             <span className="hero-icon"><ShieldCheck /></span>
             <p className="eyebrow">{t.state}</p>
@@ -220,20 +324,21 @@ export function App() {
           </div>
         </section>}
 
-        {(activeSection === "overview" || activeSection === "settings") && <section className="panel pairing-panel screen-panel" id="settings">
-          <div className="panel-title"><div><p className="eyebrow">{t.connection}</p><h3>{state.remote.connected ? t.agentsConnected : t.linkComputers}</h3></div><Radio size={20} /></div>
-          {(!state.identityConfigured || activeSection === "settings") && <div className="identity-setup"><strong>{deviceText.question}</strong><span>{deviceText.hint}</span><div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} onKeyDown={async (e) => { if (e.key === "Enter" && api && displayName.trim()) setState(await api.setDisplayName(displayName)); }} /><button className="primary" disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div></div>}
-          {state.identityConfigured && <>
-            {!state.remote.configured && <button className="primary" onClick={async () => api && setState(await api.createPair())}>{t.createInvite}</button>}
-            {state.remote.invite && <><p className="muted">{t.shareCode}</p><textarea readOnly value={state.remote.invite} onFocus={(e) => e.currentTarget.select()} /></>}
-            {!state.remote.connected && <div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button onClick={async () => api && setState(await api.joinPair(inviteCode))}>{t.connect}</button></div>}
-            {state.remote.connected && <p className="muted">{t.channelActive}</p>}
-            <div className="identity-card"><strong>{deviceText.identity}</strong><span>{deviceText.agent} {state.displayName} · {deviceText.local}</span><span>{state.remote.peerName ? `${deviceText.agent} ${state.remote.peerName}` : deviceText.partnerName} · {deviceText.partner}</span></div>
+        {activeSection === "overview" && state.onboardingComplete && <section className="panel pairing-panel screen-panel">
+          <div className="panel-title"><div><p className="eyebrow">{workflowText.connection}</p><h3>{state.remote.connected ? workflowText.connected : workflowText.link}</h3></div><Radio size={20} /></div>
+          {!state.identityConfigured && <div className="identity-setup"><strong>{deviceText.question}</strong><span>{deviceText.hint}</span><div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} onKeyDown={async (e) => { if (e.key === "Enter" && api && displayName.trim()) setState(await api.setDisplayName(displayName)); }} /><button className="primary" disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div></div>}
+          {state.identityConfigured && !state.remote.connected && <>
+            {state.contextAnalysis?.people.length ? <>
+              <label className="counterpart-select"><span>{workflowText.who}</span><select value={counterpartPersonId} onChange={(e) => setCounterpartPersonId(e.target.value)}><option value="">{workflowText.choosePerson}</option>{state.contextAnalysis.people.map((person) => <option key={person.id} value={person.id}>{personLabel(person.id)}</option>)}</select></label>
+              <div className="pair-actions"><button className="primary" disabled={!counterpartPersonId || busy} onClick={() => void createInvite()}>{state.remote.invite ? workflowText.recreate : workflowText.create}</button></div>
+              {state.remote.invite && <div className="invite-box"><p>{t.shareCode}</p><textarea readOnly value={state.remote.invite} onFocus={(e) => e.currentTarget.select()} /><button className="ghost" onClick={() => void copyInvite()}>{inviteCopied ? workflowText.copied : workflowText.copy}</button></div>}
+              <div className="join-box"><span>{workflowText.orJoin}</span><div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button disabled={!counterpartPersonId || !inviteCode.trim() || busy} onClick={() => void connectWithInvite()}>{workflowText.connect}</button></div></div>
+            </> : <div className="context-needed"><span>{workflowText.needContext}</span><button className="ghost" onClick={() => goTo("context")}>{workflowText.openContext}</button></div>}
           </>}
-          {activeSection === "settings" && <div className="settings-actions"><label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label><button onClick={() => void api?.checkForUpdates()}>Проверить обновления</button><small>{state.update.available ? `Доступна версия ${state.update.version}` : "Установлена актуальная версия"}</small></div>}
+          {state.remote.connected && <div className="connected-card"><strong>{state.remote.peerName || deviceText.partnerName}</strong><span>{workflowText.mapped}: {state.remote.counterpartLabel || "—"}</span></div>}
         </section>}
 
-        <div className={`grid ${activeSection !== "overview" ? "single-screen" : ""}`}>
+        <div className="grid single-screen">
           {activeSection === "context" && <section className="panel context-panel">
             <div className="panel-title"><div><p className="eyebrow">{contextText.eyebrow}</p><h3>{contextText.title}</h3></div><BookHeart size={20} /></div>
             {state.context ? <div className="context-current">
@@ -248,56 +353,36 @@ export function App() {
             </div>}
             {state.context?.status === "error" && <p className="muted">{state.context.error}</p>}
           </section>}
-          {(activeSection === "overview" || activeSection === "topics") && <section className="panel topics-panel" id="topics">
-            <div className="panel-title"><div><p className="eyebrow">{t.agenda}</p><h3>{t.propose}</h3></div><Plus size={20} /></div>
-            <div className="input-row">
-              <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={t.topicPlaceholder} onKeyDown={(e) => e.key === "Enter" && void addTopic()} />
-              <button onClick={() => void addTopic()}>{t.add}</button>
-            </div>
-            <div className="topic-list">
-              {state.pendingTopics.map((item, index) => (
-                <div className="topic" key={`${item}-${index}`}><span>{item}</span><small>{index === 0 ? t.next : t.inQueue}</small></div>
-              ))}
-              {!state.pendingTopics.length && <div className="empty">{t.autoTopics}</div>}
-            </div>
-            <div className="actions">
-              <button className="primary" disabled={busy || !state.pendingTopics.length} onClick={() => void runConversation(true)}><Sparkles size={17} />{t.runCodex}</button>
-              <button className="primary" disabled={busy || !state.pendingTopics.length || !state.remote.connected} onClick={() => void runRemote()}><Radio size={17} />{t.talkPartner}</button>
-              <button className="ghost" disabled={busy || !state.pendingTopics.length} onClick={() => void runConversation(false)}>{t.quickDemo}</button>
-            </div>
+          {activeSection === "context" && <section className="panel analysis-panel">
+            <div className="panel-title"><div><p className="eyebrow">{workflowText.analysis}</p><h3>{workflowText.analysisTitle}</h3></div><Sparkles size={20} /></div>
+            {state.contextAnalysis?.status === "analyzing" && <div className="analysis-status">{workflowText.analyzing}</div>}
+            {!state.contextAnalysis && <div className="empty">{workflowText.noAnalysis}</div>}
+            {state.contextAnalysis?.status === "error" && <div className="analysis-error">{state.contextAnalysis.error}</div>}
+            {state.contextAnalysis && <>
+              <div className="people-block"><strong>{workflowText.people}</strong><div>{state.contextAnalysis.people.map((person) => <span className="person-chip" key={person.id}>{personLabel(person.id)}</span>)}</div></div>
+              {topicRegistry()}
+            </>}
           </section>}
 
-          {(activeSection === "overview" || activeSection === "memory") && <section className="panel privacy-panel" id="memory">
-            <div className="panel-title"><div><p className="eyebrow">{t.boundaries}</p><h3>{t.doNotDiscuss}</h3></div><Ban size={20} /></div>
-            <div className="input-row compact">
-              <input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder={t.blockedPlaceholder} onKeyDown={(e) => e.key === "Enter" && void blockTopic()} />
-              <button onClick={() => void blockTopic()}>{t.block}</button>
-            </div>
-            {state.blockedTopics.map((item) => <span className="blocked-chip" key={item}>{item}</span>)}
-            {!state.blockedTopics.length && <p className="muted">{t.noBlocks}</p>}
-            {activeSection === "memory" && <div className="memory-status"><strong>{state.memory.configured ? "Память синхронизирована" : "Память ещё не настроена"}</strong><span>{state.memory.messageCount} реплик в локальном архиве</span><span>Последняя проверка: {state.memory.lastCheckedAt ? new Date(state.memory.lastCheckedAt).toLocaleString(language) : "—"}</span><span>Статус: {state.memory.status || "—"}</span></div>}
+          {activeSection === "overview" && state.onboardingComplete && <section className="panel topics-panel">
+            <div className="panel-title"><div><p className="eyebrow">{workflowText.topics}</p><h3>{workflowText.topicTitle}</h3></div><Plus size={20} /></div>
+            <p className="topic-explanation">{workflowText.topicHint}</p>
+            <div className="topic-list">{state.pendingTopics.map((item) => <div className="topic" key={item}><span>{item}</span></div>)}{!state.pendingTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
+            <div className="input-row"><input disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim()} onClick={() => void addTopic()}>{t.add}</button></div>
+            <div className="actions"><button className="primary" disabled={busy || !state.remote.connected || !state.pendingTopics.length} onClick={() => void discussAllTopics()}><Sparkles size={17} />{busy ? workflowText.discussing : workflowText.discuss}</button></div>
           </section>}
 
-          {(activeSection === "overview" || activeSection === "conversation") && <section className="panel conversation-panel" id="conversation">
-            <div className="panel-title"><div><p className="eyebrow">{t.live}</p><h3>{t.progress}</h3></div><Clock3 size={20} /></div>
-            <div className="timeline">
-              {timeline.map((item, index) => item.type === "status" ? (
-                <div className="timeline-status" key={index}>{item.text}</div>
-              ) : (
-                <div className={`bubble ${item.from === "dima" ? "dima" : "katya"}`} key={index}>
-                  <strong>{agentLabel(item.from)}</strong><p>{item.text}</p>
-                </div>
-              ))}
-              {!timeline.length && <div className="empty tall"><Radio size={28} /><span>{t.noMessages}</span></div>}
-            </div>
-          </section>}
-
-          {(activeSection === "overview" || activeSection === "reports") && <section className="panel report-panel" id="reports">
-            <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><Check size={20} /></div>
-            {report ? <><p className="summary">{report.sharedSummary || t.noSummary}</p><div className="report-meta"><span>{report.turns} {t.turns}</span><span>{report.topics.length} {t.topicCount}</span></div></> : <div className="empty tall"><ScrollText size={28} /><span>{t.noReport}</span></div>}
+          {activeSection === "reports" && <section className="panel report-panel" id="reports">
+            <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><ScrollText size={20} /></div>
+            <div className="empty tall"><ScrollText size={28} /><span>{state.reports.length ? `${state.reports.length} сохранённых итогов` : t.noReport}</span></div>
             <button className="link-button" onClick={() => void api?.openReports()}>{t.openReports}</button>
-            {activeSection === "reports" && <div className="report-list">{state.reports.map((item) => <div key={item}>{item.split(/[\\/]/).pop()}</div>)}{!state.reports.length && <span>Сохранённых итогов пока нет</span>}</div>}
+            <div className="report-list">{state.reports.map((item) => <div key={item}>{item.split(/[\\/]/).pop()}</div>)}{!state.reports.length && <span>Сохранённых итогов пока нет</span>}</div>
           </section>}
+
+          {activeSection === "settings" && <>
+            <section className="panel settings-panel" id="settings"><div className="panel-title"><div><p className="eyebrow">{t.settings}</p><h3>{deviceText.question}</h3></div><Settings2 size={20} /></div><div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div><div className="settings-actions"><label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label><button onClick={() => void api?.checkForUpdates()}>Проверить обновления</button><small>{state.update.available ? `Доступна версия ${state.update.version}` : "Установлена актуальная версия"}</small></div></section>
+            <section className="panel privacy-panel"><div className="panel-title"><div><p className="eyebrow">{t.boundaries}</p><h3>{t.doNotDiscuss}</h3></div><Ban size={20} /></div><div className="input-row compact"><input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder={t.blockedPlaceholder} onKeyDown={(e) => e.key === "Enter" && void blockTopic()} /><button onClick={() => void blockTopic()}>{t.block}</button></div>{state.blockedTopics.map((item) => <span className="blocked-chip" key={item}>{item}</span>)}{!state.blockedTopics.length && <p className="muted">{t.noBlocks}</p>}</section>
+          </>}
         </div>
 
         {error && <div className="error"><Bell size={18} />{error}</div>}
