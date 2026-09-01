@@ -11,6 +11,7 @@ import {
   MessageCircleHeart,
   Plus,
   Radio,
+  RefreshCw,
   ScrollText,
   Settings2,
   ShieldCheck,
@@ -26,6 +27,7 @@ const fallback: AppState = {
   displayName: "",
   language: "ru",
   autoStart: true,
+  appVersion: "preview",
   pendingTopics: ["Как сделать бытовые договорённости спокойнее"],
   pairTopics: ["Как сделать бытовые договорённости спокойнее"],
   activeTopics: [],
@@ -43,6 +45,15 @@ const fallback: AppState = {
 };
 
 type SectionId = "overview" | "context" | "reports" | "settings";
+
+function compareVersions(left: string, right: string) {
+  const a = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
+}
 
 export function App() {
   const [state, setState] = useState<AppState>(fallback);
@@ -65,6 +76,7 @@ export function App() {
   const [inviteCopied, setInviteCopied] = useState(false);
   const [ownerAnswers, setOwnerAnswers] = useState<Record<string, string>>({});
   const [answeringQuestionId, setAnsweringQuestionId] = useState("");
+  const [versionCheckBusy, setVersionCheckBusy] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
@@ -85,6 +97,12 @@ export function App() {
     en: { connection: "CONNECTION", link: "Link two computers", who: "Who in your context does the other computer belong to?", choosePerson: "Choose a person", create: "Create invitation", recreate: "Create a new code", copy: "Copy code", copied: "Code copied", orJoin: "Or paste a code created on the other computer", connect: "Connect", connected: "Computers linked", mapped: "In your context this is", needContext: "First choose a base chat and wait for people to be identified.", openContext: "Open context", topics: "TOPICS FOR THIS PAIR", topicTitle: "What the agents will discuss", topicHint: "Approved topics from both computers gather here. Each topic gets its own conversation.", localPreview: "These are the approved topics from your chat. Topics from your partner's computer will be added after connection.", noTopics: "No approved topics for the selected person yet.", addTopic: "Add a topic for this pair", discuss: "Discuss all topics", discussing: "Agents are discussing topics…", analysis: "PEOPLE AND TOPICS", analysisTitle: "Prepared from the base chat", analyzing: "Codex is identifying people and preparing topic drafts…", noAnalysis: "People and topic drafts will appear here after export.", people: "People in context", about: "About", with: "Discuss with", approve: "Allow discussion", cross: "This topic is about someone else — verify the recipient carefully.", unclear: "The recipient is uncertain — verify before allowing." },
     cs: { connection: "PROPOJENÍ", link: "Propojit dva počítače", who: "Komu ve vašem kontextu patří druhý počítač?", choosePerson: "Vyberte osobu", create: "Vytvořit pozvánku", recreate: "Vytvořit nový kód", copy: "Kopírovat kód", copied: "Kód zkopírován", orJoin: "Nebo vložte kód vytvořený na druhém počítači", connect: "Připojit", connected: "Počítače jsou propojeny", mapped: "Ve vašem kontextu je to", needContext: "Nejprve vyberte základní chat a počkejte na určení osob.", openContext: "Otevřít kontext", topics: "TÉMATA PRO TUTO DVOJICI", topicTitle: "O čem budou agenti mluvit", topicHint: "Schválená témata z obou počítačů se shromažďují zde. Každé téma má vlastní rozhovor.", localPreview: "Zatím jsou zobrazená schválená témata z vašeho chatu. Po propojení se přidají témata z počítače partnera.", noTopics: "Pro vybranou osobu zatím nejsou schválená témata.", addTopic: "Přidat téma pro tuto dvojici", discuss: "Probrat všechna témata", discussing: "Agenti probírají témata…", analysis: "LIDÉ A TÉMATA", analysisTitle: "Připraveno ze základního chatu", analyzing: "Codex rozpoznává osoby a připravuje návrhy témat…", noAnalysis: "Po exportu se zde zobrazí lidé a návrhy témat.", people: "Lidé v kontextu", about: "O kom", with: "Probrat s", approve: "Povolit diskusi", cross: "Téma je o jiné osobě — pečlivě ověřte adresáta.", unclear: "Adresát je nejistý — před povolením jej ověřte." },
     fr: { connection: "CONNEXION", link: "Relier deux ordinateurs", who: "À quelle personne de votre contexte correspond l’autre ordinateur ?", choosePerson: "Choisir une personne", create: "Créer une invitation", recreate: "Créer un nouveau code", copy: "Copier le code", copied: "Code copié", orJoin: "Ou collez un code créé sur l’autre ordinateur", connect: "Connecter", connected: "Ordinateurs reliés", mapped: "Dans votre contexte, il s’agit de", needContext: "Choisissez d’abord un chat de base et attendez l’identification des personnes.", openContext: "Ouvrir le contexte", topics: "SUJETS POUR CETTE PAIRE", topicTitle: "Ce que les agents vont discuter", topicHint: "Les sujets approuvés des deux ordinateurs sont réunis ici. Chaque sujet a sa propre conversation.", localPreview: "Voici les sujets autorisés de votre chat. Ceux de l'ordinateur de votre partenaire seront ajoutés après la connexion.", noTopics: "Aucun sujet autorisé pour la personne sélectionnée.", addTopic: "Ajouter un sujet pour cette paire", discuss: "Discuter tous les sujets", discussing: "Les agents discutent…", analysis: "PERSONNES ET SUJETS", analysisTitle: "Préparé à partir du chat de base", analyzing: "Codex identifie les personnes et prépare les sujets…", noAnalysis: "Les personnes et sujets apparaîtront ici après l’export.", people: "Personnes du contexte", about: "À propos de", with: "Discuter avec", approve: "Autoriser la discussion", cross: "Ce sujet concerne une autre personne — vérifiez soigneusement le destinataire.", unclear: "Le destinataire est incertain — vérifiez avant d’autoriser." },
+  }[language];
+  const pairVersionText = {
+    ru: { local: "Этот компьютер", peer: "Компьютер собеседника", current: "Актуальная", updateNeeded: "Нужно обновить", unknown: "Версия ещё не получена", check: "Проверить обновления", checking: "Проверяем обновления…" },
+    en: { local: "This computer", peer: "Partner's computer", current: "Up to date", updateNeeded: "Update needed", unknown: "Version not received yet", check: "Check for updates", checking: "Checking for updates…" },
+    cs: { local: "Tento počítač", peer: "Počítač partnera", current: "Aktuální", updateNeeded: "Je třeba aktualizovat", unknown: "Verze zatím nebyla přijata", check: "Zkontrolovat aktualizace", checking: "Kontrola aktualizací…" },
+    fr: { local: "Cet ordinateur", peer: "Ordinateur du partenaire", current: "À jour", updateNeeded: "Mise à jour requise", unknown: "Version pas encore reçue", check: "Vérifier les mises à jour", checking: "Vérification des mises à jour…" },
   }[language];
   const onboardingText = {
     ru: { eyebrow: "ПЕРВЫЙ ЗАПУСК", title: "Сначала подготовим ваш контекст", lead: "Выберите один чат, который Codex проанализирует как личную основу агента. Другому компьютеру исходные реплики не передаются.", chooseTitle: "1. Выберите базовый чат", chooseHint: "Откроем список ваших проектов и чатов Codex и ChatGPT.", processingTitle: "Подготавливаем контекст", resumeTitle: "Дополняем сохранённый контекст", export: "Получаем ваши реплики", people: "Определяем людей", topics: "Готовим возможные темы", finalizing: "Собираем итоговые рекомендации", waiting: "Это может занять несколько минут. Можно оставить приложение открытым.", resumeWaiting: "Уже найденные люди и темы сохранены. Добавляем только то, что изменилось в чате.", reviewTitle: "Проверьте людей и темы", reviewHint: "Исправьте, о ком тема и с кем её можно обсуждать. Ничего не передаётся без вашего разрешения.", finish: "Темы проверены — перейти к подключению", noPeople: "Люди пока не определены. Обновите выгрузку или выберите другой чат." },
@@ -168,8 +186,8 @@ export function App() {
     };
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
-      if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
+      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
+      if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
         setState((current) => ({ ...current, contextAnalysis: event.analysis }));
@@ -321,6 +339,16 @@ export function App() {
     setInviteCopied(true);
   }
 
+  async function checkPairVersions() {
+    if (!api || !state.remote.connected) return;
+    setVersionCheckBusy(true); setError("");
+    try {
+      setState(await api.checkPairVersions());
+      window.setTimeout(() => void api.getState().then(setState), 3_500);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setVersionCheckBusy(false); }
+  }
+
   async function updateContextTopic(topicId: string, update: { aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean }) {
     if (!api) return;
     setError("");
@@ -386,6 +414,11 @@ export function App() {
       })}{!selectedPersonTopics.length && <div className="empty">{registryText.noFilteredTopics}</div>}</div>
     </div>;
   }
+
+  const knownVersions = [state.appVersion, state.update.version, state.remote.peerVersion].filter((value): value is string => Boolean(value));
+  const latestKnownVersion = knownVersions.sort(compareVersions).at(-1) ?? state.appVersion;
+  const localVersionCurrent = compareVersions(state.appVersion, latestKnownVersion) === 0;
+  const peerVersionCurrent = Boolean(state.remote.peerVersion && compareVersions(state.remote.peerVersion, latestKnownVersion) === 0);
 
   return (
     <div className="shell">
@@ -458,7 +491,15 @@ export function App() {
               <div className="join-box"><span>{workflowText.orJoin}</span><div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button disabled={!counterpartPersonId || !inviteCode.trim() || busy} onClick={() => void connectWithInvite()}>{workflowText.connect}</button></div></div>
             </> : <div className="context-needed"><span>{workflowText.needContext}</span><button className="ghost" onClick={() => goTo("context")}>{workflowText.openContext}</button></div>}
           </>}
-          {state.remote.connected && <div className="connected-card"><strong>{state.remote.peerName || deviceText.partnerName}</strong><span>{workflowText.mapped}: {state.remote.counterpartLabel || "—"}</span></div>}
+          {state.remote.connected && <div className="connected-card">
+            <strong>{state.remote.peerName || deviceText.partnerName}</strong>
+            <span>{workflowText.mapped}: {state.remote.counterpartLabel || "—"}</span>
+            <div className="pair-versions">
+              <div><span>{pairVersionText.local}</span><strong>v{state.appVersion}</strong><small className={localVersionCurrent ? "version-current" : "version-old"}>{localVersionCurrent ? pairVersionText.current : pairVersionText.updateNeeded}</small></div>
+              <div><span>{state.remote.peerName || pairVersionText.peer}</span>{state.remote.peerVersion ? <><strong>v{state.remote.peerVersion}</strong><small className={peerVersionCurrent ? "version-current" : "version-old"}>{peerVersionCurrent ? pairVersionText.current : pairVersionText.updateNeeded}</small></> : <small>{pairVersionText.unknown}</small>}</div>
+            </div>
+            <button className="ghost pair-version-check" disabled={versionCheckBusy} onClick={() => void checkPairVersions()}><RefreshCw className={versionCheckBusy ? "spin" : ""} size={15} />{versionCheckBusy ? pairVersionText.checking : pairVersionText.check}</button>
+          </div>}
         </section>}
 
         <div className="grid single-screen">

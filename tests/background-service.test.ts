@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -80,6 +81,59 @@ test("pair topic catalog stays visible after its launch queue is consumed", () =
     mergeTopicCatalog(["selected topic"], [], ["active topic"], ["completed topic", "selected topic"]),
     ["selected topic", "active topic", "completed topic"],
   );
+});
+
+test("the 0.3.25 reset removes old results once and returns every topic to the queue", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-reset-"));
+  const exported = path.join(directory, "exported");
+  try {
+    const reports = path.join(directory, "reports");
+    await mkdir(reports, { recursive: true });
+    await mkdir(exported, { recursive: true });
+    const reportPath = path.join(reports, "old-result.json");
+    const exportedPath = path.join(exported, path.basename(reportPath));
+    await writeFile(reportPath, JSON.stringify({ conversationId: "finished-id", topic: "finished topic" }));
+    await writeFile(exportedPath, "old exported result");
+    const store = new AtomicStore(directory);
+    await store.update({
+      pairTopics: ["selected topic"],
+      pendingTopics: ["pending topic"],
+      inFlightTopics: ["starting topic"],
+      activeTopics: ["active topic"],
+      reports: [reportPath],
+      conversationTranscripts: { "unfinished-id": { topic: "active topic", messages: [] } },
+      pendingOwnerQuestions: [{ id: "question", conversationId: "unfinished-id", topic: "active topic", question: "question", createdAt: new Date().toISOString(), nextSequence: 2, transcript: [] }],
+      lastConversationAt: new Date().toISOString(),
+    });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, () => undefined, {
+      conversationResetVersion: "0.3.25",
+      reportsExportDirectory: exported,
+      appVersion: "0.3.25",
+    });
+
+    await service.start();
+    const reset = await store.read();
+    assert.deepEqual(reset.pairTopics, ["selected topic", "pending topic", "starting topic", "active topic", "finished topic"]);
+    assert.deepEqual(reset.pendingTopics, reset.pairTopics);
+    assert.deepEqual(reset.activeTopics, []);
+    assert.deepEqual(reset.inFlightTopics, []);
+    assert.deepEqual(reset.reports, []);
+    assert.deepEqual(reset.pendingOwnerQuestions, []);
+    assert.deepEqual(reset.conversationTranscripts, {});
+    assert.deepEqual(reset.ignoredConversationIds.sort(), ["finished-id", "unfinished-id"]);
+    assert.equal(reset.conversationResetVersion, "0.3.25");
+    assert.equal(existsSync(reportPath), false);
+    assert.equal(existsSync(exportedPath), false);
+
+    const newReport = path.join(reports, "new-result.json");
+    await writeFile(newReport, "new result");
+    await store.update({ reports: [newReport] });
+    await service.start();
+    assert.deepEqual((await store.read()).reports, [newReport]);
+    assert.equal(existsSync(newReport), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("saved reports expose their readable shared result inside the app", async () => {

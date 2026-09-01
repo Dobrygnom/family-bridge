@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   discussAllTopics: () => ipcRenderer.invoke("bridge:discuss-all-topics"),
   answerOwnerQuestion: (input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }) => ipcRenderer.invoke("bridge:answer-owner-question", input),
   checkForUpdates: () => ipcRenderer.invoke("bridge:check-updates"),
+  checkPairVersions: () => ipcRenderer.invoke("bridge:check-pair-versions"),
   installUpdate: () => ipcRenderer.invoke("bridge:install-update"),
   onEvent: (listener: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);

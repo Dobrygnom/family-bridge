@@ -31,12 +31,17 @@ export interface StoredState {
   reports: string[];
   pendingOwnerQuestions: PendingOwnerQuestion[];
   conversationTranscripts: Record<string, { topic: string; messages: Array<{ from: OwnerId; text: string }> }>;
+  conversationResetVersion?: string;
+  conversationResetAt?: string;
+  ignoredConversationIds: string[];
   lastConversationAt?: string;
   remote?: {
     pairId: string;
     encryptionSecret: string;
     inviteSecret?: string;
     peerName?: string;
+    peerVersion?: string;
+    peerLastSeenAt?: string;
     counterpartPersonId?: string;
   };
 }
@@ -56,6 +61,7 @@ const defaults: StoredState = {
   reports: [],
   pendingOwnerQuestions: [],
   conversationTranscripts: {},
+  ignoredConversationIds: [],
 };
 
 export class AtomicStore {

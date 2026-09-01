@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,6 +29,9 @@ interface TopicPayload {
   kind: "topic";
   topic: string;
   senderName?: string;
+  senderVersion?: string;
+  versionOnly?: boolean;
+  requestUpdateCheck?: boolean;
 }
 
 interface DialoguePayload {
@@ -56,6 +59,13 @@ export interface ReportSummaryView {
   completedAt: string;
   messageCount: number;
   messages: Array<{ speaker: string; text: string; local: boolean }>;
+}
+
+interface BackgroundServiceOptions {
+  appVersion?: string;
+  conversationResetVersion?: string;
+  reportsExportDirectory?: string;
+  requestUpdateCheck?: () => void;
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
@@ -157,6 +167,7 @@ export class BackgroundService {
     private readonly store: AtomicStore,
     private readonly windowProvider: () => BrowserWindow | null,
     private readonly ownerQuestionNotifier: () => void = () => undefined,
+    private readonly options: BackgroundServiceOptions = {},
   ) {}
 
   async state() {
@@ -170,6 +181,7 @@ export class BackgroundService {
     const invite = stored.remote?.inviteSecret ? Buffer.from(JSON.stringify({
       version: 1, pairId: stored.remote.pairId, inviteSecret: stored.remote.inviteSecret,
       encryptionSecret: stored.remote.encryptionSecret, participantName: stored.displayName,
+      appVersion: this.options.appVersion,
     })).toString("base64url") : undefined;
     const memoryRoot = path.join(this.userData, "psychologist-memory");
     let memory = { configured: false, messageCount: 0, lastCheckedAt: undefined as string | undefined, status: undefined as string | undefined };
@@ -182,7 +194,7 @@ export class BackgroundService {
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
     const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр" });
-    return { ...publicStored, lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   localContextState() {
@@ -398,8 +410,56 @@ export class BackgroundService {
     return this.state();
   }
 
-  async start() {
+  async resetConversationResultsOnce() {
+    const resetVersion = this.options.conversationResetVersion;
     let state = await this.store.read();
+    if (!resetVersion || state.conversationResetVersion === resetVersion) return state;
+
+    const reportTopics: string[] = [];
+    const conversationIds = new Set(state.ignoredConversationIds);
+    for (const reportPath of state.reports) {
+      try {
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as { conversationId?: string; topic?: string; topics?: string[] };
+        if (report.conversationId) conversationIds.add(report.conversationId);
+        if (report.topic) reportTopics.push(report.topic);
+        if (report.topics) reportTopics.push(...report.topics);
+      } catch { /* a missing result must not prevent the reset */ }
+    }
+    for (const conversationId of Object.keys(state.conversationTranscripts)) conversationIds.add(conversationId);
+
+    const topics = mergeTopicCatalog(state.pairTopics, state.pendingTopics, state.inFlightTopics, state.activeTopics, reportTopics);
+    const exported = this.options.reportsExportDirectory;
+    const internalReportsRoot = path.resolve(this.userData, "reports");
+    await Promise.all(state.reports.flatMap((reportPath) => {
+      const resolvedReport = path.resolve(reportPath);
+      const removals = resolvedReport.startsWith(`${internalReportsRoot}${path.sep}`) ? [rm(resolvedReport, { force: true })] : [];
+      if (exported) removals.push(rm(path.join(exported, path.basename(reportPath)), { force: true }));
+      return removals;
+    }));
+
+    state = await this.store.update({
+      pendingTopics: topics,
+      inFlightTopics: [],
+      pairTopics: topics,
+      activeTopics: [],
+      reports: [],
+      pendingOwnerQuestions: [],
+      conversationTranscripts: {},
+      conversationResetVersion: resetVersion,
+      conversationResetAt: new Date().toISOString(),
+      ignoredConversationIds: [...conversationIds].slice(-500),
+      lastConversationAt: undefined,
+    });
+    this.remoteAgents.clear();
+    this.remoteMessages.clear();
+    this.emitTopicState(state);
+    this.emit({ type: "reports", reports: [], reportSummaries: [] });
+    this.emit({ type: "owner-questions", questions: [] });
+    return state;
+  }
+
+  async start() {
+    let state = await this.resetConversationResultsOnce();
     if (state.inFlightTopics.length) {
       state = await this.store.update({
         pendingTopics: recoverInterruptedTopics(state.pendingTopics, state.inFlightTopics),
@@ -500,10 +560,10 @@ export class BackgroundService {
     const stored = await this.store.read();
     if (!stored.identityConfigured) throw new Error("Сначала укажите, как вас называть");
     const counterpartPersonId = this.requireCounterpartPerson(counterpartPersonIdValue);
-    const invite = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")) as PairingInvite & { participantName?: string };
+    const invite = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")) as PairingInvite & { participantName?: string; appVersion?: string };
     const transport = this.configureRemote(invite.encryptionSecret);
     await transport.joinPair(invite);
-    await this.store.update({ owner: "katya", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, peerName: invite.participantName?.trim() || undefined, counterpartPersonId } });
+    await this.store.update({ owner: "katya", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, peerName: invite.participantName?.trim() || undefined, peerVersion: invite.appVersion?.trim() || undefined, counterpartPersonId } });
     await this.activateContextTopics(counterpartPersonId);
     return this.state();
   }
@@ -599,14 +659,24 @@ export class BackgroundService {
     await this.shareTopicToPair(topic, stored, pair);
   }
 
-  private async shareTopicToPair(topic: string, stored: Awaited<ReturnType<AtomicStore["read"]>>, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>) {
+  private async shareTopicToPair(topic: string, stored: Awaited<ReturnType<AtomicStore["read"]>>, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>, versionOnly = false, requestUpdateCheck = false) {
     if (!this.remote) return;
     const me = await this.remote.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
     if (!recipientId) return;
     const controlId = randomUUID();
     await this.remote.send({ pairId: pair.id, conversationId: controlId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "topic", topic, senderName: stored.displayName } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
+      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, versionOnly, requestUpdateCheck } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
+  }
+
+  async requestPeerVersionCheck() {
+    const stored = await this.store.read();
+    if (!stored.remote || !this.remote) throw new Error("Сначала соедините два приложения");
+    const pair = await this.remote.pairState(stored.remote.pairId);
+    if (!pair.partner_id) throw new Error("Второй компьютер сейчас не подключён");
+    const probeTopic = stored.pairTopics[0] ?? stored.pendingTopics[0];
+    if (stored.remote.peerVersion && probeTopic) await this.shareTopicToPair(probeTopic, stored, pair, true, true);
+    return this.state();
   }
 
   private configureRemote(secret: string) {
@@ -683,27 +753,54 @@ export class BackgroundService {
       const peerName = envelope.payload.senderName?.trim() || stored.remote.peerName;
       if (peerName && peerName !== stored.remote.peerName) {
         await this.store.update({ remote: { ...stored.remote, peerName } });
-        this.emit({ type: "peer", peerName });
+        this.emit({ type: "peer", peerName, peerVersion: stored.remote.peerVersion, peerLastSeenAt: stored.remote.peerLastSeenAt });
       }
       if (envelope.payload.kind === "topic") {
+        const incomingTopic = envelope.payload.topic;
         const current = await this.store.read();
-        const blocked = current.blockedTopics.some((item) => envelope.payload.topic.toLowerCase().includes(item.toLowerCase()));
+        const peerVersion = envelope.payload.senderVersion?.trim() || current.remote?.peerVersion;
+        const peerLastSeenAt = peerVersion ? new Date().toISOString() : current.remote?.peerLastSeenAt;
+        if (peerVersion) {
+          await this.store.update({ remote: { ...current.remote!, peerName, peerVersion, peerLastSeenAt } });
+          this.emit({ type: "peer", peerName, peerVersion, peerLastSeenAt });
+        }
+        if (envelope.payload.versionOnly) {
+          await this.remote.acknowledge(envelope.id);
+          if (envelope.payload.requestUpdateCheck) {
+            this.options.requestUpdateCheck?.();
+            await this.shareTopicToPair(incomingTopic, await this.store.read(), pair, true, false);
+          }
+          return;
+        }
+        const blocked = current.blockedTopics.some((item) => incomingTopic.toLowerCase().includes(item.toLowerCase()));
         if (!blocked) {
           const next = await this.store.update({
-            pendingTopics: mergeTopicCatalog(current.pendingTopics, [envelope.payload.topic]),
-            pairTopics: mergeTopicCatalog(current.pairTopics, [envelope.payload.topic]),
+            pendingTopics: mergeTopicCatalog(current.pendingTopics, [incomingTopic]),
+            pairTopics: mergeTopicCatalog(current.pairTopics, [incomingTopic]),
           });
           this.emitTopicState(next);
         }
         await this.remote.acknowledge(envelope.id);
         return;
       }
+      const dialogue = envelope.payload as DialoguePayload;
+      if (stored.ignoredConversationIds.includes(envelope.conversation_id)) {
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
+      if (stored.conversationResetAt) {
+        const resetAt = Date.parse(stored.conversationResetAt);
+        if (Number.isFinite(resetAt) && envelope.created_at && Date.parse(envelope.created_at) < resetAt && !stored.conversationTranscripts[envelope.conversation_id]) {
+          await this.remote.acknowledge(envelope.id);
+          return;
+        }
+      }
       const currentTopics = await this.store.read();
-      const pendingTopics = currentTopics.pendingTopics.filter((item) => item !== envelope.payload.topic);
+      const pendingTopics = currentTopics.pendingTopics.filter((item) => item !== dialogue.topic);
       const activeState = await this.store.update({
         pendingTopics,
-        pairTopics: mergeTopicCatalog(currentTopics.pairTopics, [envelope.payload.topic]),
-        activeTopics: mergeTopicCatalog(currentTopics.activeTopics, [envelope.payload.topic]),
+        pairTopics: mergeTopicCatalog(currentTopics.pairTopics, [dialogue.topic]),
+        activeTopics: mergeTopicCatalog(currentTopics.activeTopics, [dialogue.topic]),
       });
       this.emitTopicState(activeState);
       const existingAgent = this.remoteAgents.get(envelope.conversation_id);
@@ -711,36 +808,36 @@ export class BackgroundService {
       const messages = this.remoteMessages.get(envelope.conversation_id)
         ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
         ?? [];
-      messages.push({ from: envelope.sender_agent as "dima" | "katya", text: envelope.payload.text });
+      messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text });
       this.remoteMessages.set(envelope.conversation_id, messages);
-      await this.persistTranscript(envelope.conversation_id, envelope.payload.topic, messages);
-      this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: envelope.payload.text, turn: envelope.sequence_number });
-      if (envelope.payload.status === "complete") {
+      await this.persistTranscript(envelope.conversation_id, dialogue.topic, messages);
+      this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
+      if (dialogue.status === "complete") {
         await this.remote.acknowledge(envelope.id);
-        await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, envelope.payload.sharedSummary || envelope.payload.text, messages, peerName);
+        await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text, messages, peerName);
         return;
       }
       if (envelope.sequence_number >= 8) {
         await this.remote.acknowledge(envelope.id);
-        await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, envelope.payload.sharedSummary || "Не получилось получить достаточно ясный ответ.", messages, peerName);
+        await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || "Не получилось получить достаточно ясный ответ.", messages, peerName);
         return;
       }
-      const response = existingAgent ? await agent.respond(envelope.payload.text) : await agent.start(envelope.payload.text);
+      const response = existingAgent ? await agent.respond(dialogue.text) : await agent.start(dialogue.text);
       if (this.hasOwnerQuestion(response)) {
-        await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: envelope.payload.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
+        await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: dialogue.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
         await this.remote.acknowledge(envelope.id);
         return;
       }
       messages.push({ from: stored.owner, text: response.message_to_peer });
-      await this.persistTranscript(envelope.conversation_id, envelope.payload.topic, messages);
+      await this.persistTranscript(envelope.conversation_id, dialogue.topic, messages);
       const me = await this.remote.identity();
       const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
       const sequence = envelope.sequence_number + 1;
       await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: envelope.payload.topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
       await this.remote.acknowledge(envelope.id);
       this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
-      if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages, stored.displayName);
+      if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, response.shared_summary, messages, stored.displayName);
     } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
     finally { this.remoteBusy = false; }
   }
@@ -926,7 +1023,7 @@ export class BackgroundService {
     this.emit({ type: "topics", topics: state.pendingTopics, pairTopics: state.pairTopics, activeTopics: state.activeTopics });
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[] } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName?: string; peerVersion?: string; peerLastSeenAt?: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[] } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 

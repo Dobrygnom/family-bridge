@@ -30,7 +30,7 @@ try {
   await writeFile(path.join(profile, "state.json"), JSON.stringify({
     owner: "dima", onboardingComplete: true, identityConfigured: true, displayName: "Dmitrii", language: "ru", autoStart: false,
     pendingTopics: ["Тема в очереди"], inFlightTopics: [], pairTopics: ["Выбранная тема", "Тема в очереди", "Активная тема", "Готовая тема"], activeTopics: ["Активная тема"],
-    blockedTopics: [], reports: [reportPath], pendingOwnerQuestions: [],
+    blockedTopics: [], reports: [reportPath], pendingOwnerQuestions: [], conversationResetVersion: "0.3.25", ignoredConversationIds: [],
   }), "utf8");
   await writeFile(path.join(memory, "context-source.json"), JSON.stringify({ id: "results-test", title: "Карманный психолог", project: "Живи", source: "chatgpt", status: "ready", messageCount: 498, lastSyncedAt: new Date().toISOString() }), "utf8");
   await writeFile(path.join(memory, "context-analysis.json"), JSON.stringify({

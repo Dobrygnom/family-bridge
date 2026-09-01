@@ -152,6 +152,12 @@ app.whenReady().then(async () => {
         new Notification({ title: "Family Bridge ждёт вашего ответа", body: "Один из разговоров поставлен на паузу. Откройте приложение, чтобы продолжить." }).show();
       }
     },
+    {
+      appVersion: app.getVersion(),
+      conversationResetVersion: "0.3.25",
+      reportsExportDirectory: path.join(app.getPath("documents"), "Family Bridge Reports"),
+      requestUpdateCheck: () => setTimeout(() => void checkForUpdates(), 0),
+    },
   );
   createWindow();
   createTray();
@@ -208,6 +214,10 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
   ipcMain.handle("bridge:check-updates", async () => {
     await checkForUpdates();
+  });
+  ipcMain.handle("bridge:check-pair-versions", async () => {
+    const [, state] = await Promise.all([checkForUpdates(), service.requestPeerVersionCheck()]);
+    return state;
   });
   ipcMain.handle("bridge:install-update", () => installPreparedUpdate());
   if (app.isPackaged) {
