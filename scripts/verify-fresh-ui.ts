@@ -39,5 +39,11 @@ assert.doesNotMatch(mainText, /Темы проверены — перейти к
 const overflow = await evaluate<{ pageX: number; mainY: number }>(`({ pageX: document.documentElement.scrollWidth - document.documentElement.clientWidth, mainY: (() => { const main = document.querySelector('main'); return main ? main.scrollHeight - main.clientHeight : 1; })() })`);
 assert.ok(overflow.pageX <= 1, `Fresh first run has horizontal overflow: ${overflow.pageX}px`);
 assert.ok(overflow.mainY <= 1, `Fresh first run scrolls as a whole: ${overflow.mainY}px`);
-console.log(JSON.stringify({ freshProfile: true, navigation, firstAction: "choose-chat", overflow }));
+const openedSettings = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Имя и автозапуск'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
+assert.equal(openedSettings, true, "Could not open update settings");
+const updateText = await evaluate<string>(`document.querySelector('.update-card')?.textContent ?? ''`);
+assert.match(updateText, /Установлена последняя версия/);
+assert.match(updateText, /Новые версии скачиваются автоматически в фоне/);
+assert.match(updateText, /Проверить сейчас/);
+console.log(JSON.stringify({ freshProfile: true, navigation, firstAction: "choose-chat", overflow, updateStatus: true }));
 socket.close();

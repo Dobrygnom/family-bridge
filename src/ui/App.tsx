@@ -143,7 +143,7 @@ export function App() {
       setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
+      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -161,6 +161,7 @@ export function App() {
       if (event.type === "update") setState((current) => ({ ...current, update: {
         available: Boolean(event.available),
         version: typeof event.version === "string" ? event.version : undefined,
+        checking: Boolean(event.checking),
         downloading: Boolean(event.downloading),
         progress: typeof event.progress === "number" ? event.progress : undefined,
         ready: Boolean(event.ready),
@@ -463,11 +464,13 @@ export function App() {
               <div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div>
               <div className="settings-actions">
                 <label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label>
-                <button onClick={() => void api?.checkForUpdates()} disabled={state.update.downloading}>Проверить обновления</button>
-                {state.update.downloading && <small>Скачиваем обновление{state.update.progress !== undefined ? ` — ${state.update.progress}%` : "…"}</small>}
-                {state.update.ready && <button onClick={() => void api?.installUpdate()}>Перезапустить и обновить до {state.update.version}</button>}
-                {!state.update.downloading && !state.update.ready && !state.update.error && <small>{state.update.available ? `Доступна версия ${state.update.version}` : "Установлена актуальная версия"}</small>}
-                {state.update.error && <small className="update-error">Обновление не установлено: {state.update.error}</small>}
+                <div className="update-card" aria-live="polite">
+                  {state.update.checking && <div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Проверяем обновления</strong><small>Обычно это занимает несколько секунд.</small></div></div>}
+                  {state.update.downloading && <div className="update-download"><div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Скачиваем версию {state.update.version}</strong><small>Приложение продолжает работать. После загрузки предложим перезапуск.</small></div><b>{state.update.progress ?? 0}%</b></div><progress max="100" value={state.update.progress ?? 0} /></div>}
+                  {state.update.ready && <div className="update-status update-ready"><Check size={18} /><div><strong>Версия {state.update.version} скачана</strong><small>Осталось перезапустить приложение — ваши данные сохранятся.</small></div><button onClick={() => void api?.installUpdate()}>Перезапустить и установить</button></div>}
+                  {state.update.error && <div className="update-status update-failed"><Bell size={18} /><div><strong>Не удалось обновиться</strong><small>{state.update.error}</small></div><button onClick={() => void api?.checkForUpdates()}>Повторить</button></div>}
+                  {!state.update.checking && !state.update.downloading && !state.update.ready && !state.update.error && <div className="update-status"><Check size={18} /><div><strong>Установлена последняя версия</strong><small>Новые версии скачиваются автоматически в фоне.</small></div><button onClick={() => void api?.checkForUpdates()}>Проверить сейчас</button></div>}
+                </div>
               </div>
             </section>
             <section className="panel privacy-panel"><div className="panel-title"><div><p className="eyebrow">{t.boundaries}</p><h3>{t.doNotDiscuss}</h3></div><Ban size={20} /></div><div className="input-row compact"><input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder={t.blockedPlaceholder} onKeyDown={(e) => e.key === "Enter" && void blockTopic()} /><button onClick={() => void blockTopic()}>{t.block}</button></div>{state.blockedTopics.map((item) => <span className="blocked-chip" key={item}>{item}</span>)}{!state.blockedTopics.length && <p className="muted">{t.noBlocks}</p>}</section>

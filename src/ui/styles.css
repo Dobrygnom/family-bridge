@@ -63,6 +63,18 @@ section[id] { scroll-margin-top: 24px; }
 .settings-actions, .memory-status, .report-list { margin-top: 18px; display: grid; gap: 10px; padding: 14px; background: #111f28; border-radius: 10px; color: #9cb0b4; font-size: 12px; }
 .settings-actions label { display: flex; gap: 9px; align-items: center; }
 .settings-actions button { width: max-content; border: 0; border-radius: 9px; padding: 9px 12px; background: #29443f; color: #bfe9db; }
+.update-card { margin-top: 3px; padding-top: 13px; border-top: 1px solid #20333d; }
+.update-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: center; }
+.update-status > svg { color: #80d6b7; }
+.update-status > div { display: grid; gap: 3px; }
+.update-status strong { color: #dcebe6; font-size: 13px; }
+.update-status small { color: #82979e; line-height: 1.4; }
+.update-status b { min-width: 38px; color: #80d6b7; text-align: right; }
+.update-download { display: grid; gap: 9px; }
+.update-download progress { width: 100%; height: 6px; border: 0; border-radius: 99px; overflow: hidden; accent-color: #80d6b7; }
+.update-ready { padding: 12px; border-radius: 10px; background: #17302f; }
+.update-ready button { background: #80d6b7; color: #10222a; font-weight: 700; }
+.update-failed > svg, .update-failed strong { color: #e9a8af; }
 .memory-status strong { color: #80d6b7; }
 .context-current { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .context-panel { min-height: 360px; }

@@ -124,8 +124,16 @@ async function presentReadyUpdate(state: UpdateState) {
 
 async function checkForUpdates() {
   if (!app.isPackaged) return;
-  if (process.platform === "darwin" && macUpdater) await macUpdater.checkForUpdates();
-  else await autoUpdater.checkForUpdatesAndNotify();
+  if (process.platform === "darwin" && macUpdater) {
+    await macUpdater.checkForUpdates();
+    return;
+  }
+  service.setUpdateState({ available: false, checking: true, downloading: false });
+  try {
+    await autoUpdater.checkForUpdatesAndNotify();
+  } catch (error) {
+    service.setUpdateState({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 app.whenReady().then(async () => {

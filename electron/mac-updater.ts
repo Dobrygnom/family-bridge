@@ -14,6 +14,7 @@ const allowedDownloadPrefix = "https://github.com/Dobrygnom/family-bridge/releas
 export interface UpdateState {
   available: boolean;
   version?: string;
+  checking?: boolean;
   downloading: boolean;
   progress?: number;
   ready?: boolean;
@@ -174,6 +175,7 @@ export class MacReleaseUpdater {
       return;
     }
     this.busy = true;
+    this.onState({ available: false, checking: true, downloading: false });
     try {
       const response = await fetch(releaseApiUrl, {
         headers: { Accept: "application/vnd.github+json", "User-Agent": "Family-Bridge-Updater", "X-GitHub-Api-Version": "2022-11-28" },
