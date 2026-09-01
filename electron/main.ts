@@ -1,11 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray, type MessageBoxOptions } from "electron";
 import electronUpdater from "electron-updater";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { BackgroundService } from "./background-service.js";
 import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
+import { exportReportFiles, revealInWindowsExplorer } from "./open-directory.js";
 import { AtomicStore } from "./store.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -187,15 +187,16 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:refresh-context-now", () => service.refreshContextNow());
   ipcMain.handle("bridge:complete-onboarding", () => service.completeOnboarding());
   ipcMain.handle("bridge:open-reports", async () => {
-    const reports = path.join(app.getPath("userData"), "reports");
-    await mkdir(reports, { recursive: true });
+    const internalReports = path.join(app.getPath("userData"), "reports");
+    const exportedReports = path.join(app.getPath("documents"), "Family Bridge Reports");
+    await mkdir(internalReports, { recursive: true });
     const stored = await store.read();
-    const latest = stored.reports.find((report) => existsSync(report));
-    if (latest) {
-      shell.showItemInFolder(latest);
+    const latestExport = await exportReportFiles(stored.reports, exportedReports);
+    if (process.platform === "win32") {
+      await revealInWindowsExplorer(latestExport ?? exportedReports);
       return;
     }
-    const error = await shell.openPath(reports);
+    const error = await shell.openPath(exportedReports);
     if (error) throw new Error(`Не удалось открыть папку с файлами: ${error}`);
   });
   ipcMain.handle("bridge:create-pair", (_event, counterpartPersonId: unknown) => service.createPair(counterpartPersonId));
