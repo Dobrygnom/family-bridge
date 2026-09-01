@@ -37,6 +37,7 @@ declare global {
   interface Window {
     familyBridge?: {
       getState(): Promise<AppState>;
+      getLocalContextState(): Promise<Pick<AppState, "context" | "contextAnalysis">>;
       runConversation(topic: string, realCodex: boolean): Promise<ConversationReport>;
       addTopic(topic: string): Promise<AppState>;
       blockTopic(topic: string): Promise<AppState>;

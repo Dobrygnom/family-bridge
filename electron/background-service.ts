@@ -130,6 +130,10 @@ export class BackgroundService {
     return { ...publicStored, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
+  localContextState() {
+    return { context: this.readContextSource(), contextAnalysis: this.readContextAnalysis() };
+  }
+
   setUpdateState(update: UpdateState) {
     this.updateState = update;
     this.emit({ type: "update", ...update });

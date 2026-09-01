@@ -163,6 +163,7 @@ app.whenReady().then(async () => {
   app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
   ipcMain.handle("bridge:get-state", () => service.state());
+  ipcMain.handle("bridge:get-local-context-state", () => service.localContextState());
   ipcMain.handle("bridge:add-topic", (_event, topic: string) => service.addTopic(topic));
   ipcMain.handle("bridge:block-topic", (_event, topic: string) => service.blockTopic(topic));
   ipcMain.handle("bridge:run-conversation", async (_event, input: { topic: string; realCodex: boolean }) => {

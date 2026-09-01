@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("familyBridge", {
   getState: () => ipcRenderer.invoke("bridge:get-state"),
+  getLocalContextState: () => ipcRenderer.invoke("bridge:get-local-context-state"),
   runConversation: (topic: string, realCodex: boolean) =>
     ipcRenderer.invoke("bridge:run-conversation", { topic, realCodex }),
   addTopic: (topic: string) => ipcRenderer.invoke("bridge:add-topic", topic),

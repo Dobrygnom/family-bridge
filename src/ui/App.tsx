@@ -133,6 +133,9 @@ export function App() {
 
   const api = window.familyBridge;
   useEffect(() => {
+    const refreshLocalContext = () => void api?.getLocalContextState().then((local) => {
+      setState((current) => ({ ...current, context: local.context, contextAnalysis: local.contextAnalysis }));
+    });
     const refreshState = () => void api?.getState().then(async (current) => {
       const saved = localStorage.getItem("family-bridge-language") as Language | null;
       const next = saved && saved !== current.language ? await api.setLanguage(saved) : current;
@@ -143,7 +146,11 @@ export function App() {
       setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
     });
     refreshState();
-    const onFocus = () => refreshState();
+    refreshLocalContext();
+    const onFocus = () => {
+      refreshLocalContext();
+      refreshState();
+    };
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
       const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
@@ -176,6 +183,21 @@ export function App() {
       unsubscribe?.();
     };
   }, [api]);
+
+  useEffect(() => {
+    if (!api || state.contextAnalysis?.status !== "analyzing") return;
+    let active = true;
+    const reconcile = () => void api.getLocalContextState().then((local) => {
+      if (!active) return;
+      setState((current) => ({ ...current, context: local.context, contextAnalysis: local.contextAnalysis }));
+    });
+    reconcile();
+    const timer = window.setInterval(reconcile, 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [api, state.contextAnalysis?.status]);
 
   const health = useMemo(
     () => state.codex.installed && state.codex.authenticated,
