@@ -35,11 +35,23 @@ h1, h2, h3, p { margin-top: 0; } h1 { font-family: 'Playfair Display', serif; fo
 .input-row { display: grid; grid-template-columns: 1fr auto; gap: 9px; }.input-row input { min-width: 0; background: #0e1a22; border: 1px solid #2a3d47; color: white; padding: 11px 13px; border-radius: 10px; outline: none; }.input-row input:focus { border-color: #5aa98f; box-shadow: 0 0 0 3px rgba(90,169,143,.12); }.input-row button { border: 0; border-radius: 10px; padding: 0 15px; background: #29443f; color: #bfe9db; }
 .topic-list { display: grid; gap: 8px; margin-top: 14px; max-height: 150px; overflow: auto; }.topic { padding: 11px 13px; background: #111f28; border-radius: 10px; display: flex; justify-content: space-between; gap: 15px; font-size: 12px; }.topic small { color: #6f9088; }
 .topic-preview-note { margin: 9px 0 0; color: #7fa095; font-size: 11px; line-height: 1.45; }
+.pair-topic { align-items: center; }
+.pair-topic > span { min-width: 0; line-height: 1.4; }
+.topic-state { flex: 0 0 auto; border: 1px solid #2a414a; border-radius: 999px; padding: 5px 9px; background: #152630; color: #8da4a8; font-size: 10px; }
+.topic-state.active { border-color: #38675d; color: #8ce2c3; }
+.topic-state.complete { border-color: #447568; background: #1b3933; color: #a3efd3; cursor: pointer; }
+.topic-state:disabled { opacity: 1; cursor: default; }
 .actions { display: flex; gap: 9px; margin-top: 16px; }.actions button { border-radius: 10px; padding: 10px 13px; display: flex; align-items: center; gap: 7px; }.primary { border: 0; background: #80d6b7; color: #102229; font-weight: 700; }.ghost { background: transparent; border: 1px solid #344852; color: #aabcbf; }.actions button:disabled { opacity: .4; cursor: default; }
 .muted { color: #7f949c; font-size: 12px; line-height: 1.55; margin: 16px 0 0; }.blocked-chip { display: inline-flex; margin: 12px 6px 0 0; padding: 6px 9px; background: #3b252a; color: #e9a8af; border-radius: 999px; font-size: 11px; }
 .conversation-panel, .report-panel { min-height: 320px; }.timeline { max-height: 335px; overflow: auto; display: grid; gap: 11px; }.bubble { width: 88%; padding: 12px 14px; border-radius: 14px; background: #162832; border: 1px solid #28404a; }.bubble.katya { margin-left: auto; background: #1d302e; border-color: #31514a; }.bubble strong { font-size: 11px; color: #80d6b7; }.bubble p { margin: 6px 0 0; font-size: 12px; line-height: 1.55; color: #c3d0d0; }.timeline-status { text-align: center; color: #668087; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
 .empty { color: #617781; font-size: 12px; padding: 13px 0; }.empty.tall { min-height: 190px; display: grid; place-items: center; align-content: center; text-align: center; gap: 12px; max-width: 260px; margin: auto; line-height: 1.5; }
 .summary { color: #c8d6d3; line-height: 1.65; font-size: 13px; }.report-meta { display: flex; gap: 8px; }.report-meta span { background: #172831; padding: 6px 9px; border-radius: 8px; font-size: 10px; color: #89a09f; }.link-button { margin-top: 17px; color: #80d6b7; border: 0; background: transparent; padding: 0; font-size: 12px; }
+.report-cards { display: grid; gap: 12px; margin-top: 14px; }
+.report-card { padding: 16px; border: 1px solid #29414a; border-radius: 12px; background: #101e27; }
+.report-card > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.report-card strong { color: #e5efec; font-size: 14px; }
+.report-card time, .report-card small { color: #6f8a90; font-size: 10px; }
+.report-card p { margin: 12px 0 10px; color: #bfd0cc; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .error { position: fixed; right: 24px; bottom: 24px; display: flex; gap: 9px; align-items: center; max-width: 480px; padding: 13px 16px; background: #4b242b; border: 1px solid #783d47; border-radius: 11px; box-shadow: 0 12px 40px #0008; font-size: 12px; }
 .owner-question-panel { margin-bottom: 20px; border-color: #816a45; background: linear-gradient(135deg, rgba(59,49,37,.96), rgba(20,34,42,.96)); box-shadow: 0 18px 50px rgba(0,0,0,.2); }
 .owner-question-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }.owner-question-heading svg { color: #d5af79; }

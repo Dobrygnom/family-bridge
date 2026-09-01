@@ -48,6 +48,14 @@ interface OwnerQuestionView {
   peerName?: string;
 }
 
+export interface ReportSummaryView {
+  id: string;
+  topic: string;
+  summary: string;
+  completedAt: string;
+  messageCount: number;
+}
+
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
 
 function timestampMs(value: number | undefined) {
@@ -75,7 +83,33 @@ export function recoverInterruptedContextAnalysis(analysis: ContextAnalysis | un
 }
 
 export function recoverInterruptedTopics(pendingTopics: string[], inFlightTopics: string[]) {
-  return [...new Set([...pendingTopics, ...inFlightTopics])];
+  return mergeTopicCatalog(pendingTopics, inFlightTopics);
+}
+
+export function mergeTopicCatalog(...sources: string[][]) {
+  return [...new Set(sources.flat().map((topic) => topic.trim()).filter(Boolean))];
+}
+
+export function readReportSummaries(reportPaths: string[]): ReportSummaryView[] {
+  return reportPaths.flatMap((reportPath) => {
+    try {
+      const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+        conversationId?: string;
+        topic?: string;
+        topics?: string[];
+        sharedSummary?: string;
+        completedAt?: string;
+        messages?: unknown[];
+      };
+      return [{
+        id: report.conversationId || reportPath,
+        topic: report.topic || report.topics?.[0] || "Разговор агентов",
+        summary: report.sharedSummary?.trim() || "Агенты завершили разговор без общего текста итога.",
+        completedAt: report.completedAt || "",
+        messageCount: Array.isArray(report.messages) ? report.messages.length : 0,
+      }];
+    } catch { return []; }
+  });
 }
 
 export class BackgroundService {
@@ -127,7 +161,8 @@ export class BackgroundService {
     const contextAnalysis = this.readContextAnalysis();
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
-    return { ...publicStored, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    const reportSummaries = readReportSummaries(stored.reports);
+    return { ...publicStored, lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   localContextState() {
@@ -308,8 +343,10 @@ export class BackgroundService {
     const stored = await this.store.read();
     let pendingTopics = stored.pendingTopics.filter((item) => item !== topic.title);
     if (topic.approved && topic.discussWithPersonId === stored.remote?.counterpartPersonId) pendingTopics = [...new Set([...pendingTopics, topic.title])];
-    await this.store.update({ pendingTopics });
-    this.emit({ type: "topics", topics: pendingTopics });
+    const protectedTopics = new Set([...pendingTopics, ...stored.activeTopics, ...readReportSummaries(stored.reports).map((report) => report.topic)]);
+    const pairTopics = mergeTopicCatalog(stored.pairTopics.filter((title) => title !== topic.title || protectedTopics.has(title)), pendingTopics);
+    const next = await this.store.update({ pendingTopics, pairTopics });
+    this.emitTopicState(next);
     if (pendingTopics.includes(topic.title)) {
       try { await this.shareTopic(topic.title); } catch { /* it will also be shared when the pair becomes available */ }
     }
@@ -331,8 +368,10 @@ export class BackgroundService {
     let pendingTopics = stored.pendingTopics.filter((title) => !changedTitles.has(title));
     const activated = changed.filter((topic) => topic.approved && topic.discussWithPersonId === stored.remote?.counterpartPersonId).map((topic) => topic.title);
     pendingTopics = [...new Set([...pendingTopics, ...activated])];
-    await this.store.update({ pendingTopics });
-    this.emit({ type: "topics", topics: pendingTopics });
+    const protectedTopics = new Set([...pendingTopics, ...stored.activeTopics, ...readReportSummaries(stored.reports).map((report) => report.topic)]);
+    const pairTopics = mergeTopicCatalog(stored.pairTopics.filter((title) => !changedTitles.has(title) || protectedTopics.has(title)), activated);
+    const next = await this.store.update({ pendingTopics, pairTopics });
+    this.emitTopicState(next);
     for (const title of activated) {
       try { await this.shareTopic(title); } catch { /* it will also be shared when the pair becomes available */ }
     }
@@ -346,7 +385,7 @@ export class BackgroundService {
         pendingTopics: recoverInterruptedTopics(state.pendingTopics, state.inFlightTopics),
         inFlightTopics: [],
       });
-      this.emit({ type: "topics", topics: state.pendingTopics });
+      this.emitTopicState(state);
     }
     if (state.remote) this.configureRemote(state.remote.encryptionSecret);
     const savedAnalysis = this.readContextAnalysis();
@@ -354,6 +393,14 @@ export class BackgroundService {
     if (recoveredAnalysis && recoveredAnalysis !== savedAnalysis) {
       await this.writeContextAnalysis(recoveredAnalysis);
       this.emit({ type: "context-analysis", analysis: recoveredAnalysis });
+    }
+    const analysis = recoveredAnalysis ?? savedAnalysis;
+    const approvedTopics = state.remote?.counterpartPersonId
+      ? topicsForCounterpart(analysis, state.remote.counterpartPersonId).map((topic) => topic.title)
+      : [];
+    const pairTopics = mergeTopicCatalog(state.pairTopics, approvedTopics, state.pendingTopics, state.activeTopics);
+    if (pairTopics.length !== state.pairTopics.length || pairTopics.some((topic, index) => topic !== state.pairTopics[index])) {
+      state = await this.store.update({ pairTopics });
     }
     const context = this.readContextSource();
     if (context?.id) {
@@ -443,17 +490,19 @@ export class BackgroundService {
 
   private async activateContextTopics(counterpartPersonId: string) {
     const titles = topicsForCounterpart(this.readContextAnalysis(), counterpartPersonId).map((topic) => topic.title);
-    const pendingTopics = [...new Set(titles)];
-    await this.store.update({ pendingTopics });
-    this.emit({ type: "topics", topics: pendingTopics });
+    const stored = await this.store.read();
+    const pendingTopics = mergeTopicCatalog(titles);
+    const pairTopics = mergeTopicCatalog(stored.pairTopics, titles);
+    const next = await this.store.update({ pendingTopics, pairTopics });
+    this.emitTopicState(next);
   }
 
   async runRemote(topic: string) {
     await this.startRemoteConversation(topic);
     const stored = await this.store.read();
     const pendingTopics = stored.pendingTopics.filter((item) => item !== topic);
-    await this.store.update({ pendingTopics, lastConversationAt: new Date().toISOString() });
-    this.emit({ type: "topics", topics: pendingTopics });
+    const next = await this.store.update({ pendingTopics, pairTopics: mergeTopicCatalog(stored.pairTopics, [topic]), activeTopics: mergeTopicCatalog(stored.activeTopics, [topic]) });
+    this.emitTopicState(next);
   }
 
   async discussAllTopics() {
@@ -467,8 +516,13 @@ export class BackgroundService {
     const topics = [...stored.pendingTopics];
     this.running = true;
     this.emit({ type: "runtime", running: true });
-    await this.store.update({ pendingTopics: [], inFlightTopics: topics });
-    this.emit({ type: "topics", topics: [] });
+    const starting = await this.store.update({
+      pendingTopics: [],
+      inFlightTopics: topics,
+      pairTopics: mergeTopicCatalog(stored.pairTopics, topics),
+      activeTopics: mergeTopicCatalog(stored.activeTopics, topics),
+    });
+    this.emitTopicState(starting);
     try {
       const results = await Promise.allSettled(topics.map((topic) => this.startRemoteConversation(topic)));
       const failed = topics.filter((_topic, index) => results[index].status === "rejected");
@@ -477,13 +531,14 @@ export class BackgroundService {
         const reason = results.find((result) => result.status === "rejected");
         throw reason?.status === "rejected" ? reason.reason : new Error("Не удалось запустить часть тем");
       }
-      await this.store.update({ lastConversationAt: new Date().toISOString(), inFlightTopics: [] });
+      await this.store.update({ inFlightTopics: [] });
       return this.state();
     } catch (error) {
       const current = await this.store.read();
       const pendingTopics = recoverInterruptedTopics(current.pendingTopics, current.inFlightTopics);
-      await this.store.update({ pendingTopics, inFlightTopics: [] });
-      this.emit({ type: "topics", topics: pendingTopics });
+      const activeTopics = current.activeTopics.filter((topic) => !current.inFlightTopics.includes(topic));
+      const recovered = await this.store.update({ pendingTopics, inFlightTopics: [], activeTopics });
+      this.emitTopicState(recovered);
       throw error;
     } finally {
       this.running = false;
@@ -611,19 +666,24 @@ export class BackgroundService {
       if (envelope.payload.kind === "topic") {
         const current = await this.store.read();
         const blocked = current.blockedTopics.some((item) => envelope.payload.topic.toLowerCase().includes(item.toLowerCase()));
-        if (!blocked && !current.pendingTopics.includes(envelope.payload.topic)) {
-          const pendingTopics = [...current.pendingTopics, envelope.payload.topic];
-          await this.store.update({ pendingTopics });
-          this.emit({ type: "topics", topics: pendingTopics });
+        if (!blocked) {
+          const next = await this.store.update({
+            pendingTopics: mergeTopicCatalog(current.pendingTopics, [envelope.payload.topic]),
+            pairTopics: mergeTopicCatalog(current.pairTopics, [envelope.payload.topic]),
+          });
+          this.emitTopicState(next);
         }
         await this.remote.acknowledge(envelope.id);
         return;
       }
-      const pendingTopics = stored.pendingTopics.filter((item) => item !== envelope.payload.topic);
-      if (pendingTopics.length !== stored.pendingTopics.length) {
-        await this.store.update({ pendingTopics });
-        this.emit({ type: "topics", topics: pendingTopics });
-      }
+      const currentTopics = await this.store.read();
+      const pendingTopics = currentTopics.pendingTopics.filter((item) => item !== envelope.payload.topic);
+      const activeState = await this.store.update({
+        pendingTopics,
+        pairTopics: mergeTopicCatalog(currentTopics.pairTopics, [envelope.payload.topic]),
+        activeTopics: mergeTopicCatalog(currentTopics.activeTopics, [envelope.payload.topic]),
+      });
+      this.emitTopicState(activeState);
       const agent = this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName);
       const isFirst = !this.remoteMessages.has(envelope.conversation_id);
       const response = isFirst ? await agent.start(envelope.payload.text) : await agent.respond(envelope.payload.text);
@@ -749,11 +809,19 @@ export class BackgroundService {
     const reportsDir = path.join(this.userData, "reports");
     await mkdir(reportsDir, { recursive: true });
     const reportPath = path.join(reportsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-remote.json`);
-    await writeFile(reportPath, JSON.stringify({ conversationId, topic, sharedSummary: summary, messages, completedAt: new Date().toISOString() }, null, 2));
+    const completedAt = new Date().toISOString();
+    await writeFile(reportPath, JSON.stringify({ conversationId, topic, sharedSummary: summary, messages, completedAt }, null, 2));
     const state = await this.store.read();
     const pendingTopics = state.pendingTopics.filter((item) => item !== topic);
-    await this.store.update({ reports: [reportPath, ...state.reports].slice(0, 100), pendingTopics, lastConversationAt: new Date().toISOString() });
-    this.emit({ type: "topics", topics: pendingTopics });
+    const next = await this.store.update({
+      reports: [reportPath, ...state.reports].slice(0, 100),
+      pendingTopics,
+      pairTopics: mergeTopicCatalog(state.pairTopics, [topic]),
+      activeTopics: state.activeTopics.filter((item) => item !== topic),
+      lastConversationAt: completedAt,
+    });
+    this.emitTopicState(next);
+    this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports) });
     this.emit({ type: "status", status: "completed" });
   }
 
@@ -761,9 +829,8 @@ export class BackgroundService {
     const trimmed = topic.trim();
     if (!trimmed) return this.state();
     const state = await this.store.read();
-    if (!state.pendingTopics.includes(trimmed)) state.pendingTopics.push(trimmed);
-    await this.store.update({ pendingTopics: state.pendingTopics });
-    this.emit({ type: "topics", topics: state.pendingTopics });
+    const next = await this.store.update({ pendingTopics: mergeTopicCatalog(state.pendingTopics, [trimmed]), pairTopics: mergeTopicCatalog(state.pairTopics, [trimmed]) });
+    this.emitTopicState(next);
     try { await this.shareTopic(trimmed); }
     catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
     return this.state();
@@ -797,11 +864,15 @@ export class BackgroundService {
       await mkdir(reportsDir, { recursive: true });
       const reportPath = path.join(reportsDir, `${report.completedAt.replace(/[:.]/g, "-")}.json`);
       await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
-      await this.store.update({
+      const next = await this.store.update({
         reports: [reportPath, ...state.reports].slice(0, 100),
         pendingTopics: state.pendingTopics.filter((item) => item !== topic),
+        pairTopics: mergeTopicCatalog(state.pairTopics, [topic]),
+        activeTopics: state.activeTopics.filter((item) => item !== topic),
         lastConversationAt: report.completedAt,
       });
+      this.emitTopicState(next);
+      this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports) });
       return report;
     } finally {
       this.running = false;
@@ -809,7 +880,11 @@ export class BackgroundService {
     }
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "topics"; topics: string[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
+  private emitTopicState(state: Pick<Awaited<ReturnType<AtomicStore["read"]>>, "pendingTopics" | "pairTopics" | "activeTopics">) {
+    this.emit({ type: "topics", topics: state.pendingTopics, pairTopics: state.pairTopics, activeTopics: state.activeTopics });
+  }
+
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[] } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 

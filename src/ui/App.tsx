@@ -27,8 +27,11 @@ const fallback: AppState = {
   language: "ru",
   autoStart: true,
   pendingTopics: ["Как сделать бытовые договорённости спокойнее"],
+  pairTopics: ["Как сделать бытовые договорённости спокойнее"],
+  activeTopics: [],
   blockedTopics: [],
   reports: [],
+  reportSummaries: [],
   ownerQuestions: [],
   running: false,
   contextSyncing: false,
@@ -113,10 +116,22 @@ export function App() {
     cs: { title: "Váš kontext zůstává zachován", body: "Kontrolujeme nové zprávy ve vybraném chatu. Již nalezené osoby a témata se nemažou." },
     fr: { title: "Votre contexte est toujours là", body: "Nous vérifions les nouveaux messages du chat sélectionné. Les personnes et sujets déjà trouvés ne sont pas réinitialisés." },
   }[language];
+  const topicStatusText = {
+    ru: { selected: "Выбрана", pending: "Ждёт запуска", active: "Ждём ответ второго агента", complete: "Итог готов" },
+    en: { selected: "Selected", pending: "Waiting to start", active: "Waiting for the other agent", complete: "Result ready" },
+    cs: { selected: "Vybráno", pending: "Čeká na spuštění", active: "Čeká se na druhého agenta", complete: "Výsledek je připraven" },
+    fr: { selected: "Sélectionné", pending: "En attente", active: "En attente de l’autre agent", complete: "Bilan prêt" },
+  }[language];
+  const reportsText = {
+    ru: { empty: "Готовые итоги появятся здесь автоматически.", files: "Показать файлы в папке", messages: "реплик" },
+    en: { empty: "Completed results will appear here automatically.", files: "Show files in folder", messages: "messages" },
+    cs: { empty: "Hotové výsledky se zde objeví automaticky.", files: "Zobrazit soubory ve složce", messages: "zpráv" },
+    fr: { empty: "Les bilans terminés apparaîtront ici automatiquement.", files: "Afficher les fichiers dans le dossier", messages: "messages" },
+  }[language];
   const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
   const selectedPairPersonId = counterpartPersonId || state.remote.counterpartPersonId;
   const localPairTopics = state.contextAnalysis?.topics.filter((item) => item.approved && item.discussWithPersonId === selectedPairPersonId).map((item) => item.title) ?? [];
-  const displayedPairTopics = state.remote.connected ? state.pendingTopics : [...new Set([...localPairTopics, ...state.pendingTopics])];
+  const displayedPairTopics = [...new Set([...localPairTopics, ...state.pairTopics, ...state.pendingTopics, ...state.activeTopics])];
 
   function goTo(section: SectionId) {
     setActiveSection(section);
@@ -153,7 +168,7 @@ export function App() {
     };
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
+      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -161,7 +176,8 @@ export function App() {
         setCounterpartPersonId((current) => current || event.analysis?.people[0]?.id || "");
         setReviewPersonId((current) => current && event.analysis?.people.some((person) => person.id === current) ? current : event.analysis?.people[0]?.id || "");
       }
-      if (event.type === "topics" && event.topics) setState((current) => ({ ...current, pendingTopics: event.topics! }));
+      if (event.type === "topics" && event.topics) setState((current) => ({ ...current, pendingTopics: event.topics!, pairTopics: event.pairTopics ?? current.pairTopics, activeTopics: event.activeTopics ?? current.activeTopics }));
+      if (event.type === "reports" && event.reports && event.reportSummaries) setState((current) => ({ ...current, reports: event.reports!, reportSummaries: event.reportSummaries! }));
       if (event.type === "owner-questions" && event.questions) {
         setState((current) => ({ ...current, ownerQuestions: event.questions! }));
         if (event.questions.length) setActiveSection("overview");
@@ -475,16 +491,22 @@ export function App() {
             <div className="panel-title"><div><p className="eyebrow">{workflowText.topics}</p><h3>{workflowText.topicTitle}</h3></div><Plus size={20} /></div>
             <p className="topic-explanation">{workflowText.topicHint}</p>
             {!state.remote.connected && selectedPairPersonId && <p className="topic-preview-note">{workflowText.localPreview}</p>}
-            <div className="topic-list">{displayedPairTopics.map((item) => <div className="topic" key={item}><span>{item}</span></div>)}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
+            <div className="topic-list">{displayedPairTopics.map((item) => {
+              const report = state.reportSummaries.find((candidate) => candidate.topic === item);
+              const active = state.activeTopics.includes(item);
+              const pending = state.pendingTopics.includes(item);
+              const status = report ? topicStatusText.complete : active ? topicStatusText.active : pending ? topicStatusText.pending : topicStatusText.selected;
+              return <div className="topic pair-topic" key={item}><span>{item}</span><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => report && goTo("reports")}>{status}</button></div>;
+            })}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
             <div className="input-row"><input disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim()} onClick={() => void addTopic()}>{t.add}</button></div>
             <div className="actions"><button className="primary" disabled={busy || !state.remote.connected || !state.pendingTopics.length} onClick={() => void discussAllTopics()}><Sparkles size={17} />{busy ? workflowText.discussing : workflowText.discuss}</button></div>
           </section>}
 
           {activeSection === "reports" && <section className="panel report-panel" id="reports">
             <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><ScrollText size={20} /></div>
-            <div className="empty tall"><ScrollText size={28} /><span>{state.reports.length ? `${state.reports.length} сохранённых итогов` : t.noReport}</span></div>
-            <button className="link-button" onClick={() => void api?.openReports()}>{t.openReports}</button>
-            <div className="report-list">{state.reports.map((item) => <div key={item}>{item.split(/[\\/]/).pop()}</div>)}{!state.reports.length && <span>Сохранённых итогов пока нет</span>}</div>
+            {!state.reportSummaries.length && <div className="empty tall"><ScrollText size={28} /><span>{reportsText.empty}</span></div>}
+            <div className="report-cards">{state.reportSummaries.map((report) => <article className="report-card" key={report.id}><div><strong>{report.topic}</strong><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div><p>{report.summary}</p><small>{report.messageCount} {reportsText.messages}</small></article>)}</div>
+            <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>
           </section>}
 
           {activeSection === "settings" && <>

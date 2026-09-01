@@ -8,8 +8,11 @@ export interface AppState {
   language: "ru" | "en" | "cs" | "fr";
   autoStart: boolean;
   pendingTopics: string[];
+  pairTopics: string[];
+  activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
+  reportSummaries: Array<{ id: string; topic: string; summary: string; completedAt: string; messageCount: number }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   lastConversationAt?: string;
   running: boolean;

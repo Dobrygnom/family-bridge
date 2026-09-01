@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray, type MessageBoxOptions } from "electron";
 import electronUpdater from "electron-updater";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -188,7 +189,14 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:open-reports", async () => {
     const reports = path.join(app.getPath("userData"), "reports");
     await mkdir(reports, { recursive: true });
-    await shell.openPath(reports);
+    const stored = await store.read();
+    const latest = stored.reports.find((report) => existsSync(report));
+    if (latest) {
+      shell.showItemInFolder(latest);
+      return;
+    }
+    const error = await shell.openPath(reports);
+    if (error) throw new Error(`Не удалось открыть папку с файлами: ${error}`);
   });
   ipcMain.handle("bridge:create-pair", (_event, counterpartPersonId: unknown) => service.createPair(counterpartPersonId));
   ipcMain.handle("bridge:join-pair", (_event, input: { invite?: unknown; counterpartPersonId?: unknown }) => service.joinPair(String(input?.invite ?? ""), input?.counterpartPersonId));

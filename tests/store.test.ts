@@ -15,6 +15,8 @@ test("identity starts unconfigured and an explicit display name persists", async
     assert.equal(initial.displayName, "");
     assert.equal(initial.language, "ru");
     assert.deepEqual(initial.inFlightTopics, []);
+    assert.deepEqual(initial.pairTopics, []);
+    assert.deepEqual(initial.activeTopics, []);
 
     await store.update({ owner: "katya", identityConfigured: true, displayName: "Катя", language: "cs" });
     const persisted = await new AtomicStore(directory).read();

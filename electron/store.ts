@@ -25,6 +25,8 @@ export interface StoredState {
   autoStart: boolean;
   pendingTopics: string[];
   inFlightTopics: string[];
+  pairTopics: string[];
+  activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
   pendingOwnerQuestions: PendingOwnerQuestion[];
@@ -47,6 +49,8 @@ const defaults: StoredState = {
   autoStart: true,
   pendingTopics: [],
   inFlightTopics: [],
+  pairTopics: [],
+  activeTopics: [],
   blockedTopics: [],
   reports: [],
   pendingOwnerQuestions: [],
