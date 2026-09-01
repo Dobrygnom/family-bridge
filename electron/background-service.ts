@@ -52,8 +52,10 @@ export interface ReportSummaryView {
   id: string;
   topic: string;
   summary: string;
+  answerFrom: string;
   completedAt: string;
   messageCount: number;
+  messages: Array<{ speaker: string; text: string; local: boolean }>;
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
@@ -90,7 +92,15 @@ export function mergeTopicCatalog(...sources: string[][]) {
   return [...new Set(sources.flat().map((topic) => topic.trim()).filter(Boolean))];
 }
 
-export function readReportSummaries(reportPaths: string[]): ReportSummaryView[] {
+function conciseAnswer(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (text.length <= 240) return text;
+  const firstSentence = text.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim();
+  if (firstSentence && firstSentence.length <= 240) return firstSentence;
+  return `${text.slice(0, 237).trimEnd()}…`;
+}
+
+export function readReportSummaries(reportPaths: string[], names: { localOwnerId?: OwnerId; localName?: string; peerName?: string } = {}): ReportSummaryView[] {
   return reportPaths.flatMap((reportPath) => {
     try {
       const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
@@ -98,15 +108,25 @@ export function readReportSummaries(reportPaths: string[]): ReportSummaryView[] 
         topic?: string;
         topics?: string[];
         sharedSummary?: string;
+        answerFrom?: string;
         completedAt?: string;
-        messages?: unknown[];
+        messages?: Array<{ from?: string; text?: string; payload?: string }>;
       };
+      const messages = (report.messages ?? []).flatMap((message) => {
+        const text = (message.text ?? message.payload ?? "").trim();
+        if (!text) return [];
+        const local = Boolean(names.localOwnerId && message.from === names.localOwnerId);
+        const speaker = local ? (names.localName || "Вы") : (names.peerName || message.from || "Второй агент");
+        return [{ speaker, text, local }];
+      });
       return [{
         id: report.conversationId || reportPath,
         topic: report.topic || report.topics?.[0] || "Разговор агентов",
-        summary: report.sharedSummary?.trim() || "Агенты завершили разговор без общего текста итога.",
+        summary: conciseAnswer(report.sharedSummary || "Не получилось получить достаточно ясный ответ."),
+        answerFrom: report.answerFrom?.trim() || names.peerName || "Второй участник",
         completedAt: report.completedAt || "",
-        messageCount: Array.isArray(report.messages) ? report.messages.length : 0,
+        messageCount: messages.length,
+        messages,
       }];
     } catch { return []; }
   });
@@ -161,7 +181,7 @@ export class BackgroundService {
     const contextAnalysis = this.readContextAnalysis();
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
-    const reportSummaries = readReportSummaries(stored.reports);
+    const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр" });
     return { ...publicStored, lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
@@ -559,14 +579,16 @@ export class BackgroundService {
     if (!recipientId) throw new Error("Второй участник ещё не подключился");
     const conversationId = randomUUID();
     const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName);
-    const response = await agent.start(`Предложи второму семейному агенту обсудить тему: ${topic}`);
+    const response = await agent.start(`Ты начинаешь этот разговор. Тема — вопрос к другому человеку: «${topic}». Сформулируй один короткий и прямой вопрос о том, что второй человек думает, чувствует, хочет или готов сделать. Не предлагай за него решение, процедуру или общий компромисс. Ты — инициатор, поэтому shared_summary оставь пустым, а status поставь continue.`);
     if (this.hasOwnerQuestion(response)) {
       await this.queueOwnerQuestion({ conversationId, topic, question: response.owner_question, peerName: stored.remote.peerName, nextSequence: 1, transcript: [] });
       return;
     }
-    this.remoteMessages.set(conversationId, [{ from: stored.owner, text: response.message_to_peer }]);
+    const messages = [{ from: stored.owner, text: response.message_to_peer }];
+    this.remoteMessages.set(conversationId, messages);
+    await this.persistTranscript(conversationId, topic, messages);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status === "unsafe" ? "unsafe" : "continue", sharedSummary: "", senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: 1 });
   }
 
@@ -684,32 +706,41 @@ export class BackgroundService {
         activeTopics: mergeTopicCatalog(currentTopics.activeTopics, [envelope.payload.topic]),
       });
       this.emitTopicState(activeState);
-      const agent = this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName);
-      const isFirst = !this.remoteMessages.has(envelope.conversation_id);
-      const response = isFirst ? await agent.start(envelope.payload.text) : await agent.respond(envelope.payload.text);
-      const messages = this.remoteMessages.get(envelope.conversation_id) ?? [];
+      const existingAgent = this.remoteAgents.get(envelope.conversation_id);
+      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName);
+      const messages = this.remoteMessages.get(envelope.conversation_id)
+        ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
+        ?? [];
       messages.push({ from: envelope.sender_agent as "dima" | "katya", text: envelope.payload.text });
       this.remoteMessages.set(envelope.conversation_id, messages);
+      await this.persistTranscript(envelope.conversation_id, envelope.payload.topic, messages);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: envelope.payload.text, turn: envelope.sequence_number });
+      if (envelope.payload.status === "complete") {
+        await this.remote.acknowledge(envelope.id);
+        await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, envelope.payload.sharedSummary || envelope.payload.text, messages, peerName);
+        return;
+      }
+      if (envelope.sequence_number >= 8) {
+        await this.remote.acknowledge(envelope.id);
+        await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, envelope.payload.sharedSummary || "Не получилось получить достаточно ясный ответ.", messages, peerName);
+        return;
+      }
+      const response = existingAgent ? await agent.respond(envelope.payload.text) : await agent.start(envelope.payload.text);
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: envelope.payload.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
         await this.remote.acknowledge(envelope.id);
         return;
       }
       messages.push({ from: stored.owner, text: response.message_to_peer });
-      if (envelope.payload.status !== "complete" && envelope.sequence_number < 8) {
-        const me = await this.remote.identity();
-        const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
-        const sequence = envelope.sequence_number + 1;
-        await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
-          payload: { kind: "dialogue", text: response.message_to_peer, topic: envelope.payload.topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
-        await this.remote.acknowledge(envelope.id);
-        this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
-        if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages);
-      } else {
-        await this.remote.acknowledge(envelope.id);
-        await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages);
-      }
+      await this.persistTranscript(envelope.conversation_id, envelope.payload.topic, messages);
+      const me = await this.remote.identity();
+      const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
+      const sequence = envelope.sequence_number + 1;
+      await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: envelope.payload.topic, status: response.status, sharedSummary: response.shared_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+      await this.remote.acknowledge(envelope.id);
+      this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
+      if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, envelope.payload.topic, response.shared_summary, messages, stored.displayName);
     } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
     finally { this.remoteBusy = false; }
   }
@@ -794,34 +825,45 @@ export class BackgroundService {
       });
       const messages = [...pending.transcript, { from: stored.owner, text: response.message_to_peer }];
       this.remoteMessages.set(pending.conversationId, messages);
+      await this.persistTranscript(pending.conversationId, pending.topic, messages);
       const pendingOwnerQuestions = stored.pendingOwnerQuestions.filter((item) => item.id !== id);
       await this.store.update({ pendingOwnerQuestions });
       this.emit({ type: "owner-questions", questions: this.publicOwnerQuestions(pendingOwnerQuestions) });
       this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: pending.nextSequence });
-      if (response.status === "complete") await this.saveRemoteReport(pending.conversationId, pending.topic, response.shared_summary, messages);
+      if (response.status === "complete") await this.saveRemoteReport(pending.conversationId, pending.topic, response.shared_summary, messages, stored.displayName);
       return this.state();
     } finally {
       this.answeringQuestions.delete(id);
     }
   }
 
-  private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>) {
+  private async persistTranscript(conversationId: string, topic: string, messages: Array<{ from: OwnerId; text: string }>) {
+    const state = await this.store.read();
+    await this.store.update({ conversationTranscripts: { ...state.conversationTranscripts, [conversationId]: { topic, messages: messages.map((message) => ({ ...message })) } } });
+  }
+
+  private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>, answerFrom?: string) {
     const reportsDir = path.join(this.userData, "reports");
     await mkdir(reportsDir, { recursive: true });
     const reportPath = path.join(reportsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-remote.json`);
     const completedAt = new Date().toISOString();
-    await writeFile(reportPath, JSON.stringify({ conversationId, topic, sharedSummary: summary, messages, completedAt }, null, 2));
+    await writeFile(reportPath, JSON.stringify({ conversationId, topic, sharedSummary: conciseAnswer(summary), answerFrom, messages, completedAt }, null, 2));
     const state = await this.store.read();
     const pendingTopics = state.pendingTopics.filter((item) => item !== topic);
+    const conversationTranscripts = { ...state.conversationTranscripts };
+    delete conversationTranscripts[conversationId];
     const next = await this.store.update({
       reports: [reportPath, ...state.reports].slice(0, 100),
       pendingTopics,
       pairTopics: mergeTopicCatalog(state.pairTopics, [topic]),
       activeTopics: state.activeTopics.filter((item) => item !== topic),
+      conversationTranscripts,
       lastConversationAt: completedAt,
     });
+    this.remoteMessages.delete(conversationId);
+    this.remoteAgents.delete(conversationId);
     this.emitTopicState(next);
-    this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports) });
+    this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports, { localOwnerId: next.owner, localName: next.displayName || "Вы", peerName: next.remote?.peerName || "Партнёр" }) });
     this.emit({ type: "status", status: "completed" });
   }
 
@@ -872,7 +914,7 @@ export class BackgroundService {
         lastConversationAt: report.completedAt,
       });
       this.emitTopicState(next);
-      this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports) });
+      this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports, { localOwnerId: next.owner, localName: next.displayName || "Вы", peerName: next.remote?.peerName || "Партнёр" }) });
       return report;
     } finally {
       this.running = false;

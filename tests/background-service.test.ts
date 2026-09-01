@@ -87,11 +87,11 @@ test("saved reports expose their readable shared result inside the app", async (
   try {
     const remotePath = path.join(directory, "remote.json");
     const localPath = path.join(directory, "local.json");
-    await writeFile(remotePath, JSON.stringify({ conversationId: "remote-1", topic: "Границы", sharedSummary: "Общий итог", completedAt: "2026-09-01T12:00:00.000Z", messages: [{}, {}] }));
-    await writeFile(localPath, JSON.stringify({ conversationId: "local-1", topics: ["Быт"], sharedSummary: "Локальный итог", completedAt: "2026-09-01T13:00:00.000Z", messages: [{}] }));
-    assert.deepEqual(readReportSummaries([remotePath, localPath]), [
-      { id: "remote-1", topic: "Границы", summary: "Общий итог", completedAt: "2026-09-01T12:00:00.000Z", messageCount: 2 },
-      { id: "local-1", topic: "Быт", summary: "Локальный итог", completedAt: "2026-09-01T13:00:00.000Z", messageCount: 1 },
+    await writeFile(remotePath, JSON.stringify({ conversationId: "remote-1", topic: "Границы", sharedSummary: "Мне сейчас важно не отвечать сразу.", answerFrom: "Катя", completedAt: "2026-09-01T12:00:00.000Z", messages: [{ from: "dima", text: "Что ты думаешь?" }, { from: "katya", text: "Мне нужно время." }] }));
+    await writeFile(localPath, JSON.stringify({ conversationId: "local-1", topics: ["Быт"], sharedSummary: "Локальный итог", completedAt: "2026-09-01T13:00:00.000Z", messages: [{ from: "dima", payload: "Сообщение" }] }));
+    assert.deepEqual(readReportSummaries([remotePath, localPath], { localOwnerId: "dima", localName: "Дмитрий", peerName: "Катя" }), [
+      { id: "remote-1", topic: "Границы", summary: "Мне сейчас важно не отвечать сразу.", answerFrom: "Катя", completedAt: "2026-09-01T12:00:00.000Z", messageCount: 2, messages: [{ speaker: "Дмитрий", text: "Что ты думаешь?", local: true }, { speaker: "Катя", text: "Мне нужно время.", local: false }] },
+      { id: "local-1", topic: "Быт", summary: "Локальный итог", answerFrom: "Катя", completedAt: "2026-09-01T13:00:00.000Z", messageCount: 1, messages: [{ speaker: "Дмитрий", text: "Сообщение", local: true }] },
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });

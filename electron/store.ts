@@ -30,6 +30,7 @@ export interface StoredState {
   blockedTopics: string[];
   reports: string[];
   pendingOwnerQuestions: PendingOwnerQuestion[];
+  conversationTranscripts: Record<string, { topic: string; messages: Array<{ from: OwnerId; text: string }> }>;
   lastConversationAt?: string;
   remote?: {
     pairId: string;
@@ -54,16 +55,23 @@ const defaults: StoredState = {
   blockedTopics: [],
   reports: [],
   pendingOwnerQuestions: [],
+  conversationTranscripts: {},
 };
 
 export class AtomicStore {
   private readonly file: string;
+  private pending: Promise<void> = Promise.resolve();
 
   constructor(directory: string) {
     this.file = path.join(directory, "state.json");
   }
 
   async read(): Promise<StoredState> {
+    await this.pending;
+    return this.readSnapshot();
+  }
+
+  private async readSnapshot(): Promise<StoredState> {
     try {
       return { ...defaults, ...JSON.parse(await readFile(this.file, "utf8")) };
     } catch {
@@ -71,13 +79,17 @@ export class AtomicStore {
     }
   }
 
-  async update(update: Partial<StoredState>): Promise<StoredState> {
-    const current = await this.read();
-    const next = { ...current, ...update };
-    await mkdir(path.dirname(this.file), { recursive: true });
-    const temporary = `${this.file}.tmp`;
-    await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");
-    await rename(temporary, this.file);
-    return next;
+  update(update: Partial<StoredState>): Promise<StoredState> {
+    const operation = this.pending.then(async () => {
+      const current = await this.readSnapshot();
+      const next = { ...current, ...update };
+      await mkdir(path.dirname(this.file), { recursive: true });
+      const temporary = `${this.file}.tmp`;
+      await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");
+      await rename(temporary, this.file);
+      return next;
+    });
+    this.pending = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 }

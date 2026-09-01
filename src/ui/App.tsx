@@ -123,10 +123,10 @@ export function App() {
     fr: { selected: "Sélectionné", pending: "En attente", active: "En attente de l’autre agent", complete: "Bilan prêt" },
   }[language];
   const reportsText = {
-    ru: { empty: "Готовые итоги появятся здесь автоматически.", files: "Показать файлы в папке", messages: "реплик" },
-    en: { empty: "Completed results will appear here automatically.", files: "Show files in folder", messages: "messages" },
-    cs: { empty: "Hotové výsledky se zde objeví automaticky.", files: "Zobrazit soubory ve složce", messages: "zpráv" },
-    fr: { empty: "Les bilans terminés apparaîtront ici automatiquement.", files: "Afficher les fichiers dans le dossier", messages: "messages" },
+    ru: { empty: "Готовые ответы появятся здесь автоматически.", files: "Показать файлы в папке", messages: "реплик", answer: "Предполагаемый ответ —", conversation: "Прочитать разговор агентов" },
+    en: { empty: "Completed answers will appear here automatically.", files: "Show files in folder", messages: "messages", answer: "Likely answer —", conversation: "Read the agents’ conversation" },
+    cs: { empty: "Hotové odpovědi se zde objeví automaticky.", files: "Zobrazit soubory ve složce", messages: "zpráv", answer: "Předpokládaná odpověď —", conversation: "Přečíst rozhovor agentů" },
+    fr: { empty: "Les réponses terminées apparaîtront ici automatiquement.", files: "Afficher les fichiers dans le dossier", messages: "messages", answer: "Réponse probable —", conversation: "Lire la conversation des agents" },
   }[language];
   const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
   const selectedPairPersonId = counterpartPersonId || state.remote.counterpartPersonId;
@@ -505,7 +505,11 @@ export function App() {
           {activeSection === "reports" && <section className="panel report-panel" id="reports">
             <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><ScrollText size={20} /></div>
             {!state.reportSummaries.length && <div className="empty tall"><ScrollText size={28} /><span>{reportsText.empty}</span></div>}
-            <div className="report-cards">{state.reportSummaries.map((report) => <article className="report-card" key={report.id}><div><strong>{report.topic}</strong><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div><p>{report.summary}</p><small>{report.messageCount} {reportsText.messages}</small></article>)}</div>
+            <div className="report-cards">{state.reportSummaries.map((report) => <article className="report-card" key={report.id}>
+              <div className="report-heading"><strong>{report.topic}</strong><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div>
+              <div className="report-answer"><small>{reportsText.answer} {report.answerFrom}</small><p>{report.summary}</p></div>
+              <details className="report-transcript"><summary>{reportsText.conversation} · {report.messageCount} {reportsText.messages}</summary><div>{report.messages.map((message, index) => <div className={`transcript-message ${message.local ? "local" : "peer"}`} key={`${report.id}-${index}`}><strong>{message.speaker}</strong><p>{message.text}</p></div>)}</div></details>
+            </article>)}</div>
             <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>
           </section>}
 

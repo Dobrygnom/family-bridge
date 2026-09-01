@@ -12,7 +12,7 @@ export interface AppState {
   activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
-  reportSummaries: Array<{ id: string; topic: string; summary: string; completedAt: string; messageCount: number }>;
+  reportSummaries: Array<{ id: string; topic: string; summary: string; answerFrom: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   lastConversationAt?: string;
   running: boolean;

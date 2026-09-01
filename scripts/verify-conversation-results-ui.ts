@@ -26,7 +26,7 @@ try {
   await mkdir(memory, { recursive: true });
   await mkdir(reports, { recursive: true });
   const reportPath = path.join(reports, "completed.json");
-  await writeFile(reportPath, JSON.stringify({ conversationId: "completed-1", topic: "Готовая тема", sharedSummary: "Читаемый общий итог прямо в приложении.", completedAt: "2026-09-01T16:20:00.000Z", messages: [{}, {}] }), "utf8");
+  await writeFile(reportPath, JSON.stringify({ conversationId: "completed-1", topic: "Готовая тема", sharedSummary: "Короткий ответ прямо в приложении.", answerFrom: "Катя", completedAt: "2026-09-01T16:20:00.000Z", messages: [{ from: "dima", text: "Что ты думаешь?" }, { from: "katya", text: "Вот что я думаю." }] }), "utf8");
   await writeFile(path.join(profile, "state.json"), JSON.stringify({
     owner: "dima", onboardingComplete: true, identityConfigured: true, displayName: "Dmitrii", language: "ru", autoStart: false,
     pendingTopics: ["Тема в очереди"], inFlightTopics: [], pairTopics: ["Выбранная тема", "Тема в очереди", "Активная тема", "Готовая тема"], activeTopics: ["Активная тема"],
@@ -75,10 +75,16 @@ try {
   await evaluate(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Итоги разговоров'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
   const reportText = await waitFor(async () => {
     const text = await evaluate<string>(`document.querySelector('.report-card')?.textContent ?? ''`);
-    return /Читаемый общий итог прямо в приложении/.test(text) ? text : undefined;
+    return /Короткий ответ прямо в приложении/.test(text) ? text : undefined;
   });
   assert.match(reportText, /Готовая тема/);
-  console.log(JSON.stringify({ persistentTopics: topicRows.length, statuses: true, inlineReport: true }));
+  assert.match(reportText, /Предполагаемый ответ — Катя/);
+  const openedTranscript = await evaluate<boolean>(`(() => { const details = document.querySelector('.report-transcript'); if (!(details instanceof HTMLDetailsElement)) return false; details.open = true; return true; })()`);
+  assert.ok(openedTranscript);
+  const transcript = await evaluate<string>(`document.querySelector('.report-transcript')?.textContent ?? ''`);
+  assert.match(transcript, /Что ты думаешь\?/);
+  assert.match(transcript, /Вот что я думаю\./);
+  console.log(JSON.stringify({ persistentTopics: topicRows.length, statuses: true, shortAnswer: true, readableTranscript: true }));
 } finally {
   socket?.close();
   child?.kill();

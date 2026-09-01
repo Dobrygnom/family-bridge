@@ -24,6 +24,9 @@ test("agent prompt carries the selected language and lets the app infer style fr
   assert.match(prompt, /быстро\. два вопроса/);
   assert.match(prompt, /Самостоятельно определи/);
   assert.match(prompt, /Примеры задают только форму речи/);
+  assert.match(prompt, /результат должен звучать так, чтобы владелец узнал свою манеру/);
+  assert.match(prompt, /shared_summary: максимум 240 символов/);
+  assert.match(prompt, /не изобрести регламент/);
   assert.match(prompt, /owner_question/);
   assert.match(prompt, /не хватает важного факта/);
 });
