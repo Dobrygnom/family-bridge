@@ -61,6 +61,40 @@ export function buildInitialPrompt(options: CodexRuntimeOptions, initialPrompt: 
   return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, owner_question, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения и уместный юмор. Веди текущий разговор в узнаваемой манере, но не копируй чувствительные высказывания дословно, не изображай владельца и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
 }
 
+export function buildStartInvocation(options: CodexRuntimeOptions, initialPrompt: string) {
+  return {
+    args: [
+      "exec",
+      "--skip-git-repo-check",
+      "-s",
+      "read-only",
+      "--json",
+      "--output-schema",
+      options.schemaPath,
+      "-C",
+      options.workspace,
+      "-",
+    ],
+    stdin: buildInitialPrompt(options, initialPrompt),
+  };
+}
+
+export function buildResumeInvocation(options: CodexRuntimeOptions, sessionId: string, prompt: string) {
+  return {
+    args: [
+      "exec",
+      "resume",
+      "--skip-git-repo-check",
+      "--json",
+      "--output-schema",
+      options.schemaPath,
+      sessionId,
+      "-",
+    ],
+    stdin: prompt,
+  };
+}
+
 export class CodexCliAgent implements AgentRuntime {
   readonly id: AgentId;
   private sessionId?: string;
@@ -75,19 +109,8 @@ export class CodexCliAgent implements AgentRuntime {
 
   async start(initialPrompt: string): Promise<AgentResponse> {
     await mkdir(this.options.workspace, { recursive: true });
-    const prompt = buildInitialPrompt(this.options, initialPrompt);
-    const result = await this.run([
-      "exec",
-      "--skip-git-repo-check",
-      "-s",
-      "read-only",
-      "--json",
-      "--output-schema",
-      this.options.schemaPath,
-      "-C",
-      this.options.workspace,
-      prompt,
-    ]);
+    const invocation = buildStartInvocation(this.options, initialPrompt);
+    const result = await this.run(invocation.args, invocation.stdin);
     if (!result.threadId) throw new Error(`Codex did not return a session id for ${this.id}`);
     this.sessionId = result.threadId;
     return result.response;
@@ -103,20 +126,12 @@ export class CodexCliAgent implements AgentRuntime {
 
   private async resume(prompt: string): Promise<AgentResponse> {
     if (!this.sessionId) throw new Error(`Agent ${this.id} has not been started`);
-    const result = await this.run([
-      "exec",
-      "resume",
-      "--skip-git-repo-check",
-      "--json",
-      "--output-schema",
-      this.options.schemaPath,
-      this.sessionId,
-      prompt,
-    ]);
+    const invocation = buildResumeInvocation(this.options, this.sessionId, prompt);
+    const result = await this.run(invocation.args, invocation.stdin);
     return result.response;
   }
 
-  private run(args: string[]): Promise<{ threadId?: string; response: AgentResponse }> {
+  private run(args: string[], stdin: string): Promise<{ threadId?: string; response: AgentResponse }> {
     const command = this.options.codexCommand ?? "codex";
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
@@ -124,9 +139,12 @@ export class CodexCliAgent implements AgentRuntime {
         shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),
         env: process.env,
       });
-      // Codex appends piped stdin to an argument prompt. Close the inherited
-      // pipe immediately or a non-interactive child waits forever for EOF.
-      child.stdin.end();
+      // Keep large private context out of the process command line. Windows has
+      // a much smaller argument limit than the amount of context an agent uses.
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        if (error.code !== "EPIPE") reject(error);
+      });
+      child.stdin.end(stdin);
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => {
