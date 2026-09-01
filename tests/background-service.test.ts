@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BackgroundService, contextNeedsSync } from "../electron/background-service.js";
+import { BackgroundService, contextNeedsSync, recoverInterruptedContextAnalysis } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 
 test("background service persists a completed mock report and consumes its topic", async () => {
@@ -47,4 +47,23 @@ test("automatic context sync runs only for a changed or genuinely stale chat", (
   assert.equal(contextNeedsSync({ ...selected, updatedAt: undefined }, { updatedAt: undefined }, now), false);
   assert.equal(contextNeedsSync({ ...selected, updatedAt: undefined, lastSyncedAt: "2026-08-31T10:00:00.000Z" }, { updatedAt: undefined }, now), true);
   assert.equal(contextNeedsSync({ ...selected, status: "error" }, { updatedAt: selected.updatedAt }, now), true);
+});
+
+test("an interrupted refresh keeps the previously prepared people and topics", () => {
+  const interrupted = {
+    analysisVersion: 2,
+    sourceId: "chat-1",
+    sourceHash: "hash-1",
+    analyzedAt: "2026-09-01T09:00:00.000Z",
+    status: "analyzing" as const,
+    progress: { stage: "consolidating" as const, current: 6, total: 6 },
+    people: [{ id: "partner", label: "Partner", relationship: "partner", aliases: [] }],
+    topics: [],
+  };
+  const recovered = recoverInterruptedContextAnalysis(interrupted);
+  assert.equal(recovered?.status, "ready");
+  assert.equal(recovered?.people.length, 1);
+  assert.equal(recovered && "progress" in recovered, false);
+  const firstRun = { ...interrupted, people: [], topics: [] };
+  assert.equal(recoverInterruptedContextAnalysis(firstRun), firstRun);
 });

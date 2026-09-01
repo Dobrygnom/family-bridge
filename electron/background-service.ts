@@ -68,6 +68,12 @@ export function contextNeedsSync(
   return !Number.isFinite(lastSyncedAt) || now - lastSyncedAt >= contextFallbackRefreshMs;
 }
 
+export function recoverInterruptedContextAnalysis(analysis: ContextAnalysis | undefined) {
+  if (analysis?.status !== "analyzing" || (!analysis.people.length && !analysis.topics.length)) return analysis;
+  const { progress: _progress, error: _error, ...saved } = analysis;
+  return { ...saved, status: "ready" as const };
+}
+
 export class BackgroundService {
   private running = false;
   private remote?: SupabaseTransport;
@@ -328,6 +334,12 @@ export class BackgroundService {
   async start() {
     const state = await this.store.read();
     if (state.remote) this.configureRemote(state.remote.encryptionSecret);
+    const savedAnalysis = this.readContextAnalysis();
+    const recoveredAnalysis = recoverInterruptedContextAnalysis(savedAnalysis);
+    if (recoveredAnalysis && recoveredAnalysis !== savedAnalysis) {
+      await this.writeContextAnalysis(recoveredAnalysis);
+      this.emit({ type: "context-analysis", analysis: recoveredAnalysis });
+    }
     const context = this.readContextSource();
     if (context?.id) {
       setTimeout(() => void this.checkContextForUpdates(), 5_000);
