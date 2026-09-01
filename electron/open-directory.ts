@@ -16,7 +16,7 @@ export async function exportReportFiles(reportPaths: string[], destination: stri
 
 export function windowsRevealInvocation(target: string, windowsDirectory = process.env.WINDIR || process.env.SystemRoot || "C:\\Windows") {
   return {
-    command: path.join(windowsDirectory, "explorer.exe"),
+    command: path.win32.join(windowsDirectory, "explorer.exe"),
     args: [`/select,${target}`],
   };
 }
