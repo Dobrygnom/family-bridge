@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BackgroundService, contextNeedsSync, mergeTopicCatalog, readReportSummaries, recoverInterruptedContextAnalysis, recoverInterruptedTopics } from "../electron/background-service.js";
+import { BackgroundService, contextNeedsSync, mergeTopicCatalog, readReportSummaries, recoverInterruptedContextAnalysis, recoverInterruptedTopics, shouldIgnoreLegacyTopicAfterReset } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 
 test("background service persists a completed mock report and consumes its topic", async () => {
@@ -81,6 +81,12 @@ test("pair topic catalog stays visible after its launch queue is consumed", () =
     mergeTopicCatalog(["selected topic"], [], ["active topic"], ["completed topic", "selected topic"]),
     ["selected topic", "active topic", "completed topic"],
   );
+});
+
+test("old applications cannot repopulate reset topics with stale legacy messages", () => {
+  assert.equal(shouldIgnoreLegacyTopicAfterReset("0.3.25", undefined), true);
+  assert.equal(shouldIgnoreLegacyTopicAfterReset("0.3.25", "0.3.25"), false);
+  assert.equal(shouldIgnoreLegacyTopicAfterReset(undefined, undefined), false);
 });
 
 test("the 0.3.25 reset removes old results once and returns every topic to the queue", async () => {

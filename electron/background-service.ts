@@ -102,6 +102,10 @@ export function mergeTopicCatalog(...sources: string[][]) {
   return [...new Set(sources.flat().map((topic) => topic.trim()).filter(Boolean))];
 }
 
+export function shouldIgnoreLegacyTopicAfterReset(resetVersion: string | undefined, senderVersion: string | undefined) {
+  return Boolean(resetVersion && !senderVersion?.trim());
+}
+
 function conciseAnswer(value: string) {
   const text = value.replace(/\s+/g, " ").trim();
   if (text.length <= 240) return text;
@@ -756,6 +760,10 @@ export class BackgroundService {
         this.emit({ type: "peer", peerName, peerVersion: stored.remote.peerVersion, peerLastSeenAt: stored.remote.peerLastSeenAt });
       }
       if (envelope.payload.kind === "topic") {
+        if (shouldIgnoreLegacyTopicAfterReset(stored.conversationResetVersion, envelope.payload.senderVersion)) {
+          await this.remote.acknowledge(envelope.id);
+          return;
+        }
         const incomingTopic = envelope.payload.topic;
         const current = await this.store.read();
         const peerVersion = envelope.payload.senderVersion?.trim() || current.remote?.peerVersion;
