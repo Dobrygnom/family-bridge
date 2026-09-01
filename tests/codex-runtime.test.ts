@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildInitialPrompt, buildResumeInvocation, buildStartInvocation, CodexCliAgent } from "../src/core/codex-runtime.js";
+import { buildInitialPrompt, buildResumeInvocation, buildStartInvocation, CodexCliAgent, hasRoleVoiceViolation } from "../src/core/codex-runtime.js";
 
 test("agent prompt carries the selected language and lets the app infer style from chat samples", () => {
   const prompt = buildInitialPrompt({
@@ -19,16 +19,25 @@ test("agent prompt carries the selected language and lets the app infer style fr
   }, "Начальное сообщение");
 
   assert.match(prompt, /Язык сессии: чешском/);
-  assert.match(prompt, /Твой владелец — Alex/);
-  assert.match(prompt, /Второй агент представляет Sam/);
+  assert.match(prompt, /говоришь от первого лица как Alex/);
+  assert.match(prompt, /к Sam обращайся напрямую/);
   assert.match(prompt, /быстро\. два вопроса/);
   assert.match(prompt, /Самостоятельно определи/);
   assert.match(prompt, /Примеры задают только форму речи/);
   assert.match(prompt, /результат должен звучать так, чтобы владелец узнал свою манеру/);
   assert.match(prompt, /shared_summary: максимум 240 символов/);
   assert.match(prompt, /не изобрести регламент/);
+  assert.match(prompt, /всегда говори о нём от первого лица/);
+  assert.match(prompt, /к Sam обращайся напрямую на «ты»/);
   assert.match(prompt, /owner_question/);
   assert.match(prompt, /не хватает важного факта/);
+});
+
+test("third-person mediator speech is rejected while direct role speech is accepted", () => {
+  const base = { status: "continue" as const, owner_question: "", topics: [], private_report: "", shared_summary: "" };
+  assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "Катя и Дмитрий могут выбрать общий ритм. Это содержательный общий результат." }, "Дмитрий", "Катя"), true);
+  assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "Агент Катя, предлагаю обсудить правила." }, "Дмитрий", "Катя"), true);
+  assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "Мне важно понять, чего ты хочешь до своего возвращения. Скажи прямо?" }, "Дмитрий", "Катя"), false);
 });
 
 test("large agent context is piped through stdin instead of the Windows command line", () => {

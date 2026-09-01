@@ -579,7 +579,7 @@ export class BackgroundService {
     if (!recipientId) throw new Error("Второй участник ещё не подключился");
     const conversationId = randomUUID();
     const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName);
-    const response = await agent.start(`Ты начинаешь этот разговор. Тема — вопрос к другому человеку: «${topic}». Сформулируй один короткий и прямой вопрос о том, что второй человек думает, чувствует, хочет или готов сделать. Не предлагай за него решение, процедуру или общий компромисс. Ты — инициатор, поэтому shared_summary оставь пустым, а status поставь continue.`);
+    const response = await agent.start(`Ты начинаешь этот разговор. Тема — вопрос к человеку, с которым ты сейчас говоришь: «${topic}». Сформулируй один короткий и прямой вопрос от первого лица «я» к собеседнику на «ты». Не называй ни себя, ни собеседника агентом и не обсуждай вас обоих в третьем лице. Не предлагай за собеседника решение, процедуру или общий компромисс. Ты — инициатор, поэтому shared_summary оставь пустым, а status поставь continue.`);
     if (this.hasOwnerQuestion(response)) {
       await this.queueOwnerQuestion({ conversationId, topic, question: response.owner_question, peerName: stored.remote.peerName, nextSequence: 1, transcript: [] });
       return;

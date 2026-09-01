@@ -31,12 +31,29 @@ export interface CodexRuntimeOptions {
 
 const languageNames = { ru: "русском", en: "английском", cs: "чешском", fr: "французском" } as const;
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function hasRoleVoiceViolation(response: AgentResponse, ownerName: string, peerName: string) {
+  const text = `${response.message_to_peer}\n${response.shared_summary}`;
+  const pairedNames = new RegExp(`(?:${escapeRegex(ownerName)}\\s+и\\s+${escapeRegex(peerName)}|${escapeRegex(peerName)}\\s+и\\s+${escapeRegex(ownerName)})`, "iu");
+  return pairedNames.test(text)
+    || /(?:^|[^а-яё])(агент[а-яё]*|владел[а-яё]*|медиатор[а-яё]*|переговор[а-яё]*|сторон[а-яё]*)(?:$|[^а-яё])/iu.test(text)
+    || /\b(agent|agents|owner|owners|mediator|participant|participants)\b/iu.test(text)
+    || /содержательн[а-яё]* (?:общ[а-яё]* )?результат/iu.test(text)
+    || /рабоч[а-яё]* договорённост/iu.test(text);
+}
+
 const SYSTEM_RULES = `
 Ты — личный агент, который помогает двум людям услышать прямой ответ друг друга. Ты представляешь известную тебе перспективу своего владельца и говоришь в его узнаваемой манере.
 Твоя цель — не написать психологический отчёт и не изобрести регламент для пары, а выяснить, что каждый из людей на самом деле думает, чувствует, хочет или готов сделать по заданному вопросу.
 
 Правила:
-- общайся только со вторым агентом; в репликах можно говорить от первого лица, но это всегда предположительная реплика агента, а не дословная цитата владельца;
+- внутри разговора полностью возьми на себя роль владельца: всегда говори о нём от первого лица «я/мне/мы», а ко второму человеку обращайся напрямую «ты/тебе»;
+- никогда не называй себя или собеседника агентом, владельцем, стороной или участником и не обсуждай владельца в третьем лице;
+- не пиши «Катя и Дмитрий могут», «мы получили содержательный результат», «стороны договорились» и подобные отчётные формулировки. Пиши так, как эти два человека разговаривали бы друг с другом сами;
+- это всё равно предположительная реплика, а не дословная цитата владельца; интерфейс сообщает об этом человеку отдельно;
 - не раскрывай дословные личные признания и не выдумывай факты;
 - отделяй наблюдения от гипотез;
 - не ставь диагнозов и не назначай лечение;
@@ -61,7 +78,7 @@ export function buildInitialPrompt(options: CodexRuntimeOptions, initialPrompt: 
   const peerName = options.peerName ?? (options.id === "dima" ? "Катя" : "Дима");
   const language = options.language ?? "ru";
   const examples = options.communicationExamples ?? "Примеры отсутствуют: используй спокойный, прямой и естественный тон.";
-  return `${SYSTEM_RULES}\n\nТебя зовут «Агент ${options.displayName}». Твой владелец — ${ownerName}. Второй агент представляет ${peerName}. Всегда называй людей по именам; не используй двусмысленные выражения «твой владелец» или «мой владелец» в сообщении второму агенту.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, owner_question, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения, сленг, допустимую резкость и уместный юмор. Это обязательное стилевое ограничение: результат должен звучать так, чтобы владелец узнал свою манеру, а не манеру психолога или корпоративного медиатора. Не копируй чувствительные высказывания дословно и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+  return `${SYSTEM_RULES}\n\nВо внутренней системе ты обозначен как «Агент ${options.displayName}», но в самом разговоре не произноси это обозначение. Ты говоришь от первого лица как ${ownerName}; к ${peerName} обращайся напрямую на «ты». Не пиши о ${ownerName} и ${peerName} как о третьих лицах.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, owner_question, topics, private_report и shared_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения, сленг, допустимую резкость и уместный юмор. Это обязательное стилевое ограничение: результат должен звучать так, чтобы владелец узнал свою манеру, а не манеру психолога или корпоративного медиатора. Не копируй чувствительные высказывания дословно и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
 }
 
 export function buildStartInvocation(options: CodexRuntimeOptions, initialPrompt: string) {
@@ -116,7 +133,7 @@ export class CodexCliAgent implements AgentRuntime {
     const result = await this.run(invocation.args, invocation.stdin);
     if (!result.threadId) throw new Error(`Codex did not return a session id for ${this.id}`);
     this.sessionId = result.threadId;
-    return result.response;
+    return this.enforceRoleVoice(result.response);
   }
 
   async respond(peerMessage: string): Promise<AgentResponse> {
@@ -131,7 +148,19 @@ export class CodexCliAgent implements AgentRuntime {
     if (!this.sessionId) throw new Error(`Agent ${this.id} has not been started`);
     const invocation = buildResumeInvocation(this.options, this.sessionId, prompt);
     const result = await this.run(invocation.args, invocation.stdin);
-    return result.response;
+    return this.enforceRoleVoice(result.response);
+  }
+
+  private async enforceRoleVoice(initial: AgentResponse): Promise<AgentResponse> {
+    const ownerName = this.options.ownerName ?? (this.options.id === "dima" ? "Дима" : "Катя");
+    const peerName = this.options.peerName ?? (this.options.id === "dima" ? "Катя" : "Дима");
+    let response = initial;
+    for (let attempt = 0; attempt < 2 && hasRoleVoiceViolation(response, ownerName, peerName); attempt++) {
+      if (!this.sessionId) return response;
+      const invocation = buildResumeInvocation(this.options, this.sessionId, `Твой прошлый JSON нарушил главное правило роли: ты говорил о людях как агент или медиатор. Перепиши тот же смысл. message_to_peer должен звучать как прямая реплика ${ownerName} от первого лица «я» к ${peerName} на «ты». shared_summary, если он нужен, тоже напиши от первого лица. Не употребляй слова «агент», «владелец», «сторона», «участник», «переговоры», не называй ${ownerName} и ${peerName} вместе в третьем лице и не сообщай о «содержательном результате». Верни только исправленный JSON.`);
+      response = (await this.run(invocation.args, invocation.stdin)).response;
+    }
+    return response;
   }
 
   private run(args: string[], stdin: string): Promise<{ threadId?: string; response: AgentResponse }> {
