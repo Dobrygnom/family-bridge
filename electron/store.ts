@@ -24,6 +24,7 @@ export interface StoredState {
   language: AppLanguage;
   autoStart: boolean;
   pendingTopics: string[];
+  inFlightTopics: string[];
   blockedTopics: string[];
   reports: string[];
   pendingOwnerQuestions: PendingOwnerQuestion[];
@@ -45,6 +46,7 @@ const defaults: StoredState = {
   language: "ru",
   autoStart: true,
   pendingTopics: [],
+  inFlightTopics: [],
   blockedTopics: [],
   reports: [],
   pendingOwnerQuestions: [],

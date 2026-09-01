@@ -74,6 +74,10 @@ export function recoverInterruptedContextAnalysis(analysis: ContextAnalysis | un
   return { ...saved, status: "ready" as const };
 }
 
+export function recoverInterruptedTopics(pendingTopics: string[], inFlightTopics: string[]) {
+  return [...new Set([...pendingTopics, ...inFlightTopics])];
+}
+
 export class BackgroundService {
   private running = false;
   private remote?: SupabaseTransport;
@@ -332,7 +336,14 @@ export class BackgroundService {
   }
 
   async start() {
-    const state = await this.store.read();
+    let state = await this.store.read();
+    if (state.inFlightTopics.length) {
+      state = await this.store.update({
+        pendingTopics: recoverInterruptedTopics(state.pendingTopics, state.inFlightTopics),
+        inFlightTopics: [],
+      });
+      this.emit({ type: "topics", topics: state.pendingTopics });
+    }
     if (state.remote) this.configureRemote(state.remote.encryptionSecret);
     const savedAnalysis = this.readContextAnalysis();
     const recoveredAnalysis = recoverInterruptedContextAnalysis(savedAnalysis);
@@ -452,21 +463,24 @@ export class BackgroundService {
     const topics = [...stored.pendingTopics];
     this.running = true;
     this.emit({ type: "runtime", running: true });
-    await this.store.update({ pendingTopics: [] });
+    await this.store.update({ pendingTopics: [], inFlightTopics: topics });
     this.emit({ type: "topics", topics: [] });
     try {
       const results = await Promise.allSettled(topics.map((topic) => this.startRemoteConversation(topic)));
       const failed = topics.filter((_topic, index) => results[index].status === "rejected");
       if (failed.length) {
-        const current = await this.store.read();
-        const pendingTopics = [...new Set([...current.pendingTopics, ...failed])];
-        await this.store.update({ pendingTopics });
-        this.emit({ type: "topics", topics: pendingTopics });
+        await this.store.update({ inFlightTopics: failed });
         const reason = results.find((result) => result.status === "rejected");
         throw reason?.status === "rejected" ? reason.reason : new Error("Не удалось запустить часть тем");
       }
-      await this.store.update({ lastConversationAt: new Date().toISOString() });
+      await this.store.update({ lastConversationAt: new Date().toISOString(), inFlightTopics: [] });
       return this.state();
+    } catch (error) {
+      const current = await this.store.read();
+      const pendingTopics = recoverInterruptedTopics(current.pendingTopics, current.inFlightTopics);
+      await this.store.update({ pendingTopics, inFlightTopics: [] });
+      this.emit({ type: "topics", topics: pendingTopics });
+      throw error;
     } finally {
       this.running = false;
       this.emit({ type: "runtime", running: false });

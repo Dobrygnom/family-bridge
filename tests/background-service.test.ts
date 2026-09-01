@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BackgroundService, contextNeedsSync, recoverInterruptedContextAnalysis } from "../electron/background-service.js";
+import { BackgroundService, contextNeedsSync, recoverInterruptedContextAnalysis, recoverInterruptedTopics } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 
 test("background service persists a completed mock report and consumes its topic", async () => {
@@ -66,4 +66,11 @@ test("an interrupted refresh keeps the previously prepared people and topics", (
   assert.equal(recovered && "progress" in recovered, false);
   const firstRun = { ...interrupted, people: [], topics: [] };
   assert.equal(recoverInterruptedContextAnalysis(firstRun), firstRun);
+});
+
+test("topics interrupted while agents start return to the pending queue", () => {
+  assert.deepEqual(
+    recoverInterruptedTopics(["already pending"], ["first discussion", "already pending", "second discussion"]),
+    ["already pending", "first discussion", "second discussion"],
+  );
 });
