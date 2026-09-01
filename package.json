@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "0.3.26",
+  "version": "0.3.27",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",
@@ -68,7 +68,13 @@
       ],
       "category": "public.app-category.lifestyle"
     },
-    "publish": [{ "provider": "github", "owner": "Dobrygnom", "repo": "family-bridge" }],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Dobrygnom",
+        "repo": "family-bridge"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true

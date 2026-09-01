@@ -30,6 +30,7 @@ const fallback: AppState = {
   appVersion: "preview",
   pendingTopics: ["Как сделать бытовые договорённости спокойнее"],
   pairTopics: ["Как сделать бытовые договорённости спокойнее"],
+  topicSources: {},
   activeTopics: [],
   blockedTopics: [],
   reports: [],
@@ -141,15 +142,30 @@ export function App() {
     fr: { selected: "Sélectionné", pending: "En attente", active: "En attente de l’autre agent", complete: "Bilan prêt" },
   }[language];
   const reportsText = {
-    ru: { empty: "Готовые ответы появятся здесь автоматически.", files: "Показать файлы в папке", messages: "реплик", answer: "Предполагаемый ответ —", conversation: "Прочитать разговор агентов" },
-    en: { empty: "Completed answers will appear here automatically.", files: "Show files in folder", messages: "messages", answer: "Likely answer —", conversation: "Read the agents’ conversation" },
-    cs: { empty: "Hotové odpovědi se zde objeví automaticky.", files: "Zobrazit soubory ve složce", messages: "zpráv", answer: "Předpokládaná odpověď —", conversation: "Přečíst rozhovor agentů" },
-    fr: { empty: "Les réponses terminées apparaîtront ici automatiquement.", files: "Afficher les fichiers dans le dossier", messages: "messages", answer: "Réponse probable —", conversation: "Lire la conversation des agents" },
+    ru: { empty: "Готовые ответы появятся здесь автоматически.", files: "Показать файлы в папке", messages: "реплик", answer: "Предполагаемая реплика —", conversation: "Прочитать весь разговор", proposed: "Источник темы", comparison: "Что стало понятно" },
+    en: { empty: "Completed answers will appear here automatically.", files: "Show files in folder", messages: "messages", answer: "Likely words —", conversation: "Read the full conversation", proposed: "Topic proposed by", comparison: "Where you agree or differ" },
+    cs: { empty: "Hotové odpovědi se zde objeví automaticky.", files: "Zobrazit soubory ve složce", messages: "zpráv", answer: "Předpokládaná věta —", conversation: "Přečíst celý rozhovor", proposed: "Téma navrhli", comparison: "V čem se shodujete nebo lišíte" },
+    fr: { empty: "Les réponses terminées apparaîtront ici automatiquement.", files: "Afficher les fichiers dans le dossier", messages: "messages", answer: "Paroles probables —", conversation: "Lire toute la conversation", proposed: "Sujet proposé par", comparison: "Vos accords ou désaccords" },
+  }[language];
+  const sourceText = {
+    ru: { local: `Предложено: ${state.displayName || "этот компьютер"}`, peer: `Предложено: ${state.remote.peerName || "партнёр"}`, both: "Предложили оба", unknown: "Добавлена раньше" },
+    en: { local: `Topic from ${state.displayName || "this computer"}`, peer: `Topic from ${state.remote.peerName || "partner"}`, both: "Proposed by both", unknown: "Added earlier" },
+    cs: { local: `Téma od ${state.displayName || "tohoto počítače"}`, peer: `Téma od ${state.remote.peerName || "partnera"}`, both: "Navrhli oba", unknown: "Přidáno dříve" },
+    fr: { local: `Sujet de ${state.displayName || "cet ordinateur"}`, peer: `Sujet de ${state.remote.peerName || "partenaire"}`, both: "Proposé par les deux", unknown: "Ajouté auparavant" },
   }[language];
   const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
   const selectedPairPersonId = counterpartPersonId || state.remote.counterpartPersonId;
   const localPairTopics = state.contextAnalysis?.topics.filter((item) => item.approved && item.discussWithPersonId === selectedPairPersonId).map((item) => item.title) ?? [];
   const displayedPairTopics = [...new Set([...localPairTopics, ...state.pairTopics, ...state.pendingTopics, ...state.activeTopics])];
+
+  function topicSourceLabel(item: string) {
+    const sources = new Set(state.topicSources[item] ?? []);
+    if (localPairTopics.includes(item)) sources.add("local");
+    if (sources.has("local") && sources.has("peer")) return sourceText.both;
+    if (sources.has("local")) return sourceText.local;
+    if (sources.has("peer")) return sourceText.peer;
+    return sourceText.unknown;
+  }
 
   function goTo(section: SectionId) {
     setActiveSection(section);
@@ -186,7 +202,7 @@ export function App() {
     };
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
+      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
       if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -194,7 +210,7 @@ export function App() {
         setCounterpartPersonId((current) => current || event.analysis?.people[0]?.id || "");
         setReviewPersonId((current) => current && event.analysis?.people.some((person) => person.id === current) ? current : event.analysis?.people[0]?.id || "");
       }
-      if (event.type === "topics" && event.topics) setState((current) => ({ ...current, pendingTopics: event.topics!, pairTopics: event.pairTopics ?? current.pairTopics, activeTopics: event.activeTopics ?? current.activeTopics }));
+      if (event.type === "topics" && event.topics) setState((current) => ({ ...current, pendingTopics: event.topics!, pairTopics: event.pairTopics ?? current.pairTopics, activeTopics: event.activeTopics ?? current.activeTopics, topicSources: event.topicSources ?? current.topicSources }));
       if (event.type === "reports" && event.reports && event.reportSummaries) setState((current) => ({ ...current, reports: event.reports!, reportSummaries: event.reportSummaries! }));
       if (event.type === "owner-questions" && event.questions) {
         setState((current) => ({ ...current, ownerQuestions: event.questions! }));
@@ -537,7 +553,7 @@ export function App() {
               const active = state.activeTopics.includes(item);
               const pending = state.pendingTopics.includes(item);
               const status = report ? topicStatusText.complete : active ? topicStatusText.active : pending ? topicStatusText.pending : topicStatusText.selected;
-              return <div className="topic pair-topic" key={item}><span>{item}</span><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => report && goTo("reports")}>{status}</button></div>;
+              return <div className="topic pair-topic" key={item}><div className="topic-copy"><span>{item}</span><small>{topicSourceLabel(item)}</small></div><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => report && goTo("reports")}>{status}</button></div>;
             })}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
             <div className="input-row"><input disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim()} onClick={() => void addTopic()}>{t.add}</button></div>
             <div className="actions"><button className="primary" disabled={busy || !state.remote.connected || !state.pendingTopics.length} onClick={() => void discussAllTopics()}><Sparkles size={17} />{busy ? workflowText.discussing : workflowText.discuss}</button></div>
@@ -548,7 +564,12 @@ export function App() {
             {!state.reportSummaries.length && <div className="empty tall"><ScrollText size={28} /><span>{reportsText.empty}</span></div>}
             <div className="report-cards">{state.reportSummaries.map((report) => <article className="report-card" key={report.id}>
               <div className="report-heading"><strong>{report.topic}</strong><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div>
-              <div className="report-answer"><small>{reportsText.answer} {report.answerFrom}</small><p>{report.summary}</p></div>
+              <div className="report-source">{reportsText.proposed}: <strong>{report.proposedBy.join(" + ")}</strong></div>
+              <div className="report-positions">
+                {report.localPosition && <div className="report-answer local"><small>{reportsText.answer} {state.displayName || deviceText.local}</small><p>{report.localPosition}</p></div>}
+                {report.peerPosition && <div className="report-answer peer"><small>{reportsText.answer} {state.remote.peerName || deviceText.partner}</small><p>{report.peerPosition}</p></div>}
+              </div>
+              {report.comparison && <div className="report-comparison"><small>{reportsText.comparison}</small><p>{report.comparison}</p></div>}
               <details className="report-transcript"><summary>{reportsText.conversation} · {report.messageCount} {reportsText.messages}</summary><div>{report.messages.map((message, index) => <div className={`transcript-message ${message.local ? "local" : "peer"}`} key={`${report.id}-${index}`}><strong>{message.speaker}</strong><p>{message.text}</p></div>)}</div></details>
             </article>)}</div>
             <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>

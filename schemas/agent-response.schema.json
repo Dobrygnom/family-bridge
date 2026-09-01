@@ -11,7 +11,8 @@
     },
     "topics": { "type": "array", "items": { "type": "string" } },
     "private_report": { "type": "string" },
-    "shared_summary": { "type": "string" }
+    "shared_summary": { "type": "string" },
+    "comparison_summary": { "type": "string" }
   },
   "required": [
     "message_to_peer",
@@ -19,6 +20,7 @@
     "status",
     "topics",
     "private_report",
-    "shared_summary"
+    "shared_summary",
+    "comparison_summary"
   ]
 }

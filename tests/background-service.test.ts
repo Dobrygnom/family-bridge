@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BackgroundService, contextNeedsSync, mergeTopicCatalog, readReportSummaries, recoverInterruptedContextAnalysis, recoverInterruptedTopics, shouldIgnoreLegacyTopicAfterReset } from "../electron/background-service.js";
+import { BackgroundService, contextNeedsSync, markTopicSource, mergeTopicCatalog, migrateTopicSources, readReportSummaries, recoverInterruptedContextAnalysis, recoverInterruptedTopics, shouldIgnoreLegacyTopicAfterReset } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 
 test("background service persists a completed mock report and consumes its topic", async () => {
@@ -83,6 +83,21 @@ test("pair topic catalog stays visible after its launch queue is consumed", () =
   );
 });
 
+test("topic provenance keeps local and peer proposals without guessing old data", () => {
+  let sources = markTopicSource({}, "Общее будущее", "unknown");
+  sources = markTopicSource(sources, "Общее будущее", "local");
+  sources = markTopicSource(sources, "Общее будущее", "peer");
+  assert.deepEqual(sources, { "Общее будущее": ["local", "peer"] });
+});
+
+test("topic provenance migration preserves the catalog and only attributes known local topics", () => {
+  const topics = Array.from({ length: 14 }, (_, index) => `Тема ${index + 1}`);
+  const migrated = migrateTopicSources({}, topics, topics.slice(0, 12));
+  assert.deepEqual(Object.keys(migrated), topics);
+  assert.deepEqual(migrated["Тема 1"], ["local"]);
+  assert.deepEqual(migrated["Тема 14"], ["unknown"]);
+});
+
 test("old applications cannot repopulate reset topics with stale legacy messages", () => {
   assert.equal(shouldIgnoreLegacyTopicAfterReset("0.3.25", undefined), true);
   assert.equal(shouldIgnoreLegacyTopicAfterReset("0.3.25", "0.3.25"), false);
@@ -147,11 +162,11 @@ test("saved reports expose their readable shared result inside the app", async (
   try {
     const remotePath = path.join(directory, "remote.json");
     const localPath = path.join(directory, "local.json");
-    await writeFile(remotePath, JSON.stringify({ conversationId: "remote-1", topic: "Границы", sharedSummary: "Мне сейчас важно не отвечать сразу.", answerFrom: "Катя", completedAt: "2026-09-01T12:00:00.000Z", messages: [{ from: "dima", text: "Что ты думаешь?" }, { from: "katya", text: "Мне нужно время." }] }));
+    await writeFile(remotePath, JSON.stringify({ conversationId: "remote-1", topic: "Границы", sharedSummary: "Мне сейчас важно не отвечать сразу.", answerFrom: "Катя", answerFromOwnerId: "katya", topicSources: ["local", "peer"], comparisonSummary: "Оба хотите ясности, но Кате нужно больше времени на ответ.", completedAt: "2026-09-01T12:00:00.000Z", messages: [{ from: "dima", text: "Что ты думаешь?" }, { from: "katya", text: "Мне нужно время." }] }));
     await writeFile(localPath, JSON.stringify({ conversationId: "local-1", topics: ["Быт"], sharedSummary: "Локальный итог", completedAt: "2026-09-01T13:00:00.000Z", messages: [{ from: "dima", payload: "Сообщение" }] }));
     assert.deepEqual(readReportSummaries([remotePath, localPath], { localOwnerId: "dima", localName: "Дмитрий", peerName: "Катя" }), [
-      { id: "remote-1", topic: "Границы", summary: "Мне сейчас важно не отвечать сразу.", answerFrom: "Катя", completedAt: "2026-09-01T12:00:00.000Z", messageCount: 2, messages: [{ speaker: "Дмитрий", text: "Что ты думаешь?", local: true }, { speaker: "Катя", text: "Мне нужно время.", local: false }] },
-      { id: "local-1", topic: "Быт", summary: "Локальный итог", answerFrom: "Катя", completedAt: "2026-09-01T13:00:00.000Z", messageCount: 1, messages: [{ speaker: "Дмитрий", text: "Сообщение", local: true }] },
+      { id: "remote-1", topic: "Границы", summary: "Мне сейчас важно не отвечать сразу.", answerFrom: "Катя", proposedBy: ["Дмитрий", "Катя"], localPosition: "Что ты думаешь?", peerPosition: "Мне сейчас важно не отвечать сразу.", comparison: "Оба хотите ясности, но Кате нужно больше времени на ответ.", completedAt: "2026-09-01T12:00:00.000Z", messageCount: 2, messages: [{ speaker: "Дмитрий", text: "Что ты думаешь?", local: true }, { speaker: "Катя", text: "Мне нужно время.", local: false }] },
+      { id: "local-1", topic: "Быт", summary: "Локальный итог", answerFrom: "Катя", proposedBy: ["Автор не определён"], localPosition: "Сообщение", peerPosition: "Локальный итог", comparison: undefined, completedAt: "2026-09-01T13:00:00.000Z", messageCount: 1, messages: [{ speaker: "Дмитрий", text: "Сообщение", local: true }] },
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });

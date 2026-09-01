@@ -16,6 +16,7 @@ export interface AgentResponse {
   topics: string[];
   private_report: string;
   shared_summary: string;
+  comparison_summary?: string;
 }
 
 export interface BridgeMessage {

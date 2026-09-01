@@ -4,6 +4,7 @@ import path from "node:path";
 export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
+export type TopicSource = "local" | "peer" | "unknown";
 
 export interface PendingOwnerQuestion {
   id: string;
@@ -26,6 +27,8 @@ export interface StoredState {
   pendingTopics: string[];
   inFlightTopics: string[];
   pairTopics: string[];
+  topicSources: Record<string, TopicSource[]>;
+  topicSourceMigrationVersion?: string;
   activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
@@ -56,6 +59,7 @@ const defaults: StoredState = {
   pendingTopics: [],
   inFlightTopics: [],
   pairTopics: [],
+  topicSources: {},
   activeTopics: [],
   blockedTopics: [],
   reports: [],

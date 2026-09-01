@@ -10,10 +10,11 @@ export interface AppState {
   appVersion: string;
   pendingTopics: string[];
   pairTopics: string[];
+  topicSources: Record<string, Array<"local" | "peer" | "unknown">>;
   activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
-  reportSummaries: Array<{ id: string; topic: string; summary: string; answerFrom: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
+  reportSummaries: Array<{ id: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   lastConversationAt?: string;
   running: boolean;

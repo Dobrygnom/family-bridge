@@ -26,10 +26,10 @@ try {
   await mkdir(memory, { recursive: true });
   await mkdir(reports, { recursive: true });
   const reportPath = path.join(reports, "completed.json");
-  await writeFile(reportPath, JSON.stringify({ conversationId: "completed-1", topic: "Готовая тема", sharedSummary: "Короткий ответ прямо в приложении.", answerFrom: "Катя", completedAt: "2026-09-01T16:20:00.000Z", messages: [{ from: "dima", text: "Что ты думаешь?" }, { from: "katya", text: "Вот что я думаю." }] }), "utf8");
+  await writeFile(reportPath, JSON.stringify({ conversationId: "completed-1", topic: "Готовая тема", sharedSummary: "Короткий ответ прямо в приложении.", answerFrom: "Катя", answerFromOwnerId: "katya", topicSources: ["local", "peer"], comparisonSummary: "Дмитрий задал вопрос, Катя дала прямой ответ.", completedAt: "2026-09-01T16:20:00.000Z", messages: [{ from: "dima", text: "Что ты думаешь?" }, { from: "katya", text: "Вот что я думаю." }] }), "utf8");
   await writeFile(path.join(profile, "state.json"), JSON.stringify({
     owner: "dima", onboardingComplete: true, identityConfigured: true, displayName: "Dmitrii", language: "ru", autoStart: false,
-    pendingTopics: ["Тема в очереди"], inFlightTopics: [], pairTopics: ["Выбранная тема", "Тема в очереди", "Активная тема", "Готовая тема"], activeTopics: ["Активная тема"],
+    pendingTopics: ["Тема в очереди"], inFlightTopics: [], pairTopics: ["Выбранная тема", "Тема в очереди", "Активная тема", "Готовая тема"], topicSources: { "Выбранная тема": ["local"], "Тема в очереди": ["peer"], "Активная тема": ["local", "peer"], "Готовая тема": ["local", "peer"] }, topicSourceMigrationVersion: "0.3.27", activeTopics: ["Активная тема"],
     blockedTopics: [], reports: [reportPath], pendingOwnerQuestions: [], conversationResetVersion: "0.3.25", ignoredConversationIds: [],
   }), "utf8");
   await writeFile(path.join(memory, "context-source.json"), JSON.stringify({ id: "results-test", title: "Карманный психолог", project: "Живи", source: "chatgpt", status: "ready", messageCount: 498, lastSyncedAt: new Date().toISOString() }), "utf8");
@@ -78,7 +78,10 @@ try {
     return /Короткий ответ прямо в приложении/.test(text) ? text : undefined;
   });
   assert.match(reportText, /Готовая тема/);
-  assert.match(reportText, /Предполагаемый ответ — Катя/);
+  assert.match(reportText, /Источник темы: Dmitrii \+ Партнёр/);
+  assert.match(reportText, /Предполагаемая реплика — Dmitrii/);
+  assert.match(reportText, /Предполагаемая реплика — компьютер партнёра/);
+  assert.match(reportText, /Что стало понятно.*Дмитрий задал вопрос, Катя дала прямой ответ/);
   const openedTranscript = await evaluate<boolean>(`(() => { const details = document.querySelector('.report-transcript'); if (!(details instanceof HTMLDetailsElement)) return false; details.open = true; return true; })()`);
   assert.ok(openedTranscript);
   const transcript = await evaluate<string>(`document.querySelector('.report-transcript')?.textContent ?? ''`);
