@@ -105,7 +105,7 @@ async function installPreparedUpdate() {
     }
     return;
   }
-  autoUpdater.quitAndInstall(false, true);
+  autoUpdater.quitAndInstall(true, true);
 }
 
 async function presentReadyUpdate(state: UpdateState) {
@@ -210,6 +210,8 @@ app.whenReady().then(async () => {
     } else {
       autoUpdater.autoDownload = true;
       autoUpdater.autoInstallOnAppQuit = true;
+      autoUpdater.disableDifferentialDownload = true;
+      autoUpdater.disableWebInstaller = true;
       autoUpdater.on("update-available", (info) => {
         windowsUpdateVersion = info.version;
         service.setUpdateState({ available: true, version: info.version, downloading: true, progress: 0 });
