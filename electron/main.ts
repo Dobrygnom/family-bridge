@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray, type MessageBoxOptions } from "electron";
 import electronUpdater from "electron-updater";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { BackgroundService } from "./background-service.js";
+import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
 import { AtomicStore } from "./store.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,15 +13,26 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BackgroundService;
 let isQuitting = false;
+let macUpdater: MacReleaseUpdater | null = null;
+let updateInstallIsQuitting = false;
+let promptedUpdateVersion: string | undefined;
+let windowsUpdateVersion: string | undefined;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) app.quit();
 app.on("second-instance", () => {
-  if (!mainWindow) return;
+  showMainWindow();
+});
+
+function showMainWindow() {
+  if (!mainWindow) {
+    if (app.isReady()) createWindow();
+    return;
+  }
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-});
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -45,6 +57,7 @@ function createWindow() {
       mainWindow?.hide();
     }
   });
+  mainWindow.on("closed", () => { mainWindow = null; });
 }
 
 function createTray() {
@@ -54,12 +67,65 @@ function createTray() {
   tray.setToolTip("Family Bridge работает в фоне");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Открыть Family Bridge", click: () => mainWindow?.show() },
+      { label: "Открыть Family Bridge", click: showMainWindow },
       { type: "separator" },
       { label: "Завершить", click: () => { isQuitting = true; app.quit(); } },
     ]),
   );
-  tray.on("double-click", () => mainWindow?.show());
+  tray.on("double-click", showMainWindow);
+}
+
+async function installPreparedUpdate() {
+  if (process.platform === "darwin" && macUpdater) {
+    try {
+      updateInstallIsQuitting = true;
+      const launched = await macUpdater.launchInstaller();
+      if (!launched) return;
+      isQuitting = true;
+      app.quit();
+    } catch (error) {
+      updateInstallIsQuitting = false;
+      isQuitting = false;
+      const message = error instanceof Error ? error.message : String(error);
+      service.setUpdateState({ available: true, downloading: false, ready: true, error: message });
+      showMainWindow();
+      const options: MessageBoxOptions = {
+        type: "error",
+        title: "Не удалось установить обновление",
+        message,
+        detail: "Можно скачать тот же проверенный архив вручную.",
+        buttons: ["Скачать вручную", "Позже"],
+        defaultId: 0,
+        cancelId: 1,
+      };
+      const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+      if (result.response === 0 && macUpdater.downloadUrl) await shell.openExternal(macUpdater.downloadUrl);
+    }
+    return;
+  }
+  autoUpdater.quitAndInstall(false, true);
+}
+
+async function presentReadyUpdate(state: UpdateState) {
+  if (!state.ready || !state.version || promptedUpdateVersion === state.version) return;
+  promptedUpdateVersion = state.version;
+  const options: MessageBoxOptions = {
+    type: "info",
+    title: "Обновление готово",
+    message: `Версия ${state.version} готова к установке`,
+    detail: "Перезапустить приложение сейчас? Если выбрать «Позже», обновление установится при обычном выходе.",
+    buttons: ["Перезапустить", "Позже"],
+    defaultId: 0,
+    cancelId: 1,
+  };
+  const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+  if (result.response === 0) await installPreparedUpdate();
+}
+
+async function checkForUpdates() {
+  if (!app.isPackaged) return;
+  if (process.platform === "darwin" && macUpdater) await macUpdater.checkForUpdates();
+  else await autoUpdater.checkForUpdatesAndNotify();
 }
 
 app.whenReady().then(async () => {
@@ -79,7 +145,10 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   await service.start();
-  powerMonitor.on("resume", () => void service.checkContextForUpdates());
+  powerMonitor.on("resume", () => {
+    void service.checkContextForUpdates();
+    void checkForUpdates();
+  });
   const state = await store.read();
   app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
@@ -118,16 +187,52 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
   ipcMain.handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
   ipcMain.handle("bridge:check-updates", async () => {
-    if (!app.isPackaged) return;
-    await autoUpdater.checkForUpdatesAndNotify();
+    await checkForUpdates();
   });
+  ipcMain.handle("bridge:install-update", () => installPreparedUpdate());
   if (app.isPackaged) {
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on("update-available", (info) => mainWindow?.webContents.send("bridge:event", { type: "update", available: true, version: info.version, downloading: true }));
-    autoUpdater.on("update-downloaded", (info) => mainWindow?.webContents.send("bridge:event", { type: "update", available: true, version: info.version, downloading: false }));
-    setTimeout(() => void autoUpdater.checkForUpdatesAndNotify(), 10_000);
+    if (process.platform === "darwin") {
+      macUpdater = new MacReleaseUpdater(app.getVersion(), process.execPath, app.getPath("userData"), process.arch, (update) => {
+        service.setUpdateState(update);
+        void presentReadyUpdate(update);
+      });
+    } else {
+      autoUpdater.autoDownload = true;
+      autoUpdater.autoInstallOnAppQuit = true;
+      autoUpdater.on("update-available", (info) => {
+        windowsUpdateVersion = info.version;
+        service.setUpdateState({ available: true, version: info.version, downloading: true, progress: 0 });
+      });
+      autoUpdater.on("download-progress", (progress) => service.setUpdateState({ available: true, version: windowsUpdateVersion, downloading: true, progress: Math.round(progress.percent) }));
+      autoUpdater.on("update-downloaded", (info) => {
+        const update = { available: true, version: info.version, downloading: false, progress: 100, ready: true };
+        service.setUpdateState(update);
+        void presentReadyUpdate(update);
+      });
+      autoUpdater.on("update-not-available", () => service.setUpdateState({ available: false, downloading: false }));
+      autoUpdater.on("error", (error) => service.setUpdateState({ available: false, downloading: false, error: error.message }));
+    }
+    setTimeout(() => void checkForUpdates(), 10_000);
+    const updateTimer = setInterval(() => void checkForUpdates(), 24 * 60 * 60 * 1_000);
+    updateTimer.unref();
   }
+});
+
+app.on("activate", showMainWindow);
+
+app.on("before-quit", (event) => {
+  isQuitting = true;
+  if (process.platform !== "darwin" || !macUpdater?.hasPreparedUpdate || updateInstallIsQuitting) return;
+  event.preventDefault();
+  updateInstallIsQuitting = true;
+  void macUpdater.launchInstaller().then((launched) => {
+    if (launched) app.quit();
+  }).catch((error) => {
+    updateInstallIsQuitting = false;
+    isQuitting = false;
+    service.setUpdateState({ available: true, downloading: false, ready: true, error: error instanceof Error ? error.message : String(error) });
+    showMainWindow();
+  });
 });
 
 app.on("window-all-closed", () => {

@@ -143,7 +143,7 @@ export function App() {
       setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
     });
     return api?.onEvent((raw) => {
-      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
+      const event = raw as { type?: string; available?: boolean; version?: string; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
       if (event.type === "peer" && event.peerName) setState((current) => ({ ...current, remote: { ...current.remote, peerName: event.peerName } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -158,7 +158,14 @@ export function App() {
       }
       if (event.type === "context-sync") setState((current) => ({ ...current, contextSyncing: Boolean(event.syncing), contextSyncProgress: event.progress ?? 0 }));
       if (event.type === "runtime") { setBusy(Boolean(event.running)); setState((current) => ({ ...current, running: Boolean(event.running) })); }
-      if (event.type === "update") setState((current) => ({ ...current, update: { available: Boolean(event.available), version: event.version, downloading: Boolean(event.downloading) } }));
+      if (event.type === "update") setState((current) => ({ ...current, update: {
+        available: Boolean(event.available),
+        version: typeof event.version === "string" ? event.version : undefined,
+        downloading: Boolean(event.downloading),
+        progress: typeof event.progress === "number" ? event.progress : undefined,
+        ready: Boolean(event.ready),
+        error: typeof event.error === "string" ? event.error : undefined,
+      } }));
     });
   }, [api]);
 
@@ -451,7 +458,18 @@ export function App() {
           </section>}
 
           {activeSection === "settings" && <>
-            <section className="panel settings-panel" id="settings"><div className="panel-title"><div><p className="eyebrow">{t.settings}</p><h3>{deviceText.question}</h3></div><Settings2 size={20} /></div><div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div><div className="settings-actions"><label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label><button onClick={() => void api?.checkForUpdates()}>Проверить обновления</button><small>{state.update.available ? `Доступна версия ${state.update.version}` : "Установлена актуальная версия"}</small></div></section>
+            <section className="panel settings-panel" id="settings">
+              <div className="panel-title"><div><p className="eyebrow">{t.settings}</p><h3>{deviceText.question}</h3></div><Settings2 size={20} /></div>
+              <div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div>
+              <div className="settings-actions">
+                <label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label>
+                <button onClick={() => void api?.checkForUpdates()} disabled={state.update.downloading}>Проверить обновления</button>
+                {state.update.downloading && <small>Скачиваем обновление{state.update.progress !== undefined ? ` — ${state.update.progress}%` : "…"}</small>}
+                {state.update.ready && <button onClick={() => void api?.installUpdate()}>Перезапустить и обновить до {state.update.version}</button>}
+                {!state.update.downloading && !state.update.ready && !state.update.error && <small>{state.update.available ? `Доступна версия ${state.update.version}` : "Установлена актуальная версия"}</small>}
+                {state.update.error && <small className="update-error">Обновление не установлено: {state.update.error}</small>}
+              </div>
+            </section>
             <section className="panel privacy-panel"><div className="panel-title"><div><p className="eyebrow">{t.boundaries}</p><h3>{t.doNotDiscuss}</h3></div><Ban size={20} /></div><div className="input-row compact"><input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder={t.blockedPlaceholder} onKeyDown={(e) => e.key === "Enter" && void blockTopic()} /><button onClick={() => void blockTopic()}>{t.block}</button></div>{state.blockedTopics.map((item) => <span className="blocked-chip" key={item}>{item}</span>)}{!state.blockedTopics.length && <p className="muted">{t.noBlocks}</p>}</section>
           </>}
         </div>

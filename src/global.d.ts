@@ -30,7 +30,7 @@ export interface AppState {
     people: Array<{ id: string; label: string; relationship: string; aliases: string[] }>;
     topics: Array<{ id: string; title: string; aboutPersonIds: string[]; discussWithPersonId: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string; approved: boolean }>;
   };
-  update: { available: boolean; version?: string; downloading: boolean };
+  update: { available: boolean; version?: string; downloading: boolean; progress?: number; ready?: boolean; error?: string };
 }
 
 declare global {
@@ -57,6 +57,7 @@ declare global {
       discussAllTopics(): Promise<AppState>;
       answerOwnerQuestion(input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }): Promise<AppState>;
       checkForUpdates(): Promise<void>;
+      installUpdate(): Promise<void>;
       onEvent(listener: (event: unknown) => void): () => void;
     };
   }
