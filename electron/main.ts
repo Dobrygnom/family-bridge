@@ -9,6 +9,8 @@ import { AtomicStore } from "./store.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
+process.stdout?.on("error", () => undefined);
+process.stderr?.on("error", () => undefined);
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BackgroundService;
@@ -199,6 +201,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("bridge:install-update", () => installPreparedUpdate());
   if (app.isPackaged) {
+    autoUpdater.logger = null;
     if (process.platform === "darwin") {
       macUpdater = new MacReleaseUpdater(app.getVersion(), process.execPath, app.getPath("userData"), process.arch, (update) => {
         service.setUpdateState(update);
