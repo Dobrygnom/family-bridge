@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -98,6 +98,14 @@ test("owner question survives restart and raw answer is not sent to the peer", a
     assert.equal(sent[0].payload.text, "Уточнённый вывод без дословного личного ответа");
     assert.doesNotMatch(sent[0].payload.text, new RegExp(rawAnswer));
     assert.deepEqual((await store.read()).pendingOwnerQuestions, []);
+    const learned = JSON.parse(await readFile(path.join(directory, "psychologist-memory", "learned-context.json"), "utf8")) as Array<{ topic: string; question: string; disposition: string; answer?: string }>;
+    assert.deepEqual(learned.map(({ topic, question: savedQuestion, disposition: savedDisposition, answer: savedAnswer }) => ({ topic, question: savedQuestion, disposition: savedDisposition, answer: savedAnswer })), [{
+      topic: question.topic,
+      question: question.question,
+      disposition: "answer",
+      answer: rawAnswer,
+    }]);
+    assert.equal((await service.state()).memory.learnedCount, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

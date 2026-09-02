@@ -33,6 +33,7 @@ try {
     blockedTopics: [], reports: [reportPath], pendingOwnerQuestions: [], conversationResetVersion: "0.3.25", ignoredConversationIds: [],
   }), "utf8");
   await writeFile(path.join(memory, "context-source.json"), JSON.stringify({ id: "results-test", title: "Карманный психолог", project: "Живи", source: "chatgpt", status: "ready", messageCount: 498, lastSyncedAt: new Date().toISOString() }), "utf8");
+  await writeFile(path.join(memory, "learned-context.json"), JSON.stringify([{ id: "learned-1", topic: "Готовая тема", question: "Что для тебя важно?", disposition: "answer", answer: "Чтобы меня услышали", recordedAt: new Date().toISOString() }]), "utf8");
   await writeFile(path.join(memory, "context-analysis.json"), JSON.stringify({
     analysisVersion: 2, sourceId: "results-test", sourceHash: "results-hash", analyzedAt: new Date().toISOString(), status: "ready",
     people: [{ id: "katya", label: "Екатерина", relationship: "партнёр", aliases: [] }], topics: [],
@@ -87,7 +88,13 @@ try {
   const transcript = await evaluate<string>(`document.querySelector('.report-transcript')?.textContent ?? ''`);
   assert.match(transcript, /Что ты думаешь\?/);
   assert.match(transcript, /Вот что я думаю\./);
-  console.log(JSON.stringify({ persistentTopics: topicRows.length, statuses: true, shortAnswer: true, readableTranscript: true }));
+  await evaluate(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Исходный чат и темы'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
+  const contextText = await waitFor(async () => {
+    const text = await evaluate<string>(`document.querySelector('.context-current')?.textContent ?? ''`);
+    return /Запомнено из ответов/.test(text) ? text : undefined;
+  });
+  assert.match(contextText, /Запомнено из ответов\s*1/);
+  console.log(JSON.stringify({ persistentTopics: topicRows.length, statuses: true, shortAnswer: true, readableTranscript: true, learnedAnswersVisible: true }));
 } finally {
   socket?.close();
   child?.kill();

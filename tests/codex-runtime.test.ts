@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildInitialPrompt, buildResumeInvocation, buildStartInvocation, CodexCliAgent, hasRoleVoiceViolation } from "../src/core/codex-runtime.js";
+import { buildInitialPrompt, buildOwnerQuestionReviewPrompt, buildResumeInvocation, buildStartInvocation, CodexCliAgent, hasRoleVoiceViolation } from "../src/core/codex-runtime.js";
 
 test("agent prompt carries the selected language and lets the app infer style from chat samples", () => {
   const prompt = buildInitialPrompt({
@@ -32,6 +32,54 @@ test("agent prompt carries the selected language and lets the app infer style fr
   assert.match(prompt, /к Sam обращайся напрямую на «ты»/);
   assert.match(prompt, /owner_question/);
   assert.match(prompt, /не хватает важного факта/);
+  assert.match(prompt, /по умолчанию отвечай самостоятельно/);
+  assert.match(prompt, /не ставь разговор на паузу ради примера/);
+});
+
+test("owner question gets a strict autonomy review before the conversation is paused", () => {
+  const prompt = buildOwnerQuestionReviewPrompt("Дмитрий", "Катя");
+  assert.match(prompt, /По умолчанию продолжи разговор сам/);
+  assert.match(prompt, /две существенно разные правдоподобные позиции/);
+  assert.match(prompt, /Не спрашивай владельца ради примера/);
+  assert.match(prompt, /очисти owner_question/);
+});
+
+test("a nonessential owner question is replaced with an autonomous reply", { skip: process.platform !== "win32" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "family-bridge-autonomy-"));
+  try {
+    const fakeRuntime = path.join(root, "fake-codex.mjs");
+    const command = path.join(root, "codex.cmd");
+    await writeFile(fakeRuntime, `let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => input += chunk);
+process.stdin.on("end", () => {
+  const reviewing = input.includes("обязательно пересмотри необходимость паузы");
+  if (!reviewing) console.log(JSON.stringify({ type: "thread.started", thread_id: "autonomy-test-session" }));
+  const response = reviewing
+    ? { message_to_peer: "Я думаю, нам лучше начать с того, что уже понятно, а детали уточнить потом.", status: "continue", owner_question: "", topics: [], private_report: "", shared_summary: "", comparison_summary: "" }
+    : { message_to_peer: "", status: "paused", owner_question: "Какой точный срок ты предпочитаешь?", topics: [], private_report: "", shared_summary: "", comparison_summary: "" };
+  console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(response) } }));
+});
+`, "utf8");
+    await writeFile(command, `@echo off\r\n"${process.execPath}" "${fakeRuntime}" %*\r\n`, "utf8");
+    const agent = new CodexCliAgent({
+      id: "dima",
+      displayName: "Дмитрий",
+      ownerName: "Дмитрий",
+      peerName: "Катя",
+      perspective: "Локальный контекст",
+      workspace: path.join(root, "workspace"),
+      schemaPath: path.join(root, "schema.json"),
+      codexCommand: command,
+    });
+
+    const response = await agent.start("Когда мы сможем это обсудить?");
+    assert.equal(response.status, "continue");
+    assert.equal(response.owner_question, "");
+    assert.match(response.message_to_peer, /детали уточнить потом/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("third-person mediator speech is rejected while direct role speech is accepted", () => {

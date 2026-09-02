@@ -67,7 +67,9 @@ const SYSTEM_RULES = `
 - завершай разговор, когда получен ясный ответ отвечающей стороны; обычно достаточно 1–3 реплик каждого агента;
 - private_report предназначен только владельцу;
 - если для содержательного ответа действительно не хватает важного факта, который знает только твой владелец, не додумывай его: поставь status="paused" и задай владельцу один конкретный, нейтральный вопрос в owner_question;
-- используй паузу редко: только когда без ответа существенно меняется вывод или договорённость, а не для любой мелкой неопределённости;
+- по умолчанию отвечай самостоятельно: используй наиболее обоснованную версию из локальной перспективы, прямо обозначь неопределённость и продолжи разговор;
+- используй паузу редко: только если без ответа остаются две существенно разные правдоподобные позиции, неизвестен критически важный личный факт или речь идёт о необратимом обязательстве с серьёзными последствиями;
+- не ставь разговор на паузу ради примера, точной формулировки, определения слова, желаемого срока, частоты, числа, подтверждения готовности или вопроса «правильно ли я понял». Выбери разумную гипотезу и продолжи;
 - owner_question видит только твой владелец. Не копируй этот вопрос в message_to_peer и не проси второго агента передать его человеку;
 - после ответа владельца, «не знаю» или отказа не задавай тот же вопрос повторно. Продолжи с доступными фактами и при необходимости сформулируй условный вывод;
 - если status не paused, owner_question должен быть пустой строкой;
@@ -116,6 +118,14 @@ export function buildResumeInvocation(options: CodexRuntimeOptions, sessionId: s
   };
 }
 
+export function buildOwnerQuestionReviewPrompt(ownerName: string, peerName: string) {
+  return `Ты собираешься прервать разговор и спросить ${ownerName}. Сначала обязательно пересмотри необходимость паузы.
+По умолчанию продолжи разговор сам: выбери наиболее обоснованную гипотезу из уже известного контекста, честно обозначь неопределённость и ответь ${peerName} живой репликой от первого лица.
+Сохрани status="paused" только если без нового ответа остаются две существенно разные правдоподобные позиции, отсутствует критически важный личный факт или ты иначе приписал бы владельцу необратимое обязательство с серьёзными последствиями.
+Не спрашивай владельца ради примера, точной формулировки, определения, предпочтительного срока, частоты, числа, подтверждения готовности или проверки «правильно ли я понял». Такие детали выбери самостоятельно либо оставь условными.
+Если можешь продолжить, очисти owner_question и верни исправленный JSON. Если вопрос действительно необходим, оставь ровно один короткий конкретный вопрос. Верни только JSON.`;
+}
+
 export class CodexCliAgent implements AgentRuntime {
   readonly id: AgentId;
   private sessionId?: string;
@@ -134,7 +144,7 @@ export class CodexCliAgent implements AgentRuntime {
     const result = await this.run(invocation.args, invocation.stdin);
     if (!result.threadId) throw new Error(`Codex did not return a session id for ${this.id}`);
     this.sessionId = result.threadId;
-    return this.enforceRoleVoice(result.response);
+    return this.enforceOutput(result.response);
   }
 
   async respond(peerMessage: string): Promise<AgentResponse> {
@@ -142,14 +152,25 @@ export class CodexCliAgent implements AgentRuntime {
   }
 
   async respondToOwner(ownerMessage: string): Promise<AgentResponse> {
-    return this.resume(`Локальный ответ владельца на твой вопрос. Это не реплика второго агента:\n${ownerMessage}\n\nВозобнови переговоры по правилам сессии. Не пересылай сырой ответ дословно. Верни только JSON.`);
+    return this.resume(`Локальный ответ владельца на твой вопрос. Это не реплика второго агента:\n${ownerMessage}\n\nСчитай этот ответ подтверждённым локальным фактом, используй его и не спрашивай то же снова. Возобнови разговор самостоятельно. Не пересылай сырой ответ дословно. Верни только JSON.`);
   }
 
   private async resume(prompt: string): Promise<AgentResponse> {
     if (!this.sessionId) throw new Error(`Agent ${this.id} has not been started`);
     const invocation = buildResumeInvocation(this.options, this.sessionId, prompt);
     const result = await this.run(invocation.args, invocation.stdin);
-    return this.enforceRoleVoice(result.response);
+    return this.enforceOutput(result.response);
+  }
+
+  private async enforceOutput(initial: AgentResponse): Promise<AgentResponse> {
+    const ownerName = this.options.ownerName ?? (this.options.id === "dima" ? "Дима" : "Катя");
+    const peerName = this.options.peerName ?? (this.options.id === "dima" ? "Катя" : "Дима");
+    let response = await this.enforceRoleVoice(initial);
+    if (response.status === "paused" && response.owner_question.trim() && this.sessionId) {
+      const invocation = buildResumeInvocation(this.options, this.sessionId, buildOwnerQuestionReviewPrompt(ownerName, peerName));
+      response = await this.enforceRoleVoice((await this.run(invocation.args, invocation.stdin)).response);
+    }
+    return response;
   }
 
   private async enforceRoleVoice(initial: AgentResponse): Promise<AgentResponse> {

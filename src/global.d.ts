@@ -22,7 +22,7 @@ export interface AppState {
   contextSyncProgress: number;
   codex: { installed: boolean; authenticated: boolean; version: string };
   remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; counterpartPersonId?: string; counterpartLabel?: string };
-  memory: { configured: boolean; messageCount: number; lastCheckedAt?: string; status?: string };
+  memory: { configured: boolean; messageCount: number; learnedCount: number; lastCheckedAt?: string; status?: string };
   context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error"; error?: string };
   contextAnalysis?: {
     analysisVersion: number;
