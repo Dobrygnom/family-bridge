@@ -4,6 +4,18 @@ import { DictationService, parseDictationCredentials, validDictationWav } from "
 import { appendDictation, encodeDictationWav, MAX_DICTATION_BYTES } from "../src/core/dictation.js";
 import { parseOwnerDrafts } from "../src/ui/drafts.js";
 import { dictationText } from "../src/ui/dictation-text.js";
+import { allowAppPermission } from "../src/core/media-permissions.js";
+
+test("microphone permission does not break invitation copying or allow camera/external pages", () => {
+  assert.equal(allowAppPermission(true, "clipboard-sanitized-write"), true);
+  assert.equal(allowAppPermission(true, "media", ["audio"]), true);
+  assert.equal(allowAppPermission(true, "media", ["video"]), false);
+  assert.equal(allowAppPermission(true, "media", ["audio", "video"]), false);
+  assert.equal(allowAppPermission(true, "media", []), false);
+  assert.equal(allowAppPermission(true, "clipboard-read"), false);
+  assert.equal(allowAppPermission(false, "media", ["audio"]), false);
+  assert.equal(allowAppPermission(false, "clipboard-sanitized-write"), false);
+});
 
 const audio = () => encodeDictationWav([Float32Array.from({ length: 1600 }, (_, i) => Math.sin(i) * 0.1)], 16000);
 const auth = async () => ({ token: "test-token", accountId: "test-account" });

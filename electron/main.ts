@@ -8,6 +8,7 @@ import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
 import { exportReportFiles, revealInWindowsExplorer } from "./open-directory.js";
 import { AtomicStore } from "./store.js";
 import { DictationService } from "./dictation.js";
+import { allowAppPermission } from "../src/core/media-permissions.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -72,10 +73,10 @@ function createWindow() {
   };
   contents.setWindowOpenHandler(() => ({ action: "deny" }));
   contents.on("will-navigate", (event, url) => { if (!trustedUrl(url)) event.preventDefault(); });
-  contents.session.setPermissionCheckHandler((sender, permission, _origin, details) => sender === contents && permission === "media" && details.mediaType === "audio");
+  contents.session.setPermissionCheckHandler((sender, permission, _origin, details) => allowAppPermission(sender === contents, permission, details.mediaType ? [details.mediaType] : []));
   contents.session.setPermissionRequestHandler((sender, permission, callback, details) => {
     const mediaTypes = "mediaTypes" in details ? details.mediaTypes ?? [] : [];
-    callback(sender === contents && permission === "media" && trustedUrl(details.requestingUrl) && mediaTypes.length > 0 && mediaTypes.every((type) => type === "audio"));
+    callback(allowAppPermission(sender === contents && trustedUrl(details.requestingUrl), permission, mediaTypes));
   });
   const stopDictation = () => {
     dictation.cancel();
