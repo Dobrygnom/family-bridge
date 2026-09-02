@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",
@@ -66,7 +66,10 @@
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.lifestyle"
+      "category": "public.app-category.lifestyle",
+      "extendInfo": { "NSMicrophoneUsageDescription": "Family Bridge records your voice only when you press Dictate, then sends it to OpenAI to turn it into an editable draft." },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "publish": [
       {

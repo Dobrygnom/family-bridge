@@ -19,6 +19,10 @@ import {
 } from "lucide-react";
 import type { AppState } from "../global.js";
 import { languageNames, translations, type Language } from "./i18n.js";
+import { DictationControl } from "./DictationControl.js";
+import { dictationText } from "./dictation-text.js";
+import { appendDictation } from "../core/dictation.js";
+import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
 
 const fallback: AppState = {
   owner: "dima",
@@ -75,7 +79,11 @@ export function App() {
   const [topicSearch, setTopicSearch] = useState("");
   const [expandedTopicIds, setExpandedTopicIds] = useState<Set<string>>(() => new Set());
   const [inviteCopied, setInviteCopied] = useState(false);
-  const [ownerAnswers, setOwnerAnswers] = useState<Record<string, string>>({});
+  const [ownerAnswers, setOwnerAnswers] = useState<Record<string, string>>(() => {
+    try { return parseOwnerDrafts(localStorage.getItem(OWNER_DRAFTS_KEY)); } catch { return {}; }
+  });
+  const [activeDictation, setActiveDictation] = useState("");
+  const [selectedReportId, setSelectedReportId] = useState("");
   const [answeringQuestionId, setAnsweringQuestionId] = useState("");
   const [versionCheckBusy, setVersionCheckBusy] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
@@ -168,10 +176,11 @@ export function App() {
   }
 
   function goTo(section: SectionId) {
+    if (section !== activeSection && activeDictation && !window.confirm(dictationText[language].leave)) return;
     setActiveSection(section);
     setShowContextPicker(false);
     if (section === "context" && !state.context && !contextThreads.length) void loadContextThreads();
-    window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    if (section !== "reports") window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   async function changeLanguage(value: Language) {
@@ -181,6 +190,19 @@ export function App() {
   }
 
   const api = window.familyBridge;
+  const attentionText = {
+    ru: { waiting: "Есть вопросы к вам", open: "Открыть вопросы", draftError: "Не удалось сохранить черновик на этом компьютере. Не закрывайте приложение до отправки ответа." },
+    en: { waiting: "Questions need your answer", open: "Open questions", draftError: "Could not save the draft on this computer. Keep the app open until you send your answer." },
+    cs: { waiting: "Máme na vás otázky", open: "Otevřít otázky", draftError: "Koncept nelze uložit do počítače. Nezavírejte aplikaci před odesláním odpovědi." },
+    fr: { waiting: "Des questions vous attendent", open: "Ouvrir les questions", draftError: "Impossible de sauvegarder le brouillon. Gardez l’application ouverte jusqu’à l’envoi." },
+  }[language];
+  useEffect(() => {
+    try { localStorage.setItem(OWNER_DRAFTS_KEY, JSON.stringify(ownerAnswers)); }
+    catch { setError(attentionText.draftError); }
+  }, [ownerAnswers, attentionText.draftError]);
+  useEffect(() => {
+    if (activeSection === "reports" && selectedReportId) document.getElementById(`report-${selectedReportId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [activeSection, selectedReportId]);
   useEffect(() => {
     const refreshLocalContext = () => void api?.getLocalContextState().then((local) => {
       setState((current) => ({ ...current, context: local.context, contextAnalysis: local.contextAnalysis }));
@@ -214,7 +236,6 @@ export function App() {
       if (event.type === "reports" && event.reports && event.reportSummaries) setState((current) => ({ ...current, reports: event.reports!, reportSummaries: event.reportSummaries! }));
       if (event.type === "owner-questions" && event.questions) {
         setState((current) => ({ ...current, ownerQuestions: event.questions! }));
-        if (event.questions.length) setActiveSection("overview");
       }
       if (event.type === "context-sync") setState((current) => ({ ...current, contextSyncing: Boolean(event.syncing), contextSyncProgress: event.progress ?? 0 }));
       if (event.type === "runtime") { setBusy(Boolean(event.running)); setState((current) => ({ ...current, running: Boolean(event.running) })); }
@@ -255,10 +276,13 @@ export function App() {
   );
 
   async function addTopic() {
-    if (!topic.trim()) return;
-    if (api) setState(await api.addTopic(topic));
-    else setState((current) => ({ ...current, pendingTopics: [...current.pendingTopics, topic] }));
-    setTopic("");
+    if (!topic.trim() || activeDictation) return;
+    setError("");
+    try {
+      if (api) setState(await api.addTopic(topic));
+      else setState((current) => ({ ...current, pendingTopics: [...current.pendingTopics, topic] }));
+      setTopic("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }
 
   async function blockTopic() {
@@ -277,7 +301,7 @@ export function App() {
   }
 
   async function answerOwnerQuestion(id: string, disposition: "answer" | "unknown" | "decline") {
-    if (!api) return;
+    if (!api || activeDictation || answeringQuestionId) return;
     setAnsweringQuestionId(id); setError("");
     try {
       const answer = ownerAnswers[id]?.trim() || "";
@@ -448,7 +472,7 @@ export function App() {
         </nav>
         <div className="sidebar-status">
           <span className={health ? "status-dot online" : "status-dot"} />
-          <div><strong>{health ? t.ready : t.setup}</strong><small>{state.codex.version}</small></div>
+          <div><strong>{health ? t.ready : t.setup}</strong><small>Family Bridge v{state.appVersion}</small><small>{state.codex.version}</small></div>
         </div>
       </aside>
 
@@ -460,16 +484,19 @@ export function App() {
 
         {state.contextSyncing && state.context && <section className="context-refresh-note"><LoaderCircle className="spin" size={18} /><div><div className="context-refresh-title"><strong>{contextRefreshText.title}</strong><b>{state.contextSyncProgress}%</b></div><span>{contextRefreshText.body}</span><progress max="100" value={state.contextSyncProgress} /></div></section>}
 
+        {activeSection !== "overview" && state.ownerQuestions.length > 0 && <div className="attention-note" role="status"><Bell size={18} /><span>{attentionText.waiting} · {state.ownerQuestions.length}</span><button className="ghost" onClick={() => goTo("overview")}>{attentionText.open}</button></div>}
+
         {activeSection === "overview" && state.ownerQuestions.map((item) => <section className="panel owner-question-panel" key={item.id}>
           <div className="owner-question-heading"><div><p className="eyebrow">{ownerQuestionText.eyebrow}</p><h3>{ownerQuestionText.title}</h3></div><Bell size={21} /></div>
           <div className="owner-question-topic"><span>{ownerQuestionText.paused}</span><strong>{item.topic}</strong></div>
           <p className="owner-question">{item.question}</p>
           <p className="owner-question-privacy"><ShieldCheck size={15} />{ownerQuestionText.privacy}</p>
-          <textarea value={ownerAnswers[item.id] || ""} onChange={(event) => setOwnerAnswers((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={ownerQuestionText.placeholder} disabled={answeringQuestionId === item.id} />
+          <textarea aria-label={`${ownerQuestionText.placeholder}: ${item.topic}`} value={ownerAnswers[item.id] || ""} onChange={(event) => setOwnerAnswers((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={ownerQuestionText.placeholder} disabled={answeringQuestionId === item.id} />
+          <DictationControl language={language} disabled={Boolean(answeringQuestionId) || Boolean(activeDictation && activeDictation !== item.id)} onText={(text) => setOwnerAnswers((current) => ({ ...current, [item.id]: appendDictation(current[item.id] || "", text) }))} onBusyChange={(value) => setActiveDictation((current) => value ? item.id : current === item.id ? "" : current)} />
           <div className="owner-question-actions">
-            <button className="primary" disabled={!ownerAnswers[item.id]?.trim() || answeringQuestionId === item.id} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id ? ownerQuestionText.processing : ownerQuestionText.answer}</button>
-            <button className="ghost" disabled={answeringQuestionId === item.id} onClick={() => void answerOwnerQuestion(item.id, "unknown")}>{ownerQuestionText.unknown}</button>
-            <button className="ghost" disabled={answeringQuestionId === item.id} onClick={() => void answerOwnerQuestion(item.id, "decline")}>{ownerQuestionText.decline}</button>
+            <button className="primary" disabled={!ownerAnswers[item.id]?.trim() || Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id ? ownerQuestionText.processing : ownerQuestionText.answer}</button>
+            <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "unknown")}>{ownerQuestionText.unknown}</button>
+            <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "decline")}>{ownerQuestionText.decline}</button>
           </div>
         </section>)}
 
@@ -554,16 +581,17 @@ export function App() {
               const active = state.activeTopics.includes(item);
               const pending = state.pendingTopics.includes(item);
               const status = report ? topicStatusText.complete : active ? topicStatusText.active : pending ? topicStatusText.pending : topicStatusText.selected;
-              return <div className="topic pair-topic" key={item}><div className="topic-copy"><span>{item}</span><small>{topicSourceLabel(item)}</small></div><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => report && goTo("reports")}>{status}</button></div>;
+              return <div className="topic pair-topic" key={item}><div className="topic-copy"><span>{item}</span><small>{topicSourceLabel(item)}</small></div><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => { if (report) { setSelectedReportId(report.id); goTo("reports"); } }}>{status}</button></div>;
             })}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
-            <div className="input-row"><input disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim()} onClick={() => void addTopic()}>{t.add}</button></div>
+            <div className="input-row"><input aria-label={workflowText.addTopic} disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim() || Boolean(activeDictation)} onClick={() => void addTopic()}>{t.add}</button></div>
+            <DictationControl language={language} disabled={!state.remote.counterpartPersonId || Boolean(activeDictation && activeDictation !== "new-topic")} onText={(text) => setTopic((current) => appendDictation(current, text))} onBusyChange={(value) => setActiveDictation((current) => value ? "new-topic" : current === "new-topic" ? "" : current)} />
             <div className="actions"><button className="primary" disabled={busy || !state.remote.connected || !state.pendingTopics.length} onClick={() => void discussAllTopics()}><Sparkles size={17} />{busy ? workflowText.discussing : workflowText.discuss}</button></div>
           </section>}
 
           {activeSection === "reports" && <section className="panel report-panel" id="reports">
             <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><ScrollText size={20} /></div>
             {!state.reportSummaries.length && <div className="empty tall"><ScrollText size={28} /><span>{reportsText.empty}</span></div>}
-            <div className="report-cards">{state.reportSummaries.map((report) => <article className="report-card" key={report.id}>
+            <div className="report-cards">{state.reportSummaries.map((report) => <article className={`report-card ${selectedReportId === report.id ? "selected-report" : ""}`} id={`report-${report.id}`} key={report.id}>
               <div className="report-heading"><strong>{report.topic}</strong><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div>
               <div className="report-source">{reportsText.proposed}: <strong>{report.proposedBy.join(" + ")}</strong></div>
               <div className="report-positions">

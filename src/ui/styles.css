@@ -179,3 +179,15 @@ section[id] { scroll-margin-top: 24px; }
 .topic-expand { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #769099; }.topic-expand:hover { background: #1b3039; }.topic-row.expanded .topic-expand svg { transform: rotate(180deg); }
 .topic-row-detail { padding: 12px 54px 14px 37px; border-top: 1px solid #263b45; background: #13232c; }.topic-row-detail > p { color: #82979e; font-size: 11px; line-height: 1.5; margin: 0 0 11px; }
 @media (max-width: 1050px) { .hero-card { grid-template-columns: 1fr; }.hero-metrics { border-left: 0; border-top: 1px solid #345356; padding-top: 14px; } }
+
+.dictation-control { margin: 8px 0 12px; min-width: 0; }
+.dictation-toolbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 12px; }
+.dictation-toolbar button, .dictation-toolbar > span[role="status"] { display: inline-flex; align-items: center; gap: 7px; }
+.dictation-toolbar button { border-radius: 9px; padding: 8px 11px; }
+.dictation-toolbar meter { width: 65px; height: 12px; }
+.recording-dot { width: 9px; height: 9px; background: #f18787; border-radius: 50%; flex: 0 0 auto; }
+.dictation-hint, .dictation-error { margin: 7px 0 0; font-size: 11px; line-height: 1.5; color: #92a7ad; }
+.dictation-error { color: #f2b3a6; }
+.attention-note { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #88744c; border-radius: 12px; margin-bottom: 14px; font-size: 13px; }
+.attention-note button { margin-left: auto; padding: 8px; border-radius: 8px; }
+.report-card.selected-report { border-color: #80d6b7; box-shadow: 0 0 0 1px #80d6b7; scroll-margin-top: 15px; }

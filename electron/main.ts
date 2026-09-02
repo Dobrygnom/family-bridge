@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, Tray, type MessageBoxOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
 import electronUpdater from "electron-updater";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -7,6 +7,7 @@ import { BackgroundService } from "./background-service.js";
 import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
 import { exportReportFiles, revealInWindowsExplorer } from "./open-directory.js";
 import { AtomicStore } from "./store.js";
+import { DictationService } from "./dictation.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -15,6 +16,7 @@ process.stderr?.on("error", () => undefined);
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BackgroundService;
+const dictation = new DictationService();
 let isQuitting = false;
 let macUpdater: MacReleaseUpdater | null = null;
 let updateInstallIsQuitting = false;
@@ -60,6 +62,27 @@ function createWindow() {
       mainWindow?.hide();
     }
   });
+  const contents = mainWindow.webContents;
+  const trustedUrl = (url: string) => {
+    try {
+      const candidate = new URL(url);
+      const expected = new URL(contents.getURL());
+      return candidate.protocol === expected.protocol && candidate.host === expected.host && candidate.pathname === expected.pathname;
+    } catch { return false; }
+  };
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+  contents.on("will-navigate", (event, url) => { if (!trustedUrl(url)) event.preventDefault(); });
+  contents.session.setPermissionCheckHandler((sender, permission, _origin, details) => sender === contents && permission === "media" && details.mediaType === "audio");
+  contents.session.setPermissionRequestHandler((sender, permission, callback, details) => {
+    const mediaTypes = "mediaTypes" in details ? details.mediaTypes ?? [] : [];
+    callback(sender === contents && permission === "media" && trustedUrl(details.requestingUrl) && mediaTypes.length > 0 && mediaTypes.every((type) => type === "audio"));
+  });
+  const stopDictation = () => {
+    dictation.cancel();
+    contents.send("bridge:event", { type: "dictation-cancelled" });
+  };
+  mainWindow.on("hide", stopDictation);
+  mainWindow.on("minimize", stopDictation);
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
@@ -212,6 +235,15 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
   ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
   ipcMain.handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
+  const trustedDictationSender = (event: IpcMainInvokeEvent) => event.sender === mainWindow?.webContents && event.senderFrame === mainWindow?.webContents.mainFrame;
+  ipcMain.handle("bridge:request-microphone", async (event) => {
+    if (!trustedDictationSender(event)) return false;
+    try {
+      return process.platform === "darwin" ? await systemPreferences.askForMediaAccess("microphone") : systemPreferences.getMediaAccessStatus("microphone") !== "denied";
+    } catch { return false; }
+  });
+  ipcMain.handle("bridge:transcribe-audio", (event, input: unknown) => trustedDictationSender(event) ? dictation.transcribe(input) : { ok: false, code: "unavailable" });
+  ipcMain.handle("bridge:cancel-dictation", (event, id: unknown) => { if (trustedDictationSender(event) && typeof id === "string") dictation.cancel(id); });
   ipcMain.handle("bridge:check-updates", async () => {
     await checkForUpdates();
   });
@@ -254,6 +286,7 @@ app.whenReady().then(async () => {
 app.on("activate", showMainWindow);
 
 app.on("before-quit", (event) => {
+  dictation.cancel();
   isQuitting = true;
   if (process.platform !== "darwin" || !macUpdater?.hasPreparedUpdate || updateInstallIsQuitting) return;
   event.preventDefault();

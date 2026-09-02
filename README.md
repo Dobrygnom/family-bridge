@@ -37,6 +37,14 @@ Never put a Supabase service-role key in the desktop application.
 - [`INSTALL_FOR_CODEX.md`](INSTALL_FOR_CODEX.md) — one-file setup instruction for Codex Desktop on the second computer.
 - [`docs/DESKTOP_SYNC_PROMPT.md`](docs/DESKTOP_SYNC_PROMPT.md) — legacy migration reference for installations created before in-app context selection.
 
+## Voice dictation (0.3.29)
+
+Answers to your agent and new topics have a **Dictate** button. Record up to two minutes, stop, review the inserted draft, and send explicitly. Recording/transcription can be cancelled; failed uploads can be retried without re-recording while the field remains open. Existing typed text is appended to, never replaced. Owner-answer drafts are saved in this app's local profile until submitted.
+
+Audio is sent directly to OpenAI using the existing Codex ChatGPT login, not to the partner or a third-party relay. The app keeps recordings only in memory, and does not log or copy credentials. This uses the **internal, undocumented ChatGPT dictation endpoint**; availability and compatibility are not guaranteed. No API key or local transcription model is used. When the service is unavailable, typing remains available.
+
+On macOS, allow microphone access when prompted. Denied permissions can be changed in System Settings → Privacy & Security → Microphone. File-based Codex credentials are supported on Windows/macOS; the direct Codex Auth Keychain entry is also supported on macOS when configured. Other credential-store backends may require additional integration; the app never changes credential-storage settings automatically.
+
 ## Safety
 
 This is an experimental mediation aid, not a licensed therapist or emergency service. It must pause autonomous dialogue when it detects immediate danger, abuse, self-harm risk, or a topic prohibited by either owner.

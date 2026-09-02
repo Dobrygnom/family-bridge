@@ -1,4 +1,5 @@
 import type { ConversationReport } from "./core/types.js";
+import type { DictationResult } from "./core/dictation.js";
 
 export interface AppState {
   owner: "dima" | "katya";
@@ -62,6 +63,9 @@ declare global {
       runRemote(topic: string): Promise<void>;
       discussAllTopics(): Promise<AppState>;
       answerOwnerQuestion(input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }): Promise<AppState>;
+      requestMicrophone(): Promise<boolean>;
+      transcribeAudio(input: { id: string; audio: Uint8Array }): Promise<DictationResult>;
+      cancelDictation(id: string): Promise<void>;
       checkForUpdates(): Promise<void>;
       checkPairVersions(): Promise<AppState>;
       installUpdate(): Promise<void>;
