@@ -113,6 +113,13 @@ export class SupabaseTransport {
       })
       .select("id")
       .single();
+    if (result.error?.code === "23505") {
+      // A successful send followed by a lost HTTP response must be retryable.
+      const existing = await this.client.from("bridge_messages").select("id,pair_id,conversation_id,sequence_number,sender_id")
+        .eq("idempotency_key", input.idempotencyKey).single();
+      const row = existing.data;
+      if (!existing.error && row?.pair_id === input.pairId && row.conversation_id === input.conversationId && row.sequence_number === input.sequence && row.sender_id === userId) return String(row.id);
+    }
     if (result.error) throw result.error;
     return String(result.data.id);
   }

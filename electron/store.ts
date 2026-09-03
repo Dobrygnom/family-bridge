@@ -5,6 +5,15 @@ export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
 export type TopicSource = "local" | "peer" | "unknown";
+export interface ConversationContinuation {
+  parentReportId: string;
+  topic: string;
+  pairId: string;
+  instruction: string;
+  history: Array<{ from: OwnerId; text: string }>;
+  status: "starting" | "waiting" | "complete" | "error";
+  preparedMessage?: string;
+}
 
 export interface PendingOwnerQuestion {
   id: string;
@@ -37,6 +46,8 @@ export interface StoredState {
   conversationResetVersion?: string;
   conversationResetAt?: string;
   ignoredConversationIds: string[];
+  continuations: Record<string, ConversationContinuation>;
+  conversationParents: Record<string, string>;
   lastConversationAt?: string;
   remote?: {
     pairId: string;
@@ -66,6 +77,8 @@ const defaults: StoredState = {
   pendingOwnerQuestions: [],
   conversationTranscripts: {},
   ignoredConversationIds: [],
+  continuations: {},
+  conversationParents: {},
 };
 
 export class AtomicStore {
@@ -83,16 +96,25 @@ export class AtomicStore {
 
   private async readSnapshot(): Promise<StoredState> {
     try {
-      return { ...defaults, ...JSON.parse(await readFile(this.file, "utf8")) };
-    } catch {
-      return structuredClone(defaults);
+      const value = JSON.parse(await readFile(this.file, "utf8"));
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved state");
+      return { ...defaults, ...value };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(defaults);
+      // A broken/unreadable file is NOT a new installation. Never overwrite it
+      // with defaults on the next settings change.
+      throw new Error("Не удалось прочитать сохранённое состояние. Данные не сброшены. Закройте приложение и повторите запуск.");
     }
   }
 
   update(update: Partial<StoredState>): Promise<StoredState> {
+    return this.mutate(() => update);
+  }
+
+  mutate(update: (current: StoredState) => Partial<StoredState>): Promise<StoredState> {
     const operation = this.pending.then(async () => {
       const current = await this.readSnapshot();
-      const next = { ...current, ...update };
+      const next = { ...current, ...update(current) };
       await mkdir(path.dirname(this.file), { recursive: true });
       const temporary = `${this.file}.tmp`;
       await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");

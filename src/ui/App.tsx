@@ -23,6 +23,8 @@ import { DictationControl } from "./DictationControl.js";
 import { dictationText } from "./dictation-text.js";
 import { appendDictation } from "../core/dictation.js";
 import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
+import { ReportContinuation } from "./ReportContinuation.js";
+import { loadSavedState } from "./load-state.js";
 
 const fallback: AppState = {
   owner: "dima",
@@ -32,8 +34,8 @@ const fallback: AppState = {
   language: "ru",
   autoStart: true,
   appVersion: "preview",
-  pendingTopics: ["Как сделать бытовые договорённости спокойнее"],
-  pairTopics: ["Как сделать бытовые договорённости спокойнее"],
+  pendingTopics: [],
+  pairTopics: [],
   topicSources: {},
   activeTopics: [],
   blockedTopics: [],
@@ -43,7 +45,7 @@ const fallback: AppState = {
   running: false,
   contextSyncing: false,
   contextSyncProgress: 0,
-  codex: { installed: true, authenticated: true, version: "preview mode" },
+  codex: { installed: false, authenticated: false, version: "" },
   remote: { configured: false, connected: false },
   memory: { configured: false, messageCount: 0, learnedCount: 0 },
   update: { available: false, downloading: false },
@@ -62,6 +64,9 @@ function compareVersions(left: string, right: string) {
 
 export function App() {
   const [state, setState] = useState<AppState>(fallback);
+  const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reload, setReload] = useState(0);
   const [topic, setTopic] = useState("");
   const [blocked, setBlocked] = useState("");
   const [busy, setBusy] = useState(false);
@@ -204,26 +209,29 @@ export function App() {
     if (activeSection === "reports" && selectedReportId) document.getElementById(`report-${selectedReportId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [activeSection, selectedReportId]);
   useEffect(() => {
-    const refreshLocalContext = () => void api?.getLocalContextState().then((local) => {
-      setState((current) => ({ ...current, context: local.context, contextAnalysis: local.contextAnalysis }));
-    });
-    const refreshState = () => void api?.getState().then(async (current) => {
-      const saved = localStorage.getItem("family-bridge-language") as Language | null;
-      const next = saved && saved !== current.language ? await api.setLanguage(saved) : current;
+    let active = true;
+    let sequence = 0;
+    const refreshState = () => {
+      const request = ++sequence;
+      if (!api) { setLoadFailed(true); return; }
+      void loadSavedState(() => api.getState()).then((next) => {
+      if (!active || request !== sequence) return;
       setState(next);
+      setLoaded(true);
+      setLoadFailed(false);
       setLanguage(next.language);
       setDisplayName(next.displayName);
-      setCounterpartPersonId(next.remote.counterpartPersonId || next.contextAnalysis?.people[0]?.id || "");
-      setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
-    });
-    refreshState();
-    refreshLocalContext();
-    const onFocus = () => {
-      refreshLocalContext();
-      refreshState();
+      setCounterpartPersonId((current) => current || next.remote.counterpartPersonId || next.contextAnalysis?.people[0]?.id || "");
+      setReviewPersonId((current) => current || next.contextAnalysis?.people[0]?.id || "");
+    }).catch(() => { if (active && request === sequence) setLoadFailed(true); });
     };
+    refreshState();
+    const onFocus = refreshState;
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
+      const healthEvent = raw as { type?: string; codex?: AppState["codex"]; connected?: boolean };
+      if (healthEvent.type === "continuation-updated") refreshState();
+      if (healthEvent.type === "health" && healthEvent.codex) setState((current) => ({ ...current, codex: healthEvent.codex!, remote: { ...current.remote, connected: Boolean(healthEvent.connected) } }));
       const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
       if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
@@ -250,18 +258,23 @@ export function App() {
       } }));
     });
     return () => {
+      active = false;
       window.removeEventListener("focus", onFocus);
       unsubscribe?.();
     };
-  }, [api]);
+  }, [api, reload]);
+
+  useEffect(() => {
+    if (loaded) void api?.diagnoseUi({ onboardingComplete: state.onboardingComplete, analysisStatus: state.contextAnalysis?.status }).catch(() => undefined);
+  }, [api, loaded, state.onboardingComplete, state.contextAnalysis?.status]);
 
   useEffect(() => {
     if (!api || state.contextAnalysis?.status !== "analyzing") return;
     let active = true;
-    const reconcile = () => void api.getLocalContextState().then((local) => {
+    const reconcile = () => void api.getState().then((local) => {
       if (!active) return;
-      setState((current) => ({ ...current, context: local.context, contextAnalysis: local.contextAnalysis }));
-    });
+      setState(local);
+    }).catch(() => { if (active) setLoadFailed(true); });
     reconcile();
     const timer = window.setInterval(reconcile, 1_000);
     return () => {
@@ -269,6 +282,14 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [api, state.contextAnalysis?.status]);
+
+  const continuationPending = state.continuationStates?.some((item) => item.status === "starting" || item.status === "waiting");
+  useEffect(() => {
+    if (!api || !continuationPending) return;
+    let active = true;
+    const timer = window.setInterval(() => { void api.getState().then((next) => { if (active) setState(next); }).catch(() => undefined); }, 3_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [api, continuationPending]);
 
   const health = useMemo(
     () => state.codex.installed && state.codex.authenticated,
@@ -460,6 +481,14 @@ export function App() {
   const localVersionCurrent = compareVersions(state.appVersion, latestKnownVersion) === 0;
   const peerVersionCurrent = Boolean(state.remote.peerVersion && compareVersions(state.remote.peerVersion, latestKnownVersion) === 0);
 
+  const loadingText = {
+    ru: ["Открываем сохранённые данные…", "Не удалось загрузить состояние приложения. Это не первый запуск и не сброс данных.", "Повторить", "Открыть журнал диагностики"],
+    en: ["Opening saved data…", "Could not load app state. This is not a first run or a data reset.", "Retry", "Open diagnostic log"],
+    cs: ["Otevíráme uložená data…", "Stav aplikace nelze načíst. Nejde o první spuštění ani smazání dat.", "Zkusit znovu", "Otevřít diagnostický protokol"],
+    fr: ["Ouverture des données enregistrées…", "Impossible de charger l’état. Ce n’est ni un premier démarrage ni une remise à zéro.", "Réessayer", "Ouvrir le journal"],
+  }[language];
+  if (!loaded) return <div className="startup-status" role="status"><h1>Family Bridge</h1><p>{loadFailed ? loadingText[1] : loadingText[0]}</p>{loadFailed && <button onClick={() => { setLoadFailed(false); setReload((value) => value + 1); }}>{loadingText[2]}</button>}</div>;
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -481,6 +510,7 @@ export function App() {
           <div><h1>{pageTitle}</h1></div>
           <div className="header-tools"><label>{t.language}<select value={language} onChange={(e) => void changeLanguage(e.target.value as Language)}>{(Object.keys(languageNames) as Language[]).map((key) => <option value={key} key={key}>{languageNames[key]}</option>)}</select></label><div className="live-pill"><CircleDot size={14} />{t.background}</div></div>
         </header>
+        {loadFailed && <div className="error" role="alert">{loadingText[1]} <button onClick={() => setReload((value) => value + 1)}>{loadingText[2]}</button></div>}
 
         {state.contextSyncing && state.context && <section className="context-refresh-note"><LoaderCircle className="spin" size={18} /><div><div className="context-refresh-title"><strong>{contextRefreshText.title}</strong><b>{state.contextSyncProgress}%</b></div><span>{contextRefreshText.body}</span><progress max="100" value={state.contextSyncProgress} /></div></section>}
 
@@ -505,7 +535,7 @@ export function App() {
           <div className="onboarding-steps"><div className={state.context ? "done" : "active"}><span>{state.context ? <Check size={16} /> : "1"}</span>{onboardingText.chooseTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "done" : state.context ? "active" : ""}><span>{state.contextAnalysis?.status === "ready" ? <Check size={16} /> : "2"}</span>{onboardingText.processingTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "active" : ""}><span>3</span>{onboardingText.reviewTitle}</div></div>
           {!state.context && <div className="onboarding-stage"><h3>{onboardingText.chooseTitle}</h3><p>{onboardingText.chooseHint}</p><button className="primary" disabled={contextLoading} onClick={() => void loadContextThreads()}>{contextText.choose}</button></div>}
           {showContextPicker && !state.context && <div className="context-picker onboarding-picker">{contextPicker()}</div>}
-          {state.context && state.contextAnalysis?.status !== "ready" && (() => { const hasSavedAnalysis = Boolean(state.contextAnalysis?.people.length || state.contextAnalysis?.topics.length); const finalizing = state.contextAnalysis?.progress?.stage === "consolidating"; return <div className="onboarding-stage processing-stage"><h3>{hasSavedAnalysis ? onboardingText.resumeTitle : onboardingText.processingTitle}</h3><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="processing-list"><div className={state.context.status === "ready" ? "done" : "active"}>{state.context.status === "ready" ? <Check size={18} /> : <LoaderCircle className="spin" size={18} />}<span>{onboardingText.export}</span></div><div className={hasSavedAnalysis || finalizing ? "done" : state.contextAnalysis ? "active" : "waiting"}>{hasSavedAnalysis || finalizing ? <Check size={18} /> : <LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} />}<span>{onboardingText.people}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{finalizing ? onboardingText.finalizing : onboardingText.topics}{state.contextAnalysis?.progress && !finalizing ? ` · ${state.contextAnalysis.progress.current}/${Math.max(1, state.contextAnalysis.progress.total - 1)}` : ""}</span></div></div><p className="muted">{hasSavedAnalysis ? onboardingText.resumeWaiting : onboardingText.waiting}</p>{state.contextAnalysis?.status === "error" && <div className="analysis-error">{state.contextAnalysis.error}</div>}</div>; })()}
+          {state.context && state.contextAnalysis?.status !== "ready" && (() => { if (state.context?.status === "error" || state.contextAnalysis?.status === "error") return <div className="onboarding-stage" role="alert"><p>{state.contextAnalysis?.error || state.context?.error}</p><button onClick={() => void api?.refreshContextNow().then(setState).catch(() => setError(loadingText[1]))}>{loadingText[2]}</button><button className="ghost" onClick={() => void loadContextThreads()}>{contextText.change}</button></div>; const hasSavedAnalysis = Boolean(state.contextAnalysis?.people.length || state.contextAnalysis?.topics.length); const finalizing = state.contextAnalysis?.progress?.stage === "consolidating"; return <div className="onboarding-stage processing-stage"><h3>{hasSavedAnalysis ? onboardingText.resumeTitle : onboardingText.processingTitle}</h3><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="processing-list"><div className={state.context.status === "ready" ? "done" : "active"}>{state.context.status === "ready" ? <Check size={18} /> : <LoaderCircle className="spin" size={18} />}<span>{onboardingText.export}</span></div><div className={hasSavedAnalysis || finalizing ? "done" : state.contextAnalysis ? "active" : "waiting"}>{hasSavedAnalysis || finalizing ? <Check size={18} /> : <LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} />}<span>{onboardingText.people}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{finalizing ? onboardingText.finalizing : onboardingText.topics}{state.contextAnalysis?.progress && !finalizing ? ` · ${state.contextAnalysis.progress.current}/${Math.max(1, state.contextAnalysis.progress.total - 1)}` : ""}</span></div></div><p className="muted">{hasSavedAnalysis ? onboardingText.resumeWaiting : onboardingText.waiting}</p></div>; })()}
           {state.contextAnalysis?.status === "ready" && <div className="onboarding-stage review-stage"><div className="review-intro"><div><h3>{onboardingText.reviewTitle}</h3><p>{onboardingText.reviewHint}</p></div><button className="ghost" onClick={() => void loadContextThreads()}>{contextText.change}</button></div>{showContextPicker && <div className="context-picker onboarding-picker">{contextPicker()}</div>}{topicRegistry()}<div className="onboarding-finish"><button className="primary" onClick={() => void completeOnboarding()}>{onboardingText.finish}</button></div></div>}
         </section>}
 
@@ -580,7 +610,7 @@ export function App() {
               const report = state.reportSummaries.find((candidate) => candidate.topic === item);
               const active = state.activeTopics.includes(item);
               const pending = state.pendingTopics.includes(item);
-              const status = report ? topicStatusText.complete : active ? topicStatusText.active : pending ? topicStatusText.pending : topicStatusText.selected;
+              const status = active ? topicStatusText.active : report ? topicStatusText.complete : pending ? topicStatusText.pending : topicStatusText.selected;
               return <div className="topic pair-topic" key={item}><div className="topic-copy"><span>{item}</span><small>{topicSourceLabel(item)}</small></div><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => { if (report) { setSelectedReportId(report.id); goTo("reports"); } }}>{status}</button></div>;
             })}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
             <div className="input-row"><input aria-label={workflowText.addTopic} disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim() || Boolean(activeDictation)} onClick={() => void addTopic()}>{t.add}</button></div>
@@ -593,6 +623,7 @@ export function App() {
             {!state.reportSummaries.length && <div className="empty tall"><ScrollText size={28} /><span>{reportsText.empty}</span></div>}
             <div className="report-cards">{state.reportSummaries.map((report) => <article className={`report-card ${selectedReportId === report.id ? "selected-report" : ""}`} id={`report-${report.id}`} key={report.id}>
               <div className="report-heading"><strong>{report.topic}</strong><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div>
+              {report.parentReportId && <button className="link-button" onClick={() => setSelectedReportId(report.parentReportId!)}>{({ ru: "Продолжение · Показать предыдущий итог", en: "Continuation · Show previous result", cs: "Pokračování · Zobrazit předchozí závěr", fr: "Suite · Voir le résultat précédent" })[language]}</button>}
               <div className="report-source">{reportsText.proposed}: <strong>{report.proposedBy.join(" + ")}</strong></div>
               <div className="report-positions">
                 {report.localPosition && <div className="report-answer local"><small>{reportsText.answer} {state.displayName || deviceText.local}</small><p>{report.localPosition}</p></div>}
@@ -600,6 +631,7 @@ export function App() {
               </div>
               {report.comparison && <div className="report-comparison"><small>{reportsText.comparison}</small><p>{report.comparison}</p></div>}
               <details className="report-transcript"><summary>{reportsText.conversation} · {report.messageCount} {reportsText.messages}</summary><div>{report.messages.map((message, index) => <div className={`transcript-message ${message.local ? "local" : "peer"}`} key={`${report.id}-${index}`}><strong>{message.speaker}</strong><p>{message.text}</p></div>)}</div></details>
+              <ReportContinuation reportId={report.id} state={state} language={language} onState={setState} dictationBusy={Boolean(activeDictation)} onDictationBusy={(value) => setActiveDictation((current) => value ? `report-${report.id}` : current === `report-${report.id}` ? "" : current)} />
             </article>)}</div>
             <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>
           </section>}
@@ -609,6 +641,7 @@ export function App() {
               <div className="panel-title"><div><p className="eyebrow">{t.settings}</p><h3>{deviceText.question}</h3></div><Settings2 size={20} /></div>
               <div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div>
               <div className="settings-actions">
+                <button className="ghost" onClick={() => void api?.openDiagnostics().catch(() => setError(loadingText[1]))}>{loadingText[3]}</button>
                 <label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label>
                 <div className="update-card" aria-live="polite">
                   {state.update.checking && <div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Проверяем обновления</strong><small>Обычно это занимает несколько секунд.</small></div></div>}

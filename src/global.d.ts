@@ -15,8 +15,9 @@ export interface AppState {
   activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
-  reportSummaries: Array<{ id: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
+  reportSummaries: Array<{ id: string; parentReportId?: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
+  continuationStates?: Array<{ id: string; parentReportId: string; status: "starting" | "waiting" | "complete" | "error" }>;
   lastConversationAt?: string;
   running: boolean;
   contextSyncing: boolean;
@@ -43,6 +44,8 @@ declare global {
   interface Window {
     familyBridge?: {
       getState(): Promise<AppState>;
+      diagnoseUi(input: { onboardingComplete: boolean; analysisStatus?: string }): Promise<void>;
+      openDiagnostics(): Promise<void>;
       getLocalContextState(): Promise<Pick<AppState, "context" | "contextAnalysis">>;
       runConversation(topic: string, realCodex: boolean): Promise<ConversationReport>;
       addTopic(topic: string): Promise<AppState>;
@@ -62,6 +65,8 @@ declare global {
       updateContextTopics(input: { topicIds: string[]; approved: boolean }): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
       discussAllTopics(): Promise<AppState>;
+      continueReport(input: { reportId: string; requestId: string; prompt: string }): Promise<AppState>;
+      retryContinuation(id: string): Promise<AppState>;
       answerOwnerQuestion(input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }): Promise<AppState>;
       requestMicrophone(): Promise<boolean>;
       transcribeAudio(input: { id: string; audio: Uint8Array }): Promise<DictationResult>;

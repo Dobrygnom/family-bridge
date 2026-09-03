@@ -15,6 +15,8 @@ import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
 import { AtomicStore, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
+import { Diagnostics } from "./diagnostics.js";
+import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +44,7 @@ interface DialoguePayload {
   sharedSummary?: string;
   comparisonSummary?: string;
   senderName?: string;
+  continuation?: { parentReportId: string; history: Array<{ from: OwnerId; text: string }> };
 }
 
 interface OwnerQuestionView {
@@ -63,6 +66,7 @@ export interface LearnedContextEntry {
 
 export interface ReportSummaryView {
   id: string;
+  parentReportId?: string;
   topic: string;
   summary: string;
   answerFrom: string;
@@ -76,6 +80,7 @@ export interface ReportSummaryView {
 }
 
 interface BackgroundServiceOptions {
+  backgroundTasks?: boolean;
   appVersion?: string;
   conversationResetVersion?: string;
   reportsExportDirectory?: string;
@@ -103,7 +108,8 @@ export function contextNeedsSync(
 }
 
 export function recoverInterruptedContextAnalysis(analysis: ContextAnalysis | undefined) {
-  if (analysis?.status !== "analyzing" || (!analysis.people.length && !analysis.topics.length)) return analysis;
+  if (analysis?.status !== "analyzing") return analysis;
+  if (!analysis.people.length && !analysis.topics.length) return { ...analysis, status: "error" as const, progress: undefined, error: "Подготовка была прервана. Чат сохранён. Нажмите «Проверить новые сообщения», чтобы продолжить." };
   const { progress: _progress, error: _error, ...saved } = analysis;
   return { ...saved, status: "ready" as const };
 }
@@ -154,6 +160,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
     try {
       const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
         conversationId?: string;
+        parentReportId?: string;
         topic?: string;
         topics?: string[];
         sharedSummary?: string;
@@ -186,6 +193,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
           : "Автор не определён");
       return [{
         id: report.conversationId || reportPath,
+        ...(report.parentReportId ? { parentReportId: report.parentReportId } : {}),
         topic,
         summary,
         answerFrom: report.answerFrom?.trim() || names.peerName || "Второй участник",
@@ -202,6 +210,14 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
 }
 
 export class BackgroundService {
+  readonly diagnostics: Diagnostics;
+  private healthCheck?: Promise<void>;
+  private healthCheckedAt = 0;
+  private health = { installed: false, authenticated: false, version: "" };
+  private connected = false;
+  private analysisWrites: Promise<void> = Promise.resolve();
+  private syncOperation?: Promise<Awaited<ReturnType<BackgroundService["state"]>>>;
+  private readonly continuing = new Set<string>();
   private running = false;
   private remote?: SupabaseTransport;
   private remoteTimer?: NodeJS.Timeout;
@@ -227,16 +243,16 @@ export class BackgroundService {
     private readonly windowProvider: () => BrowserWindow | null,
     private readonly ownerQuestionNotifier: () => void = () => undefined,
     private readonly options: BackgroundServiceOptions = {},
-  ) {}
+  ) { this.diagnostics = new Diagnostics(userData); }
 
   async state() {
     const stored = await this.store.read();
-    const { pendingOwnerQuestions, ...publicStored } = stored;
-    const codex = await this.codexStatus();
-    let connected = false;
-    if (stored.remote && this.remote) {
-      try { connected = Boolean((await this.remote.pairState(stored.remote.pairId)).partner_id); } catch { connected = false; }
-    }
+    const { pendingOwnerQuestions, continuations, ...saved } = stored;
+    const publicStored = { ...saved, continuationStates: Object.entries(continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, status: value.status })) };
+    // Saved user data must never wait for a CLI process or a remote network call.
+    const codex = this.health;
+    const connected = this.connected;
+    void this.refreshHealth();
     const invite = stored.remote?.inviteSecret ? Buffer.from(JSON.stringify({
       version: 1, pairId: stored.remote.pairId, inviteSecret: stored.remote.inviteSecret,
       encryptionSecret: stored.remote.encryptionSecret, participantName: stored.displayName,
@@ -261,6 +277,27 @@ export class BackgroundService {
     return { context: this.readContextSource(), contextAnalysis: this.readContextAnalysis() };
   }
 
+  private refreshHealth() {
+    if (this.options.backgroundTasks === false) return Promise.resolve();
+    if (this.healthCheck) return this.healthCheck;
+    if (Date.now() - this.healthCheckedAt < 60_000) return Promise.resolve();
+    this.healthCheckedAt = Date.now();
+    this.healthCheck = (async () => {
+      const stored = await this.store.read();
+      const [codex, connected] = await Promise.all([
+        this.codexStatus(),
+        stored.remote && this.remote ? Promise.race([
+          this.remote.pairState(stored.remote.pairId).then((pair) => Boolean(pair.partner_id)).catch(() => false),
+          new Promise<boolean>((resolve) => { const timer = setTimeout(() => resolve(false), 8_000); timer.unref(); }),
+        ]) : Promise.resolve(false),
+      ]);
+      this.health = codex;
+      this.connected = connected;
+      this.windowProvider()?.webContents.send("bridge:event", { type: "health", codex, connected });
+    })().catch(() => this.diagnostics.record("health.failed")).finally(() => { this.healthCheck = undefined; });
+    return this.healthCheck;
+  }
+
   setUpdateState(update: UpdateState) {
     this.updateState = update;
     this.emit({ type: "update", ...update });
@@ -281,6 +318,8 @@ export class BackgroundService {
 
   async selectContextThread(threadId: unknown) {
     if (typeof threadId !== "string" || !threadId.trim()) throw new Error("Выберите базовый чат");
+    if (this.syncOperation) throw new Error("Обновление чата уже идёт. Дождитесь его завершения.");
+    if (this.readContextSource()?.id === threadId) return this.syncContext();
     const threads = await this.listContextThreads();
     const selected = threads.find((thread) => thread.id === threadId);
     if (!selected) throw new Error("Выбранный чат больше не найден в Codex");
@@ -292,6 +331,12 @@ export class BackgroundService {
   }
 
   async syncContext(latestThread?: ContextThread) {
+    if (this.syncOperation) return this.syncOperation;
+    this.syncOperation = this.performContextSync(latestThread).finally(() => { this.syncOperation = undefined; });
+    return this.syncOperation;
+  }
+
+  private async performContextSync(latestThread?: ContextThread) {
     const selected = this.readContextSource();
     if (!selected?.id) throw new Error("Сначала выберите базовый чат");
     const refreshingReadyContext = selected.status === "ready" && Boolean(selected.lastSyncedAt);
@@ -398,15 +443,21 @@ export class BackgroundService {
     catch { return undefined; }
   }
 
-  private async writeContextAnalysis(analysis: ContextAnalysis) {
-    const file = this.contextAnalysisPath();
-    await mkdir(path.dirname(file), { recursive: true });
-    const temporary = `${file}.tmp`;
-    await writeFile(temporary, JSON.stringify(analysis, null, 2), "utf8");
-    await rename(temporary, file);
+  private writeContextAnalysis(analysis: ContextAnalysis) {
+    const contents = JSON.stringify(analysis, null, 2);
+    const operation = this.analysisWrites.then(async () => {
+      const file = this.contextAnalysisPath();
+      await mkdir(path.dirname(file), { recursive: true });
+      const temporary = `${file}.tmp`;
+      await writeFile(temporary, contents, "utf8");
+      await rename(temporary, file);
+    });
+    this.analysisWrites = operation.catch(() => undefined);
+    return operation;
   }
 
   private async analyzeContext(sourceId: string, sourceHash: string, messages: Array<{ text: string }>, previous?: ContextAnalysis) {
+    this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
     const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], topics: previous?.topics ?? [] };
     await this.writeContextAnalysis(analyzing);
     this.emit({ type: "context-analysis", analysis: analyzing });
@@ -416,6 +467,7 @@ export class BackgroundService {
       const analysis = await analyzer.analyze({
         sourceId, sourceHash, ownerName: stored.displayName, language: stored.language, messages, previous,
         onProgress: async (progress) => {
+          this.diagnostics.record("analysis.progress", progress);
           analyzing.progress = progress;
           const progressing: ContextAnalysis = { ...analyzing, progress };
           await this.writeContextAnalysis(progressing);
@@ -427,9 +479,11 @@ export class BackgroundService {
         },
       });
       await this.writeContextAnalysis(analysis);
+      this.diagnostics.record("analysis.ready", { people: analysis.people.length, topics: analysis.topics.length });
       this.emit({ type: "context-analysis", analysis });
       return analysis;
     } catch (error) {
+      this.diagnostics.record("analysis.failed");
       const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error) };
       await this.writeContextAnalysis(failed);
       this.emit({ type: "context-analysis", analysis: failed });
@@ -549,7 +603,9 @@ export class BackgroundService {
   }
 
   async start() {
+    this.diagnostics.record("startup.begin", { version: this.options.appVersion });
     let state = await this.resetConversationResultsOnce();
+    state = await this.store.mutate((current) => ({ continuations: Object.fromEntries(Object.entries(current.continuations).map(([id, value]) => [id, value.status === "starting" ? { ...value, status: "error" } : value])) }));
     state = await this.ensureTopicSources(state);
     if (state.inFlightTopics.length) {
       state = await this.store.update({
@@ -558,7 +614,7 @@ export class BackgroundService {
       });
       this.emitTopicState(state);
     }
-    if (state.remote) this.configureRemote(state.remote.encryptionSecret);
+    if (state.remote && this.options.backgroundTasks !== false) this.configureRemote(state.remote.encryptionSecret);
     const savedAnalysis = this.readContextAnalysis();
     const recoveredAnalysis = recoverInterruptedContextAnalysis(savedAnalysis);
     if (recoveredAnalysis && recoveredAnalysis !== savedAnalysis) {
@@ -578,7 +634,8 @@ export class BackgroundService {
       state = await this.store.update({ topicSources });
     }
     const context = this.readContextSource();
-    if (context?.id) {
+    this.diagnostics.record("startup.saved-state", { onboarding: state.onboardingComplete, sourceReady: context?.status === "ready", analysisStatus: analysis?.status, people: analysis?.people.length ?? 0, topics: analysis?.topics.length ?? 0, reports: state.reports.length });
+    if (context?.id && this.options.backgroundTasks !== false) {
       setTimeout(() => void this.checkContextForUpdates(), 5_000);
       this.contextTimer = setInterval(() => void this.checkContextForUpdates(), 24 * 60 * 60 * 1_000);
     }
@@ -692,6 +749,88 @@ export class BackgroundService {
     const pendingTopics = stored.pendingTopics.filter((item) => item !== topic);
     const next = await this.store.update({ pendingTopics, pairTopics: mergeTopicCatalog(stored.pairTopics, [topic]), activeTopics: mergeTopicCatalog(stored.activeTopics, [topic]) });
     this.emitTopicState(next);
+  }
+
+  async continueReport(input: unknown) {
+    const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown } | null;
+    if (typeof value?.reportId !== "string" || typeof value.requestId !== "string" || !/^[a-z0-9-]{8,80}$/i.test(value.requestId) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 8_000) throw new Error("Введите уточнение до 8000 символов");
+    const { reportId, requestId } = value;
+    if (this.continuing.has(requestId)) return this.state();
+    const state = await this.store.read();
+    const existing = state.continuations[requestId];
+    if (existing && (existing.parentReportId !== reportId || existing.instruction !== value.prompt.trim())) throw new Error("Это поручение уже сохранено. Отправьте новое уточнение.");
+    if (existing && existing.status !== "error") return this.state();
+    if (!state.remote || !this.remote) throw new Error("Сначала соедините два приложения");
+    if (!supportsContinuation(state.remote.peerVersion)) throw new Error("Для продолжения разговора обновите оба приложения до версии 0.3.30 или новее и проверьте версию собеседника.");
+    const reportPath = state.reports.find((file) => readReportSummaries([file])[0]?.id === reportId);
+    if (!reportPath) throw new Error("Исходный результат не найден. История не изменена.");
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as { topic?: string; topics?: string[]; pairId?: string; messages?: Array<{ from?: string; text?: string; payload?: string }> };
+    if (report.pairId && report.pairId !== state.remote.pairId) throw new Error("Этот разговор относится к другому подключению");
+    const topic = report.topic || report.topics?.[0] || "Разговор агентов";
+    if (state.blockedTopics.some((blocked) => topic.toLowerCase().includes(blocked.toLowerCase()))) throw new Error("Тема заблокирована локальной политикой");
+    if (Object.entries(state.continuations).some(([id, item]) => id !== requestId && item.parentReportId === reportId && ["starting", "waiting"].includes(item.status))) throw new Error("Этот разговор уже продолжается");
+    const history = sharedHistory((report.messages ?? []).map((item) => ({ from: item.from, text: item.text ?? item.payload })));
+    if (this.continuing.has(requestId)) return this.state();
+    this.continuing.add(requestId);
+    try {
+      await this.store.mutate((current) => {
+        if (Object.entries(current.continuations).some(([id, item]) => id !== requestId && item.parentReportId === reportId && ["starting", "waiting"].includes(item.status))) throw new Error("Этот разговор уже продолжается");
+        return {
+        continuations: { ...current.continuations, [requestId]: { ...existing, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
+        conversationParents: { ...current.conversationParents, [requestId]: reportId },
+      }; });
+      this.diagnostics.record("continuation.start");
+      void this.processContinuation(requestId).catch(async () => {
+        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], status: "error" } } }));
+        this.diagnostics.record("continuation.failed");
+      }).finally(() => { this.continuing.delete(requestId); this.windowProvider()?.webContents.send("bridge:event", { type: "continuation-updated" }); });
+      return this.state();
+    } catch (error) { this.continuing.delete(requestId); throw error; }
+  }
+
+  private async processContinuation(id: string) {
+    const state = await this.store.read();
+    const request = state.continuations[id];
+    if (!state.remote || !this.remote || state.remote.pairId !== request.pairId) throw new Error("Pair changed");
+    const transport = this.remote;
+    const pair = await transport.pairState(request.pairId);
+    const me = await transport.identity();
+    const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
+    if (!recipientId) throw new Error("Peer has not joined");
+    let text = request.preparedMessage;
+    if (!text) {
+      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName);
+      const response = await agent.start(continuationPrompt(request.topic, request.history, request.instruction));
+      if (response.status === "unsafe") throw new Error("Unsafe continuation");
+      if (this.hasOwnerQuestion(response)) {
+        await this.queueOwnerQuestion({ conversationId: id, topic: request.topic, question: response.owner_question, peerName: state.remote.peerName, nextSequence: 1, transcript: request.history });
+        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [id]: { ...current.continuations[id], status: "waiting" } } }));
+        return;
+      }
+      text = response.message_to_peer.trim();
+      if (!text) throw new Error("Empty continuation");
+      await this.store.mutate((current) => ({ continuations: { ...current.continuations, [id]: { ...current.continuations[id], preparedMessage: text } } }));
+    }
+    const current = await this.store.read();
+    if (current.remote?.pairId !== request.pairId) throw new Error("Pair changed");
+    const messages = [...request.history, { from: state.owner, text }];
+    this.remoteMessages.set(id, messages);
+    await this.persistTranscript(id, request.topic, messages);
+    await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
+      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, continuation: { parentReportId: request.parentReportId, history: request.history } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
+    const next = await this.store.mutate((latest) => ({
+      continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
+      activeTopics: latest.continuations[id].status === "complete" ? latest.activeTopics : mergeTopicCatalog(latest.activeTopics, [request.topic]),
+    }));
+    this.emitTopicState(next);
+    this.diagnostics.record("continuation.sent");
+  }
+
+  async retryContinuation(id: unknown) {
+    if (typeof id !== "string") throw new Error("Уточнение не найдено");
+    const request = (await this.store.read()).continuations[id];
+    if (!request) throw new Error("Уточнение не найдено");
+    return this.continueReport({ requestId: id, reportId: request.parentReportId, prompt: request.instruction });
   }
 
   async discussAllTopics() {
@@ -917,6 +1056,10 @@ export class BackgroundService {
         await this.remote.acknowledge(envelope.id);
         return;
       }
+      if (readReportSummaries(stored.reports).some((report) => report.id === envelope.conversation_id)) {
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
       if (stored.conversationResetAt) {
         const resetAt = Date.parse(stored.conversationResetAt);
         if (Number.isFinite(resetAt) && envelope.created_at && Date.parse(envelope.created_at) < resetAt && !stored.conversationTranscripts[envelope.conversation_id]) {
@@ -934,9 +1077,16 @@ export class BackgroundService {
       this.emitTopicState(activeState);
       const existingAgent = this.remoteAgents.get(envelope.conversation_id);
       const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName);
+      const inherited = dialogue.continuation && envelope.sequence_number === 1
+        ? sharedHistory(dialogue.continuation.history) : [];
+      if (dialogue.continuation && envelope.sequence_number === 1) {
+        if (typeof dialogue.continuation.parentReportId !== "string" || dialogue.continuation.parentReportId.length > 500) throw new Error("Invalid parent conversation");
+        await this.store.mutate((current) => ({ conversationParents: { ...current.conversationParents, [envelope.conversation_id]: dialogue.continuation!.parentReportId } }));
+      }
       const messages = this.remoteMessages.get(envelope.conversation_id)
         ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
-        ?? [];
+        ?? inherited;
+      const previousMessages = messages.map((message) => ({ ...message }));
       messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text });
       this.remoteMessages.set(envelope.conversation_id, messages);
       await this.persistTranscript(envelope.conversation_id, dialogue.topic, messages);
@@ -951,7 +1101,7 @@ export class BackgroundService {
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || "Не получилось получить достаточно ясный ответ.", messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary });
         return;
       }
-      const response = existingAgent ? await agent.respond(dialogue.text) : await agent.start(dialogue.text);
+      const response = existingAgent ? await agent.respond(dialogue.text) : await agent.start(previousMessages.length ? incomingContinuationPrompt(previousMessages, dialogue.text) : dialogue.text);
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: dialogue.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
         await this.remote.acknowledge(envelope.id);
@@ -1047,7 +1197,9 @@ export class BackgroundService {
         sequence: pending.nextSequence,
         recipientId,
         senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName } satisfies DialoguePayload,
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName,
+          ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history } } : {}),
+        } satisfies DialoguePayload,
         idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,
       });
       const messages = [...pending.transcript, { from: stored.owner, text: response.message_to_peer }];
@@ -1065,8 +1217,7 @@ export class BackgroundService {
   }
 
   private async persistTranscript(conversationId: string, topic: string, messages: Array<{ from: OwnerId; text: string }>) {
-    const state = await this.store.read();
-    await this.store.update({ conversationTranscripts: { ...state.conversationTranscripts, [conversationId]: { topic, messages: messages.map((message) => ({ ...message })) } } });
+    await this.store.mutate((state) => ({ conversationTranscripts: { ...state.conversationTranscripts, [conversationId]: { topic, messages: messages.map((message) => ({ ...message })) } } }));
   }
 
   private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>, result: { answerFrom?: string; answerFromOwnerId?: OwnerId; comparisonSummary?: string } = {}) {
@@ -1077,6 +1228,8 @@ export class BackgroundService {
     const state = await this.store.read();
     await writeFile(reportPath, JSON.stringify({
       conversationId,
+      parentReportId: state.conversationParents[conversationId],
+      pairId: state.remote?.pairId,
       topic,
       sharedSummary: conciseAnswer(summary),
       answerFrom: result.answerFrom,
@@ -1086,17 +1239,15 @@ export class BackgroundService {
       messages,
       completedAt,
     }, null, 2));
-    const pendingTopics = state.pendingTopics.filter((item) => item !== topic);
-    const conversationTranscripts = { ...state.conversationTranscripts };
-    delete conversationTranscripts[conversationId];
-    const next = await this.store.update({
-      reports: [reportPath, ...state.reports].slice(0, 100),
-      pendingTopics,
-      pairTopics: mergeTopicCatalog(state.pairTopics, [topic]),
-      activeTopics: state.activeTopics.filter((item) => item !== topic),
-      conversationTranscripts,
+    const next = await this.store.mutate((current) => ({
+      reports: [reportPath, ...current.reports],
+      pendingTopics: current.pendingTopics.filter((item) => item !== topic),
+      pairTopics: mergeTopicCatalog(current.pairTopics, [topic]),
+      activeTopics: current.activeTopics.filter((item) => item !== topic),
+      conversationTranscripts: Object.fromEntries(Object.entries(current.conversationTranscripts).filter(([id]) => id !== conversationId)),
+      continuations: current.continuations[conversationId] ? { ...current.continuations, [conversationId]: { ...current.continuations[conversationId], status: "complete" } } : current.continuations,
       lastConversationAt: completedAt,
-    });
+    }));
     this.remoteMessages.delete(conversationId);
     this.remoteAgents.delete(conversationId);
     this.emitTopicState(next);

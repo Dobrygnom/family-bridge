@@ -27,6 +27,8 @@ jobs:
         run: npm run package
       - if: runner.os == 'macOS'
         run: npm run package -- --x64 --arm64
+      - name: Verify packaged state (no UI or personal data)
+        run: node scripts/verify-packaged-state.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: family-bridge-${{ matrix.os }}

@@ -190,6 +190,7 @@ export class CodexCliAgent implements AgentRuntime {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd: this.options.workspace,
+        windowsHide: true,
         shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),
         env: process.env,
       });
@@ -198,6 +199,7 @@ export class CodexCliAgent implements AgentRuntime {
       child.stdin.on("error", (error: NodeJS.ErrnoException) => {
         if (error.code !== "EPIPE") reject(error);
       });
+      const timeout = setTimeout(() => { child.kill(); reject(new Error("Codex не ответил за 3 минуты. Поручение сохранено; можно повторить.")); }, 180_000);
       child.stdin.end(stdin);
       let stdout = "";
       let stderr = "";
@@ -207,8 +209,9 @@ export class CodexCliAgent implements AgentRuntime {
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
       });
-      child.on("error", reject);
+      child.on("error", (error) => { clearTimeout(timeout); reject(error); });
       child.on("close", (code) => {
+        clearTimeout(timeout);
         if (code !== 0) {
           reject(new Error(`Codex exited with ${code}: ${stderr || stdout}`));
           return;

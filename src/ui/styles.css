@@ -191,3 +191,8 @@ section[id] { scroll-margin-top: 24px; }
 .attention-note { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #88744c; border-radius: 12px; margin-bottom: 14px; font-size: 13px; }
 .attention-note button { margin-left: auto; padding: 8px; border-radius: 8px; }
 .report-card.selected-report { border-color: #80d6b7; box-shadow: 0 0 0 1px #80d6b7; scroll-margin-top: 15px; }
+/* Loading is not onboarding. Never render made-up progress before hydration. */
+.startup-status { padding: 48px; max-width: 760px; margin: auto; }
+.report-continuation { margin-top: 16px; border-top: 1px solid #29414a; padding-top: 14px; }
+.report-continuation summary { cursor: pointer; color: #80d6b7; font-weight: 600; }
+.report-continuation textarea { width: 100%; min-height: 90px; margin: 8px 0; resize: vertical; }

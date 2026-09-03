@@ -66,7 +66,8 @@ test("an interrupted refresh keeps the previously prepared people and topics", (
   assert.equal(recovered?.people.length, 1);
   assert.equal(recovered && "progress" in recovered, false);
   const firstRun = { ...interrupted, people: [], topics: [] };
-  assert.equal(recoverInterruptedContextAnalysis(firstRun), firstRun);
+  assert.equal(recoverInterruptedContextAnalysis(firstRun)?.status, "error");
+  assert.equal(recoverInterruptedContextAnalysis(firstRun)?.progress, undefined);
 });
 
 test("topics interrupted while agents start return to the pending queue", () => {

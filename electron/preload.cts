@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("familyBridge", {
   getState: () => ipcRenderer.invoke("bridge:get-state"),
+  diagnoseUi: (input: { onboardingComplete: boolean; analysisStatus?: string }) => ipcRenderer.invoke("bridge:diagnose-ui", input),
+  openDiagnostics: () => ipcRenderer.invoke("bridge:open-diagnostics"),
   getLocalContextState: () => ipcRenderer.invoke("bridge:get-local-context-state"),
   runConversation: (topic: string, realCodex: boolean) =>
     ipcRenderer.invoke("bridge:run-conversation", { topic, realCodex }),
@@ -22,6 +24,8 @@ contextBridge.exposeInMainWorld("familyBridge", {
   updateContextTopics: (input: { topicIds: string[]; approved: boolean }) => ipcRenderer.invoke("bridge:update-context-topics", input),
   runRemote: (topic: string) => ipcRenderer.invoke("bridge:run-remote", topic),
   discussAllTopics: () => ipcRenderer.invoke("bridge:discuss-all-topics"),
+  continueReport: (input: { reportId: string; requestId: string; prompt: string }) => ipcRenderer.invoke("bridge:continue-report", input),
+  retryContinuation: (id: string) => ipcRenderer.invoke("bridge:retry-continuation", id),
   answerOwnerQuestion: (input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }) => ipcRenderer.invoke("bridge:answer-owner-question", input),
   requestMicrophone: () => ipcRenderer.invoke("bridge:request-microphone"),
   transcribeAudio: (input: { id: string; audio: Uint8Array }) => ipcRenderer.invoke("bridge:transcribe-audio", input),

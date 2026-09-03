@@ -32,7 +32,7 @@ app.on("second-instance", () => {
 
 function showMainWindow() {
   if (!mainWindow) {
-    if (app.isReady()) createWindow();
+    if (app.isReady() && serviceReady) createWindow();
     return;
   }
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -54,7 +54,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const devUrl = !app.isPackaged && process.env.VITE_DEV_SERVER_URL;
   if (devUrl) void mainWindow.loadURL(devUrl);
   else void mainWindow.loadFile(path.join(dirname, "..", "..", "dist", "index.html"));
   mainWindow.on("close", (event) => {
@@ -64,6 +64,9 @@ function createWindow() {
     }
   });
   const contents = mainWindow.webContents;
+  contents.on("preload-error", () => service.diagnostics.record("renderer.preload-failed"));
+  contents.on("render-process-gone", (_event, details) => service.diagnostics.record("renderer.gone", { code: details.reason }));
+  contents.on("did-finish-load", () => service.diagnostics.record("renderer.loaded"));
   const trustedUrl = (url: string) => {
     try {
       const candidate = new URL(url);
@@ -163,12 +166,13 @@ async function checkForUpdates() {
   }
 }
 
+let serviceReady = false;
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   const store = new AtomicStore(app.getPath("userData"));
   service = new BackgroundService(
     app.getPath("userData"),
-    app.isPackaged ? process.resourcesPath : path.resolve(dirname, ".."),
+    app.isPackaged ? process.resourcesPath : path.resolve(dirname, "..", ".."),
     store,
     () => mainWindow,
     () => {
@@ -183,8 +187,6 @@ app.whenReady().then(async () => {
       requestUpdateCheck: () => setTimeout(() => void checkForUpdates(), 0),
     },
   );
-  createWindow();
-  createTray();
   await service.start();
   powerMonitor.on("resume", () => {
     void service.checkContextForUpdates();
@@ -194,6 +196,15 @@ app.whenReady().then(async () => {
   app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
   ipcMain.handle("bridge:get-state", () => service.state());
+  ipcMain.handle("bridge:diagnose-ui", async (_event, input: unknown) => {
+    const shown = input as { onboardingComplete?: unknown; analysisStatus?: unknown } | null;
+    service.diagnostics.record("renderer.snapshot", { onboarding: shown?.onboardingComplete === true, analysisStatus: ["ready", "analyzing", "error"].includes(String(shown?.analysisStatus)) ? String(shown?.analysisStatus) : "none" });
+  });
+  ipcMain.handle("bridge:open-diagnostics", async () => {
+    service.diagnostics.record("diagnostics.open");
+    const error = await shell.openPath(service.diagnostics.file);
+    if (error) throw new Error("Не удалось открыть журнал диагностики");
+  });
   ipcMain.handle("bridge:get-local-context-state", () => service.localContextState());
   ipcMain.handle("bridge:add-topic", (_event, topic: string) => service.addTopic(topic));
   ipcMain.handle("bridge:block-topic", (_event, topic: string) => service.blockTopic(topic));
@@ -236,6 +247,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
   ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
   ipcMain.handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
+  ipcMain.handle("bridge:continue-report", (_event, input: unknown) => service.continueReport(input));
+  ipcMain.handle("bridge:retry-continuation", (_event, id: unknown) => service.retryContinuation(id));
   const trustedDictationSender = (event: IpcMainInvokeEvent) => event.sender === mainWindow?.webContents && event.senderFrame === mainWindow?.webContents.mainFrame;
   ipcMain.handle("bridge:request-microphone", async (event) => {
     if (!trustedDictationSender(event)) return false;
@@ -253,6 +266,9 @@ app.whenReady().then(async () => {
     return state;
   });
   ipcMain.handle("bridge:install-update", () => installPreparedUpdate());
+  serviceReady = true;
+  createWindow();
+  createTray();
   if (app.isPackaged) {
     autoUpdater.logger = null;
     if (process.platform === "darwin") {
@@ -282,6 +298,11 @@ app.whenReady().then(async () => {
     const updateTimer = setInterval(() => void checkForUpdates(), 24 * 60 * 60 * 1_000);
     updateTimer.unref();
   }
+}).catch(() => {
+  service?.diagnostics.record("startup.failed");
+  dialog.showErrorBox("Family Bridge", "Не удалось открыть сохранённые данные. Они не сброшены. Закройте приложение и повторите запуск. Журнал: diagnostics/lifecycle.jsonl в папке данных Family Bridge.");
+  isQuitting = true;
+  app.quit();
 });
 
 app.on("activate", showMainWindow);
