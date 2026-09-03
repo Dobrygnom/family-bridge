@@ -8,6 +8,7 @@ import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
 import { exportReportFiles, revealInWindowsExplorer } from "./open-directory.js";
 import { AtomicStore } from "./store.js";
 import { DictationService } from "./dictation.js";
+import { dictationFetch } from "./dictation-network.js";
 import { allowAppPermission } from "../src/core/media-permissions.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,7 +18,7 @@ process.stderr?.on("error", () => undefined);
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BackgroundService;
-const dictation = new DictationService();
+const dictation = new DictationService(undefined, dictationFetch, undefined, (fields) => service?.diagnostics.record("dictation", fields));
 let isQuitting = false;
 let macUpdater: MacReleaseUpdater | null = null;
 let updateInstallIsQuitting = false;
@@ -66,7 +67,10 @@ function createWindow() {
   const contents = mainWindow.webContents;
   contents.on("preload-error", () => service.diagnostics.record("renderer.preload-failed"));
   contents.on("render-process-gone", (_event, details) => service.diagnostics.record("renderer.gone", { code: details.reason }));
-  contents.on("did-finish-load", () => service.diagnostics.record("renderer.loaded"));
+  contents.on("did-finish-load", () => {
+    if (!app.isPackaged) mainWindow?.setTitle("Family Bridge — локальная сборка");
+    service.diagnostics.record("renderer.loaded");
+  });
   const trustedUrl = (url: string) => {
     try {
       const candidate = new URL(url);
@@ -262,8 +266,7 @@ app.whenReady().then(async () => {
     await checkForUpdates();
   });
   ipcMain.handle("bridge:check-pair-versions", async () => {
-    const [, state] = await Promise.all([checkForUpdates(), service.requestPeerVersionCheck()]);
-    return state;
+    return service.requestPeerVersionCheck();
   });
   ipcMain.handle("bridge:install-update", () => installPreparedUpdate());
   serviceReady = true;

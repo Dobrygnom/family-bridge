@@ -195,4 +195,18 @@ section[id] { scroll-margin-top: 24px; }
 .startup-status { padding: 48px; max-width: 760px; margin: auto; }
 .report-continuation { margin-top: 16px; border-top: 1px solid #29414a; padding-top: 14px; }
 .report-continuation summary { cursor: pointer; color: #80d6b7; font-weight: 600; }
-.report-continuation textarea { width: 100%; min-height: 90px; margin: 8px 0; resize: vertical; }
+.report-continuation textarea { width: 100%; min-height: 90px; margin: 8px 0; resize: vertical; padding: 12px; border: 1px solid #40535a; border-radius: 10px; background: #0d1921; color: #edf5f2; font: inherit; }
+.report-continuation button { padding: 9px 12px; border-radius: 9px; }
+.report-continuation button:disabled, .peer-version-control button:disabled { opacity: .45; cursor: not-allowed; }
+.peer-version-control, .pair-versions > .peer-version-control { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; padding: 12px; border: 1px solid #344852; border-radius: 10px; background: #0d1921; }
+.peer-version-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; }
+.peer-version-control p { margin: 0; font-size: 12px; line-height: 1.5; color: #b3c4c7; }
+.peer-version-control small { color: #91a6ae; font-size: 11px; line-height: 1.4; }
+.peer-version-control .peer-version-warning { color: #edc28a; }
+.peer-version-control .pair-version-check { max-width: 100%; white-space: normal; text-align: left; color: #e0ede9; }
+.peer-version-control .pair-version-check svg { flex-shrink: 0; }
+.conversation-updates { margin-top: 16px; padding-top: 14px; border-top: 1px solid #3c685d; }
+.conversation-updates-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.conversation-updates-heading > strong { color: #80d6b7; }
+.conversation-updates-heading small { color: #a1b5b4; font-size: 11px; }
+.conversation-updates [role="log"] { display: grid; gap: 10px; }

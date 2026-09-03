@@ -95,6 +95,24 @@ test("empty speech, unexpected response, and network errors are explicit", async
   assert.deepEqual(await service.transcribe({ id: "test", audio: audio() }), { ok: false, code: "network" });
 });
 
+test("dictation diagnostics record HTTP status without tokens, audio or server error text", async () => {
+  const diagnostics: unknown[] = [];
+  const service = new DictationService(auth, request(async () => new Response("PRIVATE_SERVER_BODY", { status: 403 })), 60_000, (fields) => diagnostics.push(fields));
+  assert.deepEqual(await service.transcribe({ id: "private-request-id", audio: audio() }), { ok: false, code: "unavailable" });
+  assert.match(JSON.stringify(diagnostics), /HTTP_403/);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_SERVER_BODY|test-token|test-account|private-request-id|dictation.wav/);
+});
+
+test("malformed dictation responses are logged distinctly from network errors", async () => {
+  const diagnostics: unknown[] = [];
+  const service = new DictationService(auth, request(async () => new Response("PRIVATE_INVALID_JSON")), 60_000, (fields) => diagnostics.push(fields));
+  assert.deepEqual(await service.transcribe({ id: "test", audio: audio() }), { ok: false, code: "unavailable" });
+  assert.match(JSON.stringify(diagnostics), /invalid_json/);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_INVALID_JSON/);
+  const nullBody = new DictationService(auth, request(async () => Response.json(null)));
+  assert.deepEqual(await nullBody.transcribe({ id: "test", audio: audio() }), { ok: false, code: "unavailable" });
+});
+
 test("a cancelled request cannot add a late transcript and does not block retry", async () => {
   let finish!: (value: Response) => void;
   let started!: () => void;

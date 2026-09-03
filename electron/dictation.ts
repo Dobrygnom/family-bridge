@@ -51,7 +51,8 @@ export function validDictationWav(value: unknown): value is Uint8Array {
 
 export class DictationService {
   private active?: { id: string; controller: AbortController };
-  constructor(private readonly credentials = loadDictationCredentials, private readonly request: typeof fetch = fetch, private readonly timeoutMs = 60_000) {}
+  constructor(private readonly credentials = loadDictationCredentials, private readonly request: typeof fetch = fetch, private readonly timeoutMs = 60_000,
+    private readonly diagnostic?: (fields: { stage: string; code?: string; elapsedMs: number }) => void) {}
 
   cancel(id?: string) {
     if (this.active && (!id || this.active.id === id)) this.active.controller.abort();
@@ -63,28 +64,39 @@ export class DictationService {
     if (this.active) return { ok: false, code: "busy" };
     const active = { id: value.id, controller: new AbortController() };
     this.active = active;
+    const startedAt = Date.now();
+    const record = (stage: string, code?: string) => {
+      try { this.diagnostic?.({ stage, code, elapsedMs: Date.now() - startedAt }); } catch { /* Logging must not interrupt dictation. */ }
+    };
+    record("started");
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; active.controller.abort(); }, this.timeoutMs);
     try {
       const credentials = await this.credentials();
       if (active.controller.signal.aborted) return { ok: false, code: timedOut ? "timeout" : "cancelled" };
-      if (!credentials) return { ok: false, code: "auth" };
+      if (!credentials) { record("failed", "auth_missing"); return { ok: false, code: "auth" }; }
       const form = new FormData();
       form.append("file", new Blob([new Uint8Array(value.audio)], { type: "audio/wav" }), "dictation.wav");
       const response = await this.request(endpoint, {
         method: "POST", body: form, redirect: "error", signal: active.controller.signal,
         headers: { Authorization: `Bearer ${credentials.token}`, originator: "family_bridge_audio_test", "User-Agent": "FamilyBridgeDictation/1.0", ...(credentials.accountId ? { "ChatGPT-Account-Id": credentials.accountId } : {}) },
       });
+      record("response", `HTTP_${response.status}`);
       if (response.status === 401) return { ok: false, code: "auth" };
       if (response.status === 429) return { ok: false, code: "limit" };
       if (!response.ok) return { ok: false, code: "unavailable" };
-      const body = await response.json() as { text?: unknown };
+      let body: { text?: unknown } | null;
+      try { body = await response.json(); }
+      catch { record("failed", "invalid_json"); return { ok: false, code: "unavailable" }; }
       if (active.controller.signal.aborted) return { ok: false, code: timedOut ? "timeout" : "cancelled" };
-      if (typeof body.text !== "string" || body.text.length > 50_000) return { ok: false, code: "unavailable" };
+      if (typeof body?.text !== "string" || body.text.length > 50_000) { record("failed", "invalid_response"); return { ok: false, code: "unavailable" }; }
+      record(body.text.trim() ? "completed" : "empty");
       return body.text.trim() ? { ok: true, text: body.text.trim() } : { ok: false, code: "empty" };
     } catch {
       // Never send request headers, auth file paths, or upstream error bodies to UI/logs.
-      return { ok: false, code: active.controller.signal.aborted ? timedOut ? "timeout" : "cancelled" : "network" };
+      const code = active.controller.signal.aborted ? timedOut ? "timeout" : "cancelled" : "network";
+      record("failed", code);
+      return { ok: false, code };
     } finally {
       clearTimeout(timer);
       if (this.active === active) this.active = undefined;

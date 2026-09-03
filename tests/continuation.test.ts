@@ -7,6 +7,8 @@ import { BackgroundService, readReportSummaries } from "../electron/background-s
 import { AtomicStore } from "../electron/store.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
 import type { AgentResponse } from "../src/core/types.js";
+import { applyConversationUpdate, latestContinuation } from "../src/core/conversation-updates.js";
+import type { AppState } from "../src/global.js";
 
 const history = [{ from: "dima" as const, text: "Как договоримся о звонках?" }, { from: "katya" as const, text: "Давай согласуем время заранее." }];
 const response = (text: string, status = "continue"): AgentResponse => ({ message_to_peer: text, status: status as AgentResponse["status"], owner_question: "", topics: [], private_report: "", shared_summary: status === "complete" ? text : "", comparison_summary: "" });
@@ -26,6 +28,7 @@ async function fixture() {
   const sent: any[] = [];
   const transport = { pairState: async () => ({ id: "pair", owner_id: "one", partner_id: "two" }), identity: async () => "one", send: async (message: unknown) => { sent.push(message); return "sent"; }, claimNext: async (): Promise<any> => null, acknowledge: async () => undefined };
   (service as any).remote = transport;
+  (service as any).versionProbePair = "pair:two"; // These tests exercise dialogue, not the initial service handshake.
   return { dir, report, store, service, sent, transport };
 }
 
@@ -37,6 +40,7 @@ test("continuation prompt distinguishes old history, new instruction and the res
   assert.equal(supportsContinuation("0.3.29"), false);
   assert.equal(supportsContinuation(undefined), false);
   assert.equal(supportsContinuation("0.3.30"), true);
+  assert.equal(supportsContinuation("1.0.0"), true);
 });
 
 test("owner follow-up preserves original result, uses old dialogue and never sends the raw instruction", async () => {
@@ -103,6 +107,43 @@ test("receiving a continuation supplies the same prior shared history to the sec
     await (f.service as any).pumpRemote();
     assert.equal((await f.store.read()).reports.length, 2, "A redelivered completed message must not restart the conversation");
   } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("received messages are pushed to the open conversation before the local agent finishes", async () => {
+  const f = await fixture();
+  let finish!: (reply: AgentResponse) => void;
+  let visible = await f.service.state() as AppState;
+  const pushes: unknown[] = [];
+  (f.service as any).windowProvider = () => ({ webContents: { send: (_channel: string, event: any) => {
+    if (event.type === "conversations") { pushes.push(event); visible = applyConversationUpdate(visible, event); }
+  } } });
+  (f.service as any).localRemoteAgent = () => ({ start: () => new Promise<AgentResponse>((resolve) => { finish = resolve; }) });
+  let delivered = false;
+  f.transport.claimNext = async () => {
+    if (delivered) return null;
+    delivered = true;
+    return { id: "message-live", conversation_id: "live-child", sequence_number: 1, sender_agent: "katya",
+      payload: { kind: "dialogue", topic: "Звонки", text: "Новая реплика прямо сейчас", status: "continue", continuation: { parentReportId: "original-id", history } } };
+  };
+  const processing = (f.service as any).pumpRemote();
+  try {
+    await until(async () => Boolean(finish));
+    assert.equal(latestContinuation(visible, "original-id")?.messages[0].text, "Новая реплика прямо сейчас");
+    assert.equal(visible.reports.length, 1, "Message appears before a new report exists");
+    assert.equal(visible.liveConversations?.[0].inheritedMessageCount, 2);
+    finish(response("Ответ готов", "complete"));
+    await processing;
+    assert.equal(latestContinuation(visible, "original-id")?.complete, true);
+    assert.equal(latestContinuation(visible, "original-id")?.messages.length, 2);
+    assert.equal(visible.reports.length, 2);
+    assert.ok(pushes.length >= 3, "Incoming, outgoing, and completed snapshots are all delivered");
+    assert.doesNotMatch(JSON.stringify(pushes), /encryptionSecret|instruction|preparedMessage/);
+    assert.equal((await f.service.state()).liveConversations.length, 0);
+  } finally {
+    if (finish) finish(response("Finished", "complete"));
+    await processing;
+    await rm(f.dir, { recursive: true, force: true });
+  }
 });
 
 test("older peer, unknown report and blocked topic never start a continuation", async () => {

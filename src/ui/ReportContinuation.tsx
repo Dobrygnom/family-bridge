@@ -3,6 +3,7 @@ import type { AppState } from "../global.js";
 import { appendDictation } from "../core/dictation.js";
 import { supportsContinuation } from "../core/continuation.js";
 import { DictationControl } from "./DictationControl.js";
+import { PeerVersionControl } from "./PeerVersionControl.js";
 import type { Language } from "./i18n.js";
 
 const labels = {
@@ -18,7 +19,13 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState("");
-  const t = labels[language];
+  const [checkingVersion, setCheckingVersion] = useState(false);
+  const t = { ...labels[language], complete: {
+    ru: "Продолжение завершено. Новые реплики показаны ниже в этом разговоре.",
+    en: "Continuation finished. The new messages are shown below in this conversation.",
+    cs: "Pokračování dokončeno. Nové zprávy jsou níže v tomto rozhovoru.",
+    fr: "Suite terminée. Les nouveaux messages sont affichés ci-dessous dans cette conversation.",
+  }[language] };
   const request = state.continuationStates?.filter((item) => item.parentReportId === reportId).at(-1);
   const pending = request?.status === "starting" || request?.status === "waiting";
   useEffect(() => { try { localStorage.setItem(key, draft); } catch { setError(t.saveError); } }, [key, draft, t.saveError]);
@@ -33,14 +40,21 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
     } catch { setError(t.error); }
     finally { setBusy(false); }
   }
+  async function checkVersion() {
+    if (!window.familyBridge || checkingVersion) return;
+    setCheckingVersion(true); setError("");
+    try { onState(await window.familyBridge.checkPairVersions()); }
+    catch { setError(t.error); }
+    finally { setCheckingVersion(false); }
+  }
   return <details className="report-continuation" open={pending || request?.status === "error" || undefined}>
     <summary>{t.title}</summary>
     <p className="muted">{t.hint}</p>
     {request && <p role="status">{request.status === "starting" ? t.starting : request.status === "waiting" ? t.waiting : request.status === "complete" ? t.complete : t.failed}</p>}
-    {request?.status === "error" && <button disabled={busy || dictationBusy} onClick={() => void send(true)}>{t.retry}</button>}
+    {request?.status === "error" && <button disabled={busy || dictationBusy || !supportsContinuation(state.remote.peerVersion)} onClick={() => void send(true)}>{t.retry}</button>}
     {!pending && <><textarea aria-label={t.title} placeholder={t.placeholder} maxLength={8000} value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} />
       <DictationControl language={language} disabled={busy || dictationBusy && !recording} onText={(text) => setDraft((current) => appendDictation(current, text))} onBusyChange={(value) => { setRecording(value); onDictationBusy(value); }} />
-      {!supportsContinuation(state.remote.peerVersion) && <p className="muted">{t.update}</p>}
+      {!supportsContinuation(state.remote.peerVersion) && <PeerVersionControl state={state} language={language} onCheck={() => void checkVersion()} busy={checkingVersion} continuation />}
       <button className="primary" disabled={busy || !draft.trim() || dictationBusy || recording || !state.remote.configured || !supportsContinuation(state.remote.peerVersion)} onClick={() => void send()}>{busy ? t.starting : t.send}</button>
     </>}
     {error && <p role="alert" className="analysis-error">{error}</p>}

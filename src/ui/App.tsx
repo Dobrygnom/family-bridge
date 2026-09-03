@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type SetStateAction } from "react";
 import {
   Activity,
   Ban,
@@ -20,6 +20,9 @@ import {
 import type { AppState } from "../global.js";
 import { languageNames, translations, type Language } from "./i18n.js";
 import { DictationControl } from "./DictationControl.js";
+import { PeerVersionControl } from "./PeerVersionControl.js";
+import { ConversationUpdates } from "./ConversationUpdates.js";
+import { applyConversationUpdate, keepNewerConversations, type ConversationUpdateEvent } from "../core/conversation-updates.js";
 import { dictationText } from "./dictation-text.js";
 import { appendDictation } from "../core/dictation.js";
 import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
@@ -63,7 +66,10 @@ function compareVersions(left: string, right: string) {
 }
 
 export function App() {
-  const [state, setState] = useState<AppState>(fallback);
+  const [state, dispatchState] = useState<AppState>(fallback);
+  function setState(action: SetStateAction<AppState>) {
+    dispatchState((current) => typeof action === "function" ? action(current) : keepNewerConversations(current, action));
+  }
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [reload, setReload] = useState(0);
@@ -229,6 +235,12 @@ export function App() {
     const onFocus = refreshState;
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
+      if ((raw as { type?: string }).type === "conversations") {
+        setState((current) => applyConversationUpdate(current, raw as ConversationUpdateEvent));
+        return;
+      }
+      const versionEvent = raw as { type?: string; peerVersionCheck?: AppState["remote"]["peerVersionCheck"] };
+      if (versionEvent.type === "peer-version-check") setState((current) => ({ ...current, remote: { ...current.remote, peerVersionCheck: versionEvent.peerVersionCheck } }));
       const healthEvent = raw as { type?: string; codex?: AppState["codex"]; connected?: boolean };
       if (healthEvent.type === "continuation-updated") refreshState();
       if (healthEvent.type === "health" && healthEvent.codex) setState((current) => ({ ...current, codex: healthEvent.codex!, remote: { ...current.remote, connected: Boolean(healthEvent.connected) } }));
@@ -401,11 +413,10 @@ export function App() {
   }
 
   async function checkPairVersions() {
-    if (!api || !state.remote.connected) return;
+    if (!api || !state.remote.configured || versionCheckBusy || state.remote.peerVersionCheck?.status === "checking") return;
     setVersionCheckBusy(true); setError("");
     try {
       setState(await api.checkPairVersions());
-      window.setTimeout(() => void api.getState().then(setState), 3_500);
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setVersionCheckBusy(false); }
   }
@@ -479,7 +490,6 @@ export function App() {
   const knownVersions = [state.appVersion, state.update.version, state.remote.peerVersion].filter((value): value is string => Boolean(value));
   const latestKnownVersion = knownVersions.sort(compareVersions).at(-1) ?? state.appVersion;
   const localVersionCurrent = compareVersions(state.appVersion, latestKnownVersion) === 0;
-  const peerVersionCurrent = Boolean(state.remote.peerVersion && compareVersions(state.remote.peerVersion, latestKnownVersion) === 0);
 
   const loadingText = {
     ru: ["Открываем сохранённые данные…", "Не удалось загрузить состояние приложения. Это не первый запуск и не сброс данных.", "Повторить", "Открыть журнал диагностики"],
@@ -564,14 +574,13 @@ export function App() {
               <div className="join-box"><span>{workflowText.orJoin}</span><div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button disabled={!counterpartPersonId || !inviteCode.trim() || busy} onClick={() => void connectWithInvite()}>{workflowText.connect}</button></div></div>
             </> : <div className="context-needed"><span>{workflowText.needContext}</span><button className="ghost" onClick={() => goTo("context")}>{workflowText.openContext}</button></div>}
           </>}
-          {state.remote.connected && <div className="connected-card">
+          {state.remote.configured && <div className="connected-card">
             <strong>{state.remote.peerName || deviceText.partnerName}</strong>
             <span>{workflowText.mapped}: {state.remote.counterpartLabel || "—"}</span>
             <div className="pair-versions">
               <div><span>{pairVersionText.local}</span><strong>v{state.appVersion}</strong><small className={localVersionCurrent ? "version-current" : "version-old"}>{localVersionCurrent ? pairVersionText.current : pairVersionText.updateNeeded}</small></div>
-              <div><span>{state.remote.peerName || pairVersionText.peer}</span>{state.remote.peerVersion ? <><strong>v{state.remote.peerVersion}</strong><small className={peerVersionCurrent ? "version-current" : "version-old"}>{peerVersionCurrent ? pairVersionText.current : pairVersionText.updateNeeded}</small></> : <small>{pairVersionText.unknown}</small>}</div>
+              <PeerVersionControl state={state} language={language} onCheck={() => void checkPairVersions()} busy={versionCheckBusy} />
             </div>
-            <button className="ghost pair-version-check" disabled={versionCheckBusy} onClick={() => void checkPairVersions()}><RefreshCw className={versionCheckBusy ? "spin" : ""} size={15} />{versionCheckBusy ? pairVersionText.checking : pairVersionText.check}</button>
           </div>}
         </section>}
 
@@ -632,6 +641,7 @@ export function App() {
               {report.comparison && <div className="report-comparison"><small>{reportsText.comparison}</small><p>{report.comparison}</p></div>}
               <details className="report-transcript"><summary>{reportsText.conversation} · {report.messageCount} {reportsText.messages}</summary><div>{report.messages.map((message, index) => <div className={`transcript-message ${message.local ? "local" : "peer"}`} key={`${report.id}-${index}`}><strong>{message.speaker}</strong><p>{message.text}</p></div>)}</div></details>
               <ReportContinuation reportId={report.id} state={state} language={language} onState={setState} dictationBusy={Boolean(activeDictation)} onDictationBusy={(value) => setActiveDictation((current) => value ? `report-${report.id}` : current === `report-${report.id}` ? "" : current)} />
+              <ConversationUpdates reportId={report.id} state={state} language={language} onOpenReport={setSelectedReportId} />
             </article>)}</div>
             <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>
           </section>}

@@ -1,5 +1,7 @@
 import type { ConversationReport } from "./core/types.js";
 import type { DictationResult } from "./core/dictation.js";
+import type { PeerVersionCheck } from "./core/peer-version.js";
+import type { LiveConversation } from "./core/conversation-updates.js";
 
 export interface AppState {
   owner: "dima" | "katya";
@@ -18,12 +20,14 @@ export interface AppState {
   reportSummaries: Array<{ id: string; parentReportId?: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   continuationStates?: Array<{ id: string; parentReportId: string; status: "starting" | "waiting" | "complete" | "error" }>;
+  conversationRevision?: number;
+  liveConversations?: LiveConversation[];
   lastConversationAt?: string;
   running: boolean;
   contextSyncing: boolean;
   contextSyncProgress: number;
   codex: { installed: boolean; authenticated: boolean; version: string };
-  remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; counterpartPersonId?: string; counterpartLabel?: string };
+  remote: { configured: boolean; connected: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; peerVersionCheck?: PeerVersionCheck; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; learnedCount: number; lastCheckedAt?: string; status?: string };
   context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error"; error?: string };
   contextAnalysis?: {

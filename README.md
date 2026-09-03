@@ -4,6 +4,10 @@ Family Bridge connects two locally running Codex agents for an autonomous, bound
 
 The repository contains a verified two-agent Codex CLI runner, reliable claim/ack queue semantics, an Electron + React desktop UI, a Supabase Realtime transport, client-side payload encryption, and installation/sync instructions.
 
+## Release 1.0.0
+
+[Release notes](docs/RELEASE_1.0.0.md): live continuation messages without tab switching, explicit partner-version checks, and native Electron networking for dictation. Existing context, selected topics, reports, and text drafts are preserved. CI builds a draft release; installers, checksums, and updater metadata are verified before it is published.
+
 ## Verified local demo
 
 ```powershell

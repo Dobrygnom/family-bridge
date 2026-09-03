@@ -17,6 +17,8 @@ import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/cor
 import { AtomicStore, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
+import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
+import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +36,7 @@ interface TopicPayload {
   senderVersion?: string;
   versionOnly?: boolean;
   requestUpdateCheck?: boolean;
+  requestVersion?: boolean;
 }
 
 interface DialoguePayload {
@@ -44,6 +47,7 @@ interface DialoguePayload {
   sharedSummary?: string;
   comparisonSummary?: string;
   senderName?: string;
+  senderVersion?: string;
   continuation?: { parentReportId: string; history: Array<{ from: OwnerId; text: string }> };
 }
 
@@ -210,6 +214,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
 }
 
 export class BackgroundService {
+  private conversationRevision = 0;
   readonly diagnostics: Diagnostics;
   private healthCheck?: Promise<void>;
   private healthCheckedAt = 0;
@@ -227,6 +232,9 @@ export class BackgroundService {
   private contextCheckBusy = false;
   private lastContextCheckAt = 0;
   private syncedTopicsForPair?: string;
+  private versionProbePair?: string;
+  private versionProbe?: { topic: string; pairId: string; state: PeerVersionCheck };
+  private versionProbeTimer?: NodeJS.Timeout;
   private remoteBusy = false;
   private readonly remoteAgents = new Map<string, AgentRuntime>();
   private readonly remoteMessages = new Map<string, Array<{ from: "dima" | "katya"; text: string }>>();
@@ -248,7 +256,8 @@ export class BackgroundService {
   async state() {
     const stored = await this.store.read();
     const { pendingOwnerQuestions, continuations, ...saved } = stored;
-    const publicStored = { ...saved, continuationStates: Object.entries(continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, status: value.status })) };
+    const conversationState = this.conversationSnapshot(stored);
+    const publicStored = { ...saved, ...conversationState };
     // Saved user data must never wait for a CLI process or a remote network call.
     const codex = this.health;
     const connected = this.connected;
@@ -269,8 +278,27 @@ export class BackgroundService {
     const contextAnalysis = this.readContextAnalysis();
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
+    const reportSummaries = conversationState.reportSummaries;
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerVersionCheck: this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+  }
+
+  private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
     const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр", topicSources: stored.topicSources });
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    const liveConversations: LiveConversation[] = Object.entries(stored.conversationTranscripts).map(([id, transcript]) => {
+      const parentReportId = stored.conversationParents[id];
+      return { id, parentReportId, topic: transcript.topic,
+        inheritedMessageCount: stored.continuations[id]?.history.length ?? reportSummaries.find((report) => report.id === parentReportId)?.messageCount ?? 0,
+        messages: transcript.messages.map((message) => ({ text: message.text, local: message.from === stored.owner,
+          speaker: message.from === stored.owner ? stored.displayName || "Вы" : stored.remote?.peerName || "Партнёр" })),
+      };
+    });
+    return { conversationRevision: this.conversationRevision, reports: stored.reports, reportSummaries, liveConversations,
+      continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, status: value.status })) };
+  }
+
+  private publishConversations(stored: Awaited<ReturnType<AtomicStore["read"]>>) {
+    this.conversationRevision++;
+    this.windowProvider()?.webContents.send("bridge:event", { type: "conversations", ...this.conversationSnapshot(stored) });
   }
 
   localContextState() {
@@ -773,17 +801,18 @@ export class BackgroundService {
     if (this.continuing.has(requestId)) return this.state();
     this.continuing.add(requestId);
     try {
-      await this.store.mutate((current) => {
+      const started = await this.store.mutate((current) => {
         if (Object.entries(current.continuations).some(([id, item]) => id !== requestId && item.parentReportId === reportId && ["starting", "waiting"].includes(item.status))) throw new Error("Этот разговор уже продолжается");
         return {
         continuations: { ...current.continuations, [requestId]: { ...existing, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
         conversationParents: { ...current.conversationParents, [requestId]: reportId },
       }; });
+      this.publishConversations(started);
       this.diagnostics.record("continuation.start");
       void this.processContinuation(requestId).catch(async () => {
         await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], status: "error" } } }));
         this.diagnostics.record("continuation.failed");
-      }).finally(() => { this.continuing.delete(requestId); this.windowProvider()?.webContents.send("bridge:event", { type: "continuation-updated" }); });
+      }).finally(async () => { this.continuing.delete(requestId); this.publishConversations(await this.store.read()); });
       return this.state();
     } catch (error) { this.continuing.delete(requestId); throw error; }
   }
@@ -817,7 +846,7 @@ export class BackgroundService {
     this.remoteMessages.set(id, messages);
     await this.persistTranscript(id, request.topic, messages);
     await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
-      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, continuation: { parentReportId: request.parentReportId, history: request.history } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
+      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, continuation: { parentReportId: request.parentReportId, history: request.history } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
     const next = await this.store.mutate((latest) => ({
       continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
       activeTopics: latest.continuations[id].status === "complete" ? latest.activeTopics : mergeTopicCatalog(latest.activeTopics, [request.topic]),
@@ -896,7 +925,7 @@ export class BackgroundService {
     this.remoteMessages.set(conversationId, messages);
     await this.persistTranscript(conversationId, topic, messages);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status === "unsafe" ? "unsafe" : "continue", sharedSummary: "", senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status === "unsafe" ? "unsafe" : "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: 1 });
   }
 
@@ -907,24 +936,72 @@ export class BackgroundService {
     await this.shareTopicToPair(topic, stored, pair);
   }
 
-  private async shareTopicToPair(topic: string, stored: Awaited<ReturnType<AtomicStore["read"]>>, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>, versionOnly = false, requestUpdateCheck = false) {
+  private async shareTopicToPair(topic: string, stored: Awaited<ReturnType<AtomicStore["read"]>>, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>, versionOnly = false, requestUpdateCheck = false, requestVersion = false) {
     if (!this.remote) return;
     const me = await this.remote.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
     if (!recipientId) return;
     const controlId = randomUUID();
     await this.remote.send({ pairId: pair.id, conversationId: controlId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, versionOnly, requestUpdateCheck } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
+      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, versionOnly, requestUpdateCheck, requestVersion } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
   }
 
   async requestPeerVersionCheck() {
     const stored = await this.store.read();
     if (!stored.remote || !this.remote) throw new Error("Сначала соедините два приложения");
-    const pair = await this.remote.pairState(stored.remote.pairId);
-    if (!pair.partner_id) throw new Error("Второй компьютер сейчас не подключён");
-    const probeTopic = stored.pairTopics[0] ?? stored.pendingTopics[0];
-    if (stored.remote.peerVersion && probeTopic) await this.shareTopicToPair(probeTopic, stored, pair, true, true);
+    this.beginPeerVersionCheck(stored);
     return this.state();
+  }
+
+  private publishPeerVersionCheck(status: PeerVersionCheck["status"]) {
+    if (!this.versionProbe) return;
+    this.versionProbe.state = { ...this.versionProbe.state, status };
+    if (status !== "checking") clearTimeout(this.versionProbeTimer);
+    this.windowProvider()?.webContents.send("bridge:event", { type: "peer-version-check", peerVersionCheck: this.versionProbe.state });
+    this.diagnostics.record(`peer-version.${status}`);
+  }
+
+  private beginPeerVersionCheck(stored: Awaited<ReturnType<AtomicStore["read"]>>) {
+    if (!stored.remote || !this.remote) return;
+    if (this.versionProbe?.pairId === stored.remote.pairId && this.versionProbe.state.status === "checking") return;
+    clearTimeout(this.versionProbeTimer);
+    const transport = this.remote;
+    const probe = { pairId: stored.remote.pairId, topic: `${VERSION_PROBE_PREFIX}${randomUUID()}`, state: { status: "checking" as const, requestedAt: new Date().toISOString() } };
+    this.versionProbe = probe;
+    this.publishPeerVersionCheck("checking");
+    this.versionProbeTimer = setTimeout(() => {
+      if (this.versionProbe === probe) this.publishPeerVersionCheck("timeout");
+    }, PEER_VERSION_TIMEOUT_MS);
+    this.versionProbeTimer.unref();
+    // Reply is processed by pumpRemote. IPC must return immediately so the UI
+    // shows a real pending request, including when the network is slow.
+    void (async () => {
+      const pair = await transport.pairState(probe.pairId);
+      if (this.versionProbe !== probe || this.remote !== transport) return;
+      if (!pair.partner_id) throw new Error("Pair not joined");
+      this.versionProbePair = `${pair.id}:${pair.partner_id}`;
+      // 0.3.29/30 reply only to requestUpdateCheck. They also check their own
+      // updates; newer builds recognize requestVersion and only reply.
+      await this.shareTopicToPair(probe.topic, stored, pair, true, true, true);
+      this.diagnostics.record("peer-version.sent");
+    })().catch(() => {
+      if (this.versionProbe === probe) this.publishPeerVersionCheck("error");
+    });
+  }
+
+  private async receivePeerVersion(payload: TopicPayload | DialoguePayload, pairId: string) {
+    const version = validPeerVersion(payload.senderVersion);
+    if (!version) return;
+    const peerLastSeenAt = new Date().toISOString();
+    const next = await this.store.mutate((current) => current.remote?.pairId === pairId
+      ? { remote: { ...current.remote, peerVersion: version, peerLastSeenAt, peerName: payload.senderName?.trim() || current.remote.peerName } } : {});
+    if (next.remote?.pairId !== pairId) return;
+    this.emit({ type: "peer", peerName: next.remote.peerName, peerVersion: version, peerLastSeenAt });
+    this.diagnostics.record("peer-version.received", { version });
+    if (payload.kind === "topic" && payload.versionOnly && !payload.requestVersion && !payload.requestUpdateCheck
+      && this.versionProbe?.pairId === pairId && this.versionProbe.topic === payload.topic) {
+      this.publishPeerVersionCheck("received");
+    }
   }
 
   private configureRemote(secret: string) {
@@ -1004,6 +1081,10 @@ export class BackgroundService {
       const pair = await this.remote.pairState(stored.remote.pairId);
       if (!pair.partner_id) return;
       const topicSyncKey = `${pair.id}:${pair.partner_id}`;
+      if (this.versionProbePair !== topicSyncKey) {
+        this.versionProbePair = topicSyncKey;
+        this.beginPeerVersionCheck(stored);
+      }
       if (this.syncedTopicsForPair !== topicSyncKey) {
         this.syncedTopicsForPair = topicSyncKey;
         for (const topic of stored.pendingTopics.filter((item) => stored.topicSources[item]?.includes("local"))) {
@@ -1012,11 +1093,21 @@ export class BackgroundService {
       }
       const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
       if (!envelope) return;
+      await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
+      // Service messages must not depend on onboarding, topics, or an LLM.
+      if (envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
+        if (envelope.payload.requestVersion || envelope.payload.requestUpdateCheck) {
+          if (!envelope.payload.requestVersion) this.options.requestUpdateCheck?.();
+          await this.shareTopicToPair(envelope.payload.topic, await this.store.read(), pair, true, false);
+        }
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
       if (!stored.identityConfigured) return;
       const peerName = envelope.payload.senderName?.trim() || stored.remote.peerName;
       if (peerName && peerName !== stored.remote.peerName) {
-        await this.store.update({ remote: { ...stored.remote, peerName } });
-        this.emit({ type: "peer", peerName, peerVersion: stored.remote.peerVersion, peerLastSeenAt: stored.remote.peerLastSeenAt });
+        const updated = await this.store.mutate((current) => current.remote?.pairId === pair.id ? { remote: { ...current.remote, peerName } } : {});
+        this.emit({ type: "peer", peerName, peerVersion: updated.remote?.peerVersion, peerLastSeenAt: updated.remote?.peerLastSeenAt });
       }
       if (envelope.payload.kind === "topic") {
         if (shouldIgnoreLegacyTopicAfterReset(stored.conversationResetVersion, envelope.payload.senderVersion)) {
@@ -1025,20 +1116,6 @@ export class BackgroundService {
         }
         const incomingTopic = envelope.payload.topic;
         const current = await this.store.read();
-        const peerVersion = envelope.payload.senderVersion?.trim() || current.remote?.peerVersion;
-        const peerLastSeenAt = peerVersion ? new Date().toISOString() : current.remote?.peerLastSeenAt;
-        if (peerVersion) {
-          await this.store.update({ remote: { ...current.remote!, peerName, peerVersion, peerLastSeenAt } });
-          this.emit({ type: "peer", peerName, peerVersion, peerLastSeenAt });
-        }
-        if (envelope.payload.versionOnly) {
-          await this.remote.acknowledge(envelope.id);
-          if (envelope.payload.requestUpdateCheck) {
-            this.options.requestUpdateCheck?.();
-            await this.shareTopicToPair(incomingTopic, await this.store.read(), pair, true, false);
-          }
-          return;
-        }
         const blocked = current.blockedTopics.some((item) => incomingTopic.toLowerCase().includes(item.toLowerCase()));
         if (!blocked) {
           const next = await this.store.update({
@@ -1113,7 +1190,7 @@ export class BackgroundService {
       const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
       const sequence = envelope.sequence_number + 1;
       await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
       await this.remote.acknowledge(envelope.id);
       this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
       if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, response.shared_summary, messages, { answerFrom: stored.displayName, answerFromOwnerId: stored.owner, comparisonSummary: response.comparison_summary });
@@ -1197,7 +1274,7 @@ export class BackgroundService {
         sequence: pending.nextSequence,
         recipientId,
         senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName,
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion,
           ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history } } : {}),
         } satisfies DialoguePayload,
         idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,
@@ -1217,7 +1294,8 @@ export class BackgroundService {
   }
 
   private async persistTranscript(conversationId: string, topic: string, messages: Array<{ from: OwnerId; text: string }>) {
-    await this.store.mutate((state) => ({ conversationTranscripts: { ...state.conversationTranscripts, [conversationId]: { topic, messages: messages.map((message) => ({ ...message })) } } }));
+    const next = await this.store.mutate((state) => ({ conversationTranscripts: { ...state.conversationTranscripts, [conversationId]: { topic, messages: messages.map((message) => ({ ...message })) } } }));
+    this.publishConversations(next);
   }
 
   private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>, result: { answerFrom?: string; answerFromOwnerId?: OwnerId; comparisonSummary?: string } = {}) {
@@ -1251,7 +1329,7 @@ export class BackgroundService {
     this.remoteMessages.delete(conversationId);
     this.remoteAgents.delete(conversationId);
     this.emitTopicState(next);
-    this.emit({ type: "reports", reports: next.reports, reportSummaries: readReportSummaries(next.reports, { localOwnerId: next.owner, localName: next.displayName || "Вы", peerName: next.remote?.peerName || "Партнёр", topicSources: next.topicSources }) });
+    this.publishConversations(next);
     this.emit({ type: "status", status: "completed" });
   }
 
