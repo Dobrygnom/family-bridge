@@ -914,6 +914,7 @@ export class BackgroundService {
       this.publishConversations(started);
       this.diagnostics.record("continuation.start");
       void this.processContinuation(requestId).catch(async () => {
+        this.continuing.delete(requestId);
         await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], status: "error" } } }));
         this.diagnostics.record("continuation.failed");
       }).finally(async () => { this.continuing.delete(requestId); this.publishConversations(await this.store.read()); });
