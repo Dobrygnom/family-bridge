@@ -31,6 +31,7 @@ export interface StoredState {
   owner: OwnerId;
   onboardingComplete: boolean;
   identityConfigured: boolean;
+  preferredCounterpartPersonId?: string;
   displayName: string;
   language: AppLanguage;
   autoStart: boolean;
@@ -47,6 +48,8 @@ export interface StoredState {
   conversationTranscripts: Record<string, { topic: string; messages: Array<{ from: OwnerId; text: string }> }>;
   conversationResetVersion?: string;
   conversationResetAt?: string;
+  experienceResetVersion?: string;
+  experienceResetAt?: string;
   ignoredConversationIds: string[];
   continuations: Record<string, ConversationContinuation>;
   conversationParents: Record<string, string>;
@@ -57,6 +60,7 @@ export interface StoredState {
     inviteSecret?: string;
     peerName?: string;
     peerVersion?: string;
+    peerExperienceVersion?: string;
     peerLastSeenAt?: string;
     counterpartPersonId?: string;
   };

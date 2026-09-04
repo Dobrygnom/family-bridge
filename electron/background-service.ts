@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 interface ContextSource extends ContextThread {
   lastSyncedAt?: string;
   messageCount?: number;
-  status?: "ready" | "syncing" | "error";
+  status?: "ready" | "syncing" | "error" | "confirmation";
   error?: string;
 }
 
@@ -35,6 +35,7 @@ interface TopicPayload {
   topic: string;
   senderName?: string;
   senderVersion?: string;
+  experienceVersion?: string;
   versionOnly?: boolean;
   requestUpdateCheck?: boolean;
   requestVersion?: boolean;
@@ -50,6 +51,7 @@ interface DialoguePayload {
   comparisonSummary?: string;
   senderName?: string;
   senderVersion?: string;
+  experienceVersion?: string;
   continuation?: { parentReportId: string; history: Array<{ from: OwnerId; text: string }> };
 }
 
@@ -89,6 +91,7 @@ interface BackgroundServiceOptions {
   backgroundTasks?: boolean;
   appVersion?: string;
   conversationResetVersion?: string;
+  experienceResetVersion?: string;
   reportsExportDirectory?: string;
   requestUpdateCheck?: () => void;
 }
@@ -290,7 +293,8 @@ export class BackgroundService {
     const counterpart = contextAnalysis?.people.find((person) => person.id === stored.remote?.counterpartPersonId);
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
     const reportSummaries = conversationState.reportSummaries;
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerVersionCheck: this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    const dialogueCompatible = !this.options.experienceResetVersion || stored.remote?.peerExperienceVersion === this.options.experienceResetVersion;
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerVersionCheck: this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
@@ -648,9 +652,71 @@ export class BackgroundService {
     return state;
   }
 
+  async resetExperienceOnce() {
+    const resetVersion = this.options.experienceResetVersion;
+    let state = await this.store.read();
+    if (!resetVersion || state.experienceResetVersion === resetVersion) return { state, reset: false };
+
+    const conversationIds = new Set(state.ignoredConversationIds);
+    for (const reportPath of state.reports) {
+      try {
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as { conversationId?: string };
+        if (report.conversationId) conversationIds.add(report.conversationId);
+      } catch { /* unreadable old results are still removed below */ }
+    }
+    for (const conversationId of Object.keys(state.conversationTranscripts)) conversationIds.add(conversationId);
+
+    const exported = this.options.reportsExportDirectory;
+    const internalReportsRoot = path.resolve(this.userData, "reports");
+    await Promise.all(state.reports.flatMap((reportPath) => {
+      const resolvedReport = path.resolve(reportPath);
+      const removals = resolvedReport.startsWith(`${internalReportsRoot}${path.sep}`) ? [rm(resolvedReport, { force: true })] : [];
+      if (exported) removals.push(rm(path.join(exported, path.basename(reportPath)), { force: true }));
+      return removals;
+    }));
+    await Promise.all([
+      rm(this.contextAnalysisPath(), { force: true }),
+      rm(this.learnedContextPath(), { force: true }),
+      rm(path.join(this.userData, "context-analysis"), { recursive: true, force: true }),
+      rm(path.join(this.userData, "agents"), { recursive: true, force: true }),
+    ]);
+
+    const resetAt = new Date().toISOString();
+    state = await this.store.update({
+      onboardingComplete: false,
+      pendingTopics: [],
+      inFlightTopics: [],
+      pairTopics: [],
+      topicSources: {},
+      topicBriefs: {},
+      topicSourceMigrationVersion: undefined,
+      activeTopics: [],
+      reports: [],
+      pendingOwnerQuestions: [],
+      conversationTranscripts: {},
+      continuations: {},
+      conversationParents: {},
+      conversationResetVersion: resetVersion,
+      conversationResetAt: resetAt,
+      experienceResetVersion: resetVersion,
+      experienceResetAt: resetAt,
+      ignoredConversationIds: [...conversationIds].slice(-500),
+      lastConversationAt: undefined,
+    });
+    const source = this.readContextSource();
+    if (source?.id) await this.writeContextSource({ ...source, status: "confirmation", error: undefined });
+    this.remoteAgents.clear();
+    this.remoteMessages.clear();
+    this.emitTopicState(state);
+    this.emit({ type: "reports", reports: [], reportSummaries: [] });
+    this.emit({ type: "owner-questions", questions: [] });
+    return { state, reset: true };
+  }
+
   async start() {
     this.diagnostics.record("startup.begin", { version: this.options.appVersion });
-    let state = await this.resetConversationResultsOnce();
+    let { state } = await this.resetExperienceOnce();
+    state = await this.resetConversationResultsOnce();
     state = await this.store.mutate((current) => ({ continuations: Object.fromEntries(Object.entries(current.continuations).map(([id, value]) => [id, value.status === "starting" ? { ...value, status: "error" } : value])) }));
     state = await this.ensureTopicSources(state);
     if (state.inFlightTopics.length) {
@@ -687,7 +753,7 @@ export class BackgroundService {
     }
     const context = this.readContextSource();
     this.diagnostics.record("startup.saved-state", { onboarding: state.onboardingComplete, sourceReady: context?.status === "ready", analysisStatus: analysis?.status, people: analysis?.people.length ?? 0, topics: analysis?.topics.length ?? 0, reports: state.reports.length });
-    if (context?.id && this.options.backgroundTasks !== false) {
+    if (context?.id && context.status !== "confirmation" && this.options.backgroundTasks !== false) {
       setTimeout(() => void this.checkContextForUpdates(), 5_000);
       this.contextTimer = setInterval(() => void this.checkContextForUpdates(), 24 * 60 * 60 * 1_000);
     }
@@ -740,13 +806,21 @@ export class BackgroundService {
     return this.state();
   }
 
-  async completeOnboarding() {
+  async completeOnboarding(counterpartPersonIdValue?: unknown) {
     const context = this.readContextSource();
     const analysis = this.readContextAnalysis();
     if (context?.status !== "ready" || analysis?.status !== "ready" || !analysis.people.length) {
       throw new Error("Сначала выберите базовый чат и проверьте найденных людей и темы");
     }
-    await this.store.update({ onboardingComplete: true });
+    const counterpartPersonId = this.requireCounterpartPerson(counterpartPersonIdValue);
+    if (!analysis.topics.some((topic) => topic.approved && topic.discussWithPersonId === counterpartPersonId)) {
+      throw new Error("Выберите хотя бы один разговор с этим человеком");
+    }
+    await this.store.mutate((current) => ({
+      onboardingComplete: true,
+      preferredCounterpartPersonId: counterpartPersonId,
+      ...(current.remote ? { remote: { ...current.remote, counterpartPersonId } } : {}),
+    }));
     return this.state();
   }
 
@@ -876,7 +950,7 @@ export class BackgroundService {
     this.remoteMessages.set(id, messages);
     await this.persistTranscript(id, request.topic, messages);
     await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
-      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, continuation: { parentReportId: request.parentReportId, history: request.history } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
+      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
     const next = await this.store.mutate((latest) => ({
       continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
       activeTopics: latest.continuations[id].status === "complete" ? latest.activeTopics : mergeTopicCatalog(latest.activeTopics, [request.topic]),
@@ -937,6 +1011,7 @@ export class BackgroundService {
     const stored = await this.store.read();
     if (!stored.identityConfigured) throw new Error("Сначала укажите, как вас называть");
     if (!stored.remote || !this.remote) throw new Error("Сначала соедините два приложения");
+    if (this.options.experienceResetVersion && stored.remote.peerExperienceVersion !== this.options.experienceResetVersion) throw new Error("На втором компьютере нужна последняя версия Family Bridge");
     if (stored.blockedTopics.some((blocked) => topic.toLowerCase().includes(blocked.toLowerCase()))) {
       throw new Error(`Тема заблокирована локальной политикой: ${topic}`);
     }
@@ -956,7 +1031,7 @@ export class BackgroundService {
     this.remoteMessages.set(conversationId, messages);
     await this.persistTranscript(conversationId, topic, messages);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status === "unsafe" ? "unsafe" : "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { kind: "dialogue", text: response.message_to_peer, topic, status: response.status === "unsafe" ? "unsafe" : "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: 1 });
   }
 
@@ -969,12 +1044,13 @@ export class BackgroundService {
 
   private async shareTopicToPair(topic: string, stored: Awaited<ReturnType<AtomicStore["read"]>>, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>, versionOnly = false, requestUpdateCheck = false, requestVersion = false) {
     if (!this.remote) return;
+    if (!versionOnly && this.options.experienceResetVersion && stored.remote?.peerExperienceVersion !== this.options.experienceResetVersion) return;
     const me = await this.remote.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
     if (!recipientId) return;
     const controlId = randomUUID();
     await this.remote.send({ pairId: pair.id, conversationId: controlId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, versionOnly, requestUpdateCheck, requestVersion,
+      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, versionOnly, requestUpdateCheck, requestVersion,
         ...(!versionOnly ? { brief: this.savedTopicBrief(stored.topicBriefs, topic) ?? shareableTopicBrief(findTopicContext(this.readContextAnalysis(), topic)) } : {}) } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
   }
 
@@ -1025,11 +1101,18 @@ export class BackgroundService {
     const version = validPeerVersion(payload.senderVersion);
     if (!version) return;
     const peerLastSeenAt = new Date().toISOString();
-    const next = await this.store.mutate((current) => current.remote?.pairId === pairId
-      ? { remote: { ...current.remote, peerVersion: version, peerLastSeenAt, peerName: payload.senderName?.trim() || current.remote.peerName } } : {});
+    const peerExperienceVersion = typeof payload.experienceVersion === "string" ? payload.experienceVersion : undefined;
+    let becameCompatible = false;
+    const next = await this.store.mutate((current) => {
+      if (current.remote?.pairId !== pairId) return {};
+      becameCompatible = current.remote.peerExperienceVersion !== this.options.experienceResetVersion
+        && peerExperienceVersion === this.options.experienceResetVersion;
+      return { remote: { ...current.remote, peerVersion: version, peerExperienceVersion, peerLastSeenAt, peerName: payload.senderName?.trim() || current.remote.peerName } };
+    });
     if (next.remote?.pairId !== pairId) return;
     this.emit({ type: "peer", peerName: next.remote.peerName, peerVersion: version, peerLastSeenAt });
     this.diagnostics.record("peer-version.received", { version });
+    if (becameCompatible) this.syncedTopicsForPair = undefined;
     if (payload.kind === "topic" && payload.versionOnly && !payload.requestVersion && !payload.requestUpdateCheck
       && this.versionProbe?.pairId === pairId && this.versionProbe.topic === payload.topic) {
       this.publishPeerVersionCheck("received");
@@ -1160,6 +1243,10 @@ export class BackgroundService {
         await this.remote.acknowledge(envelope.id);
         return;
       }
+      if (this.options.experienceResetVersion && envelope.payload.experienceVersion !== this.options.experienceResetVersion) {
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
       if (!stored.identityConfigured) return;
       const peerName = envelope.payload.senderName?.trim() || stored.remote.peerName;
       if (peerName && peerName !== stored.remote.peerName) {
@@ -1259,7 +1346,7 @@ export class BackgroundService {
       const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
       const sequence = envelope.sequence_number + 1;
       await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
       await this.remote.acknowledge(envelope.id);
       this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
       if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, response.shared_summary, messages, { answerFrom: stored.displayName, answerFromOwnerId: stored.owner, comparisonSummary: response.comparison_summary });
@@ -1355,7 +1442,7 @@ export class BackgroundService {
         sequence: pending.nextSequence,
         recipientId,
         senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion,
+        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion,
           ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history } } : {}),
         } satisfies DialoguePayload,
         idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,

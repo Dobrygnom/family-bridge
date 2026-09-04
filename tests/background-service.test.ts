@@ -162,6 +162,138 @@ test("the 0.3.25 reset removes old results once and returns every topic to the q
   }
 });
 
+test("the natural-dialogue reset keeps account and pairing settings but rebuilds all derived conversation data", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-experience-reset-"));
+  const exported = path.join(directory, "exported");
+  try {
+    const reports = path.join(directory, "reports");
+    const memory = path.join(directory, "psychologist-memory");
+    await mkdir(reports, { recursive: true });
+    await mkdir(exported, { recursive: true });
+    await mkdir(memory, { recursive: true });
+    await mkdir(path.join(directory, "context-analysis"), { recursive: true });
+    await mkdir(path.join(directory, "agents", "dima", "old-conversation"), { recursive: true });
+    const reportPath = path.join(reports, "old-result.json");
+    const exportedPath = path.join(exported, "old-result.json");
+    await writeFile(reportPath, JSON.stringify({ conversationId: "old-conversation", topic: "old topic" }));
+    await writeFile(exportedPath, "old exported result");
+    await writeFile(path.join(memory, "context-source.json"), JSON.stringify({ id: "chat", title: "Карманный психолог", project: "GV", status: "ready" }));
+    await writeFile(path.join(memory, "context-analysis.json"), JSON.stringify({ sourceId: "chat", status: "ready", people: [{ id: "katya" }], topics: [{ id: "old-topic" }] }));
+    await writeFile(path.join(memory, "learned-context.json"), "[]");
+    await writeFile(path.join(directory, "context-analysis", "cached.json"), "{}");
+    await writeFile(path.join(directory, "agents", "dima", "old-conversation", "session.json"), "{}");
+    const store = new AtomicStore(directory);
+    await store.update({
+      onboardingComplete: true,
+      identityConfigured: true,
+      displayName: "Дмитрий",
+      language: "ru",
+      autoStart: true,
+      pairTopics: ["old topic"],
+      pendingTopics: ["old topic"],
+      topicSources: { "old topic": ["local"] },
+      topicBriefs: { "old topic": { context: "old context" } },
+      reports: [reportPath],
+      conversationTranscripts: { "old-conversation": { topic: "old topic", messages: [] } },
+      remote: { pairId: "pair", encryptionSecret: "secret", counterpartPersonId: "katya", peerName: "Катя" },
+    });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, {
+      backgroundTasks: false,
+      experienceResetVersion: "natural-dialogues-v1",
+      reportsExportDirectory: exported,
+    });
+
+    await service.start();
+    const reset = await store.read();
+    assert.equal(reset.onboardingComplete, false);
+    assert.equal(reset.displayName, "Дмитрий");
+    assert.equal(reset.language, "ru");
+    assert.equal(reset.remote?.pairId, "pair");
+    assert.equal(reset.remote?.counterpartPersonId, "katya");
+    assert.deepEqual(reset.pairTopics, []);
+    assert.deepEqual(reset.pendingTopics, []);
+    assert.deepEqual(reset.topicSources, {});
+    assert.deepEqual(reset.topicBriefs, {});
+    assert.deepEqual(reset.reports, []);
+    assert.deepEqual(reset.conversationTranscripts, {});
+    assert.equal(reset.experienceResetVersion, "natural-dialogues-v1");
+    assert.equal(existsSync(reportPath), false);
+    assert.equal(existsSync(exportedPath), false);
+    assert.equal(existsSync(path.join(memory, "context-analysis.json")), false);
+    assert.equal(existsSync(path.join(memory, "learned-context.json")), false);
+    assert.equal(existsSync(path.join(directory, "context-analysis")), false);
+    assert.equal(existsSync(path.join(directory, "agents")), false);
+    assert.equal(JSON.parse(await readFile(path.join(memory, "context-source.json"), "utf8")).status, "confirmation");
+
+    await store.update({ pairTopics: ["new topic"] });
+    await service.start();
+    assert.deepEqual((await store.read()).pairTopics, ["new topic"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("new conversation topics wait until both computers use the same dialogue generation", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-generation-test-"));
+  try {
+    const store = new AtomicStore(directory);
+    await store.update({
+      identityConfigured: true,
+      displayName: "Дмитрий",
+      remote: { pairId: "pair", encryptionSecret: "secret", peerVersion: "1.0.0" },
+    });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, {
+      backgroundTasks: false,
+      appVersion: "1.1.0",
+      experienceResetVersion: "natural-dialogues-v1",
+    });
+    const sent: any[] = [];
+    (service as any).remote = { identity: async () => "me", send: async (message: unknown) => { sent.push(message); } };
+    const pair = { id: "pair", owner_id: "me", partner_id: "peer" };
+
+    await (service as any).shareTopicToPair("Новая тема", await store.read(), pair);
+    assert.equal(sent.length, 0);
+    assert.equal((await service.state()).remote.dialogueCompatible, false);
+
+    await store.mutate((current) => ({ remote: { ...current.remote!, peerExperienceVersion: "natural-dialogues-v1" } }));
+    await (service as any).shareTopicToPair("Новая тема", await store.read(), pair);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].payload.experienceVersion, "natural-dialogues-v1");
+    assert.equal((await service.state()).remote.dialogueCompatible, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("finishing preparation remembers the selected person and repairs the preserved pair mapping", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-counterpart-test-"));
+  try {
+    const memory = path.join(directory, "psychologist-memory");
+    await mkdir(memory, { recursive: true });
+    await writeFile(path.join(memory, "context-source.json"), JSON.stringify({ id: "chat", title: "Chat", project: "Project", status: "ready" }));
+    await writeFile(path.join(memory, "context-analysis.json"), JSON.stringify({
+      analysisVersion: 3,
+      sourceId: "chat",
+      sourceHash: "hash",
+      analyzedAt: new Date().toISOString(),
+      status: "ready",
+      people: [{ id: "partner-new", label: "Катя", relationship: "жена", aliases: [] }],
+      topics: [{ id: "topic", title: "Понять друг друга", aboutPersonIds: ["partner-new"], discussWithPersonId: "partner-new", sensitivity: "direct", reason: "Наблюдаемая динамика: непонимание. Психологическая цель: прояснить. Первый вопрос: Что ты думаешь?", approved: true }],
+    }));
+    const store = new AtomicStore(directory);
+    await store.update({ remote: { pairId: "pair", encryptionSecret: "secret", counterpartPersonId: "partner-old" } });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { backgroundTasks: false });
+
+    await service.completeOnboarding("partner-new");
+    const state = await store.read();
+    assert.equal(state.onboardingComplete, true);
+    assert.equal(state.preferredCounterpartPersonId, "partner-new");
+    assert.equal(state.remote?.counterpartPersonId, "partner-new");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("saved reports expose their readable shared result inside the app", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-report-view-"));
   try {

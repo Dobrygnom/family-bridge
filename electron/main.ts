@@ -187,6 +187,7 @@ app.whenReady().then(async () => {
     {
       appVersion: app.getVersion(),
       conversationResetVersion: "0.3.25",
+      experienceResetVersion: "natural-dialogues-v1",
       reportsExportDirectory: path.join(app.getPath("documents"), "Family Bridge Reports"),
       requestUpdateCheck: () => setTimeout(() => void checkForUpdates(), 0),
     },
@@ -230,7 +231,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
   ipcMain.handle("bridge:sync-context", () => service.syncContext());
   ipcMain.handle("bridge:refresh-context-now", () => service.refreshContextNow());
-  ipcMain.handle("bridge:complete-onboarding", () => service.completeOnboarding());
+  ipcMain.handle("bridge:complete-onboarding", (_event, counterpartPersonId?: string) => service.completeOnboarding(counterpartPersonId));
   ipcMain.handle("bridge:open-reports", async () => {
     const internalReports = path.join(app.getPath("userData"), "reports");
     const exportedReports = path.join(app.getPath("documents"), "Family Bridge Reports");

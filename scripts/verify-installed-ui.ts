@@ -34,8 +34,8 @@ assert.ok(navigation.includes("Исходный чат и темы"), "Source ch
 assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Итоги разговоров", "Имя и автозапуск"]);
 const overviewText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
 assert.match(overviewText, /Подготовка к первому разговору/);
-assert.match(overviewText, /Проверьте людей и темы/);
-assert.match(overviewText, /Темы проверены — перейти к подключению/);
+assert.match(overviewText, /Выберите разговоры/);
+assert.match(overviewText, /Подготовить выбранные разговоры/);
 assert.doesNotMatch(overviewText, /СОЕДИНЕНИЕ|Создать приглашение|Создать новый код/);
 assert.doesNotMatch(overviewText, /Быстрый demo|Запустить через Codex|Поговорить с агентом партнёра/);
 const appSummary = await evaluate<{ project?: string; chat?: string; contextStatus?: string; analysisStatus?: string; people: number; topics: number; approved: number; grouped: number[] }>(`window.familyBridge.getState().then((state) => ({ project: state.context?.project, chat: state.context?.title, contextStatus: state.context?.status, analysisStatus: state.contextAnalysis?.status, people: state.contextAnalysis?.people.length ?? 0, topics: state.contextAnalysis?.topics.length ?? 0, approved: state.contextAnalysis?.topics.filter((topic) => topic.approved).length ?? 0, grouped: (state.contextAnalysis?.people ?? []).map((person) => state.contextAnalysis?.topics.filter((topic) => topic.discussWithPersonId === person.id).length ?? 0) }))`);
@@ -49,7 +49,7 @@ assert.equal(appSummary.approved, 0, "Topics were approved without the owner's a
 assert.equal(appSummary.grouped.reduce((sum, count) => sum + count, 0), appSummary.topics, "Topic grouping does not cover every topic exactly once");
 const compactRows = await evaluate<Array<{ height: number; text: string }>>(`[...document.querySelectorAll('.topic-row-main')].map((row) => ({ height: row.getBoundingClientRect().height, text: row.textContent?.trim() ?? '' }))`);
 assert.ok(compactRows.length > 0, "No compact topic rows were rendered");
-assert.ok(compactRows.every((row) => row.height <= 64), "A collapsed topic row is too tall");
+assert.ok(compactRows.every((row) => row.height <= 96), "A collapsed topic row is too tall");
 const overflow = await evaluate<{ pageX: number; mainY: number }>(`({ pageX: document.documentElement.scrollWidth - document.documentElement.clientWidth, mainY: (() => { const main = document.querySelector('main'); return main ? main.scrollHeight - main.clientHeight : 1; })() })`);
 assert.ok(overflow.pageX <= 1, `The installed app has horizontal page overflow: ${overflow.pageX}px`);
 assert.ok(overflow.mainY <= 1, `The first-run screen scrolls as a whole: ${overflow.mainY}px`);

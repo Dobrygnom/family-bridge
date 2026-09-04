@@ -37,7 +37,7 @@ interface RawAnalysis {
   topics: Array<{ title: string; about_people: string[]; discuss_with: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string }>;
 }
 
-export const CONTEXT_ANALYSIS_VERSION = 2;
+export const CONTEXT_ANALYSIS_VERSION = 3;
 
 export function contextSourceHash(messages: Array<{ text: string }>): string {
   return createHash("sha256").update(messages.map((message) => message.text).join("\n\u0000\n"), "utf8").digest("hex");
