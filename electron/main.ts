@@ -24,6 +24,9 @@ let macUpdater: MacReleaseUpdater | null = null;
 let updateInstallIsQuitting = false;
 let promptedUpdateVersion: string | undefined;
 let windowsUpdateVersion: string | undefined;
+let windowsUpdateDownloading = false;
+let windowsUpdateReady = false;
+let updateCheckOperation: Promise<void> | undefined;
 if (process.env.FAMILY_BRIDGE_E2E_USER_DATA) app.setPath("userData", path.resolve(process.env.FAMILY_BRIDGE_E2E_USER_DATA));
 const hasSingleInstanceLock = process.env.FAMILY_BRIDGE_E2E_ALLOW_SECOND_INSTANCE === "1" || app.requestSingleInstanceLock();
 
@@ -157,18 +160,23 @@ async function presentReadyUpdate(state: UpdateState) {
   if (result.response === 0) await installPreparedUpdate();
 }
 
-async function checkForUpdates() {
-  if (!app.isPackaged) return;
-  if (process.platform === "darwin" && macUpdater) {
-    await macUpdater.checkForUpdates();
-    return;
-  }
-  service.setUpdateState({ available: false, checking: true, downloading: false });
-  try {
-    await autoUpdater.checkForUpdatesAndNotify();
-  } catch (error) {
-    service.setUpdateState({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
-  }
+function checkForUpdates() {
+  if (!app.isPackaged) return Promise.resolve();
+  if (process.platform !== "darwin" && (windowsUpdateDownloading || windowsUpdateReady)) return Promise.resolve();
+  if (updateCheckOperation) return updateCheckOperation;
+  updateCheckOperation = (async () => {
+    if (process.platform === "darwin" && macUpdater) {
+      await macUpdater.checkForUpdates();
+      return;
+    }
+    service.setUpdateState({ available: false, checking: true, downloading: false });
+    try {
+      await autoUpdater.checkForUpdatesAndNotify();
+    } catch (error) {
+      service.setUpdateState({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  })().finally(() => { updateCheckOperation = undefined; });
+  return updateCheckOperation;
 }
 
 let serviceReady = false;
@@ -289,19 +297,33 @@ app.whenReady().then(async () => {
       autoUpdater.disableWebInstaller = true;
       autoUpdater.on("update-available", (info) => {
         windowsUpdateVersion = info.version;
+        windowsUpdateDownloading = true;
+        windowsUpdateReady = false;
         service.setUpdateState({ available: true, version: info.version, downloading: true, progress: 0 });
       });
       autoUpdater.on("download-progress", (progress) => service.setUpdateState({ available: true, version: windowsUpdateVersion, downloading: true, progress: Math.round(progress.percent) }));
       autoUpdater.on("update-downloaded", (info) => {
+        windowsUpdateDownloading = false;
+        windowsUpdateReady = true;
         const update = { available: true, version: info.version, downloading: false, progress: 100, ready: true };
         service.setUpdateState(update);
         void presentReadyUpdate(update);
       });
-      autoUpdater.on("update-not-available", () => service.setUpdateState({ available: false, downloading: false }));
-      autoUpdater.on("error", (error) => service.setUpdateState({ available: false, downloading: false, error: error.message }));
+      autoUpdater.on("update-not-available", () => {
+        windowsUpdateVersion = undefined;
+        windowsUpdateDownloading = false;
+        windowsUpdateReady = false;
+        service.setUpdateState({ available: false, downloading: false });
+      });
+      autoUpdater.on("error", (error) => {
+        windowsUpdateVersion = undefined;
+        windowsUpdateDownloading = false;
+        windowsUpdateReady = false;
+        service.setUpdateState({ available: false, downloading: false, error: error.message });
+      });
     }
     setTimeout(() => void checkForUpdates(), 10_000);
-    const updateTimer = setInterval(() => void checkForUpdates(), 24 * 60 * 60 * 1_000);
+    const updateTimer = setInterval(() => void checkForUpdates(), 60_000);
     updateTimer.unref();
   }
 }).catch(() => {
