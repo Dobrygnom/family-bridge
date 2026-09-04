@@ -106,9 +106,11 @@ try {
     const count = await evaluate<number>(`document.querySelectorAll('.portrait-observation').length`);
     return count > 0 ? count : undefined;
   }));
-  const overflow = await evaluate<number>(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
-  assert.ok(overflow <= 1, `Portrait screen has horizontal overflow: ${overflow}px`);
-  console.log(JSON.stringify({ verified: true, packagedVersion: "1.2.0", people: tabCount, ownerObservations: initialObservationCount, editPersisted: true, personSwitch: true, horizontalOverflow: overflow }));
+  assert.ok(await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Первый запуск'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`));
+  const overflow = await evaluate<{ pageX: number; mainY: number }>(`({ pageX: document.documentElement.scrollWidth - document.documentElement.clientWidth, mainY: (() => { const main = document.querySelector('main'); return main ? main.scrollHeight - main.clientHeight : 1; })() })`);
+  assert.ok(overflow.pageX <= 1, `Packaged app has horizontal overflow: ${overflow.pageX}px`);
+  assert.ok(overflow.mainY <= 1, `First-run screen scrolls as a whole: ${overflow.mainY}px`);
+  console.log(JSON.stringify({ verified: true, packagedVersion: "1.2.2", people: tabCount, ownerObservations: initialObservationCount, editPersisted: true, personSwitch: true, horizontalOverflow: overflow.pageX, firstRunOverflow: overflow.mainY }));
 } finally {
   socket?.close();
   child?.kill();
