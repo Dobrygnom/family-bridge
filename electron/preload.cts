@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   selectContextThread: (threadId: string) => ipcRenderer.invoke("bridge:select-context-thread", threadId),
   syncContext: () => ipcRenderer.invoke("bridge:sync-context"),
   refreshContextNow: () => ipcRenderer.invoke("bridge:refresh-context-now"),
+  updatePortraitObservation: (input: { personId: string; observationId: string; text?: string; remove?: boolean }) => ipcRenderer.invoke("bridge:update-portrait-observation", input),
   completeOnboarding: (counterpartPersonId?: string) => ipcRenderer.invoke("bridge:complete-onboarding", counterpartPersonId),
   openReports: () => ipcRenderer.invoke("bridge:open-reports"),
   createPair: (counterpartPersonId: string) => ipcRenderer.invoke("bridge:create-pair", counterpartPersonId),

@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
 
 export type OwnerId = "dima" | "katya";
@@ -88,6 +89,17 @@ const defaults: StoredState = {
   conversationParents: {},
 };
 
+async function replaceStateFile(temporary: string, destination: string) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { await rename(temporary, destination); return; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 5 || code !== "EPERM" && code !== "EBUSY") throw error;
+      await delay(10 * 2 ** attempt);
+    }
+  }
+}
+
 export class AtomicStore {
   private readonly file: string;
   private pending: Promise<void> = Promise.resolve();
@@ -125,7 +137,7 @@ export class AtomicStore {
       await mkdir(path.dirname(this.file), { recursive: true });
       const temporary = `${this.file}.tmp`;
       await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");
-      await rename(temporary, this.file);
+      await replaceStateFile(temporary, this.file);
       return next;
     });
     this.pending = operation.then(() => undefined, () => undefined);

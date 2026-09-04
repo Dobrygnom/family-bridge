@@ -3,6 +3,7 @@ import type { DictationResult } from "./core/dictation.js";
 import type { PeerVersionCheck } from "./core/peer-version.js";
 import type { LiveConversation } from "./core/conversation-updates.js";
 import type { TopicBrief } from "./core/conversation-quality.js";
+import type { PersonPortrait } from "./core/person-portraits.js";
 
 export interface AppState {
   owner: "dima" | "katya";
@@ -29,6 +30,7 @@ export interface AppState {
   running: boolean;
   contextSyncing: boolean;
   contextSyncProgress: number;
+  portraitsUpdating: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
   remote: { configured: boolean; connected: boolean; dialogueCompatible?: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerExperienceVersion?: string; peerLastSeenAt?: string; peerVersionCheck?: PeerVersionCheck; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; learnedCount: number; lastCheckedAt?: string; status?: string };
@@ -42,6 +44,7 @@ export interface AppState {
     error?: string;
     progress?: { stage: "analyzing" | "consolidating"; current: number; total: number };
     people: Array<{ id: string; label: string; relationship: string; aliases: string[] }>;
+    portraits?: PersonPortrait[];
     topics: Array<{ id: string; title: string; aboutPersonIds: string[]; discussWithPersonId: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string; approved: boolean }>;
   };
   update: { available: boolean; version?: string; checking?: boolean; downloading: boolean; progress?: number; ready?: boolean; error?: string };
@@ -64,6 +67,7 @@ declare global {
       selectContextThread(threadId: string): Promise<AppState>;
       syncContext(): Promise<AppState>;
       refreshContextNow(): Promise<AppState>;
+      updatePortraitObservation(input: { personId: string; observationId: string; text?: string; remove?: boolean }): Promise<AppState>;
       completeOnboarding(counterpartPersonId?: string): Promise<AppState>;
       openReports(): Promise<void>;
       createPair(counterpartPersonId: string): Promise<AppState>;

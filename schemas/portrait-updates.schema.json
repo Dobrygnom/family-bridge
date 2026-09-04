@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["updates"],
+  "properties": {
+    "updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["person_id", "observations"],
+        "properties": {
+          "person_id": { "type": "string" },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "text"],
+              "properties": {
+                "kind": { "type": "string", "enum": ["fact", "view", "preference", "pattern", "uncertainty"] },
+                "text": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

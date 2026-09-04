@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
 
 export interface ContextPerson {
   id: string;
@@ -27,6 +28,7 @@ export interface ContextAnalysis {
   analyzedAt: string;
   status: "ready" | "analyzing" | "error";
   people: ContextPerson[];
+  portraits?: PersonPortrait[];
   topics: RoutedTopic[];
   progress?: { stage: "analyzing" | "consolidating"; current: number; total: number };
   error?: string;
@@ -34,10 +36,11 @@ export interface ContextAnalysis {
 
 interface RawAnalysis {
   people: Array<{ key: string; label: string; relationship: string; aliases: string[] }>;
+  portraits?: RawPortrait[];
   topics: Array<{ title: string; about_people: string[]; discuss_with: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string }>;
 }
 
-export const CONTEXT_ANALYSIS_VERSION = 3;
+export const CONTEXT_ANALYSIS_VERSION = 4;
 
 export function contextSourceHash(messages: Array<{ text: string }>): string {
   return createHash("sha256").update(messages.map((message) => message.text).join("\n\u0000\n"), "utf8").digest("hex");
@@ -72,10 +75,20 @@ export function splitContextMessages(messages: Array<{ text: string }>, maxChara
   return chunks;
 }
 
-export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sourceHash: string, previous?: ContextAnalysis): ContextAnalysis {
-  const used = new Set<string>();
+export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sourceHash: string, previous?: ContextAnalysis, ownerName = "Вы"): ContextAnalysis {
+  const normalizeName = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const normalizedOwnerName = normalizeName(ownerName);
+  const isOwnerPerson = (person: RawAnalysis["people"][number]) => {
+    const relationship = normalizeName(person.relationship);
+    return normalizeName(person.key) === "owner"
+      || ["owner", "self", "владелец", "я"].includes(relationship)
+      || Boolean(normalizedOwnerName && [person.label, ...person.aliases].some((value) => normalizeName(value) === normalizedOwnerName));
+  };
+  const ownerKeys = new Set(["owner", ...raw.people.filter(isOwnerPerson).map((person) => person.key)]);
+  const rawPeople = raw.people.filter((person) => !isOwnerPerson(person));
+  const used = new Set<string>(["owner"]);
   const keyToId = new Map<string, string>();
-  const people = raw.people.map((person, index) => {
+  const people = rawPeople.map((person, index) => {
     const base = person.key.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "") || `person-${index + 1}`;
     let id = base;
     let suffix = 2;
@@ -92,7 +105,19 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
     const id = `topic-${createHash("sha256").update(`${topic.title}\u0000${discussWithPersonId}`).digest("hex").slice(0, 12)}-${index + 1}`;
     return [{ id, title: topic.title.trim(), aboutPersonIds, discussWithPersonId, sensitivity: topic.sensitivity, reason: topic.reason.trim(), approved: previousApproval.get(`${topic.title.trim()}\u0000${discussWithPersonId}`) ?? false }];
   });
-  return { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "ready", people, topics };
+  const portraits = buildInitialPortraits({
+    raw: [
+      { person_key: "owner", observations: (raw.portraits ?? []).filter((portrait) => ownerKeys.has(portrait.person_key)).flatMap((portrait) => portrait.observations) },
+      ...(raw.portraits ?? []).filter((portrait) => !ownerKeys.has(portrait.person_key)),
+    ],
+    sourceId,
+    previous: previous?.portraits,
+    people: [
+      { personKey: "owner", personId: "owner", label: ownerName.trim() || "Вы", relationship: "", isOwner: true },
+      ...people.map((person, index) => ({ personKey: rawPeople[index]?.key ?? person.id, personId: person.id, label: person.label, relationship: person.relationship, isOwner: false })),
+    ],
+  });
+  return { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "ready", people, portraits, topics };
 }
 
 export function topicsForCounterpart(analysis: ContextAnalysis | undefined, personId: string | undefined): RoutedTopic[] {
@@ -122,13 +147,21 @@ export class CodexContextAnalyzer {
     });
     await input.onProgress?.({ stage: "consolidating", current: total, total });
     const raw = await this.consolidate(rawParts, input.ownerName, input.language);
-    return normalizeContextAnalysis(raw, input.sourceId, input.sourceHash, input.previous);
+    return normalizeContextAnalysis(raw, input.sourceId, input.sourceHash, input.previous, input.ownerName);
   }
 
   private analysisPrompt(ownerName: string, language: string, transcript: string) {
     return `Ты выполняешь первый, исследовательский этап семейно-психологического анализа личного чата владельца ${ownerName || "приложения"}. Это не итоговый список тем и не суммаризация сообщений. Твоя задача — сохранить материал, из которого следующий этап сможет рекомендовать содержательные разговоры.
 
 Найди упоминаемых близких людей, кроме самого владельца. Для каждого дай короткий стабильный key латиницей, отображаемое имя или нейтральную роль, тип отношений и встречающиеся формы имени.
+
+В portraits составь компактный портрет самого владельца и найденных людей. Для владельца всегда используй person_key="owner", для остальных — тот же key, что в people. Добавляй только отдельные короткие наблюдения о конкретном человеке:
+- fact — явно сообщённый факт;
+- view — его позиция или объяснение;
+- preference — желание, потребность или граница;
+- pattern — устойчивый способ реагирования, только если он действительно повторяется или прямо описан;
+- uncertainty — важная неопределённость самого человека.
+Не создавай портрет пары или отношений как отдельной сущности. Не ставь диагнозов, не превращай единичную эмоцию в черту характера и не выдавай взгляд владельца на другого человека за подтверждённую истину. Сохрани формулировку как осторожное наблюдение о конкретном человеке.
 
 В topics запиши не названия сообщений, а предварительные психологические гипотезы о динамике отношений: повторяющиеся эпизоды, неудовлетворённые потребности, болезненные циклы, противоречивые ожидания, нерешённые решения, попытки сближения или защиты и то, что уже пробовали делать. Одиночную бытовую реплику не превращай в тему без признака напряжения, повторения, важного выбора или потребности в восстановлении отношений.
 
@@ -151,7 +184,7 @@ ${transcript}`;
         await this.consolidate(parts.slice(middle), ownerName, language),
       ], ownerName, language);
     }
-    return this.runCached(`Выступи как опытный семейный психолог и преврати исследовательские заметки по личному чату ${ownerName || "владельца"} в рекомендуемую повестку разговоров между двумя семейными агентами.
+    return this.runCached(`Выступи как опытный семейный психолог и преврати исследовательские заметки по личному чату ${ownerName || "владельца"} в портреты конкретных людей и рекомендуемую повестку разговоров между двумя семейными агентами.
 
 Это не суммаризация сообщений и не каталог слов, которые встречались в чате. Сначала мысленно восстанови происходившую динамику отношений: что повторяется, где стороны застряли, какая потребность не услышана, какое решение откладывается, что требует прояснения, восстановления доверия или практической договорённости. Затем выбери именно те разговоры, которые ты как семейный психолог действительно посоветовал бы провести.
 
@@ -168,6 +201,8 @@ Title — это узнаваемая конкретная задача разг
 Reason должен помогать понять рекомендацию обоим людям, включая того, кто не видел исходный чат, и состоять из трёх коротких частей: «Наблюдаемая динамика: … Психологическая цель: … Первый вопрос: …». В наблюдаемой динамике дай 1–2 конкретных предложения: какая ситуация или повторяющийся эпизод имеется в виду, что в нём задевает или остаётся непонятным. Не используй без опоры слова «это», «ситуация», «проблема» и другие ссылки, понятные только автору исходного сообщения. Описывай динамику как обоснованную гипотезу, а не установленную истину. Не цитируй интимные признания дословно, но и не обезличивай формулировку настолько, что владелец или адресат не узнают, о чём речь. Весь reason должен оставаться компактным, а не превращаться в эссе.
 
 Одинаковых людей объедини, сохранив известные имена, роли и aliases. Удали только настоящие дубликаты тем. Не склеивай разные конфликты, потребности и договорённости в одну общую формулировку. Сохрани все различимые темы из всех частей. about_people и discuss_with должны ссылаться только на итоговые key людей. Пересчитай sensitivity: cross_person, если тема хотя бы об одном человеке, отличном от discuss_with; direct, если она только об адресате; unclear, если уверенности недостаточно. Не добавляй новых фактов. Язык: ${language}.
+
+Собери portraits для person_key="owner" и каждого итогового человека. Удали дубликаты наблюдений, сохрани различимые факты, позиции, предпочтения, устойчивые паттерны и существенные неопределённости. Обычно достаточно 5–15 наиболее содержательных наблюдений на человека. Каждое наблюдение должно описывать только одного человека. Взгляд владельца на другого человека формулируй осторожно, не превращая его в объективный факт. Не создавай сущность для пары или отношений.
 
 Расположи темы в порядке ожидаемой пользы: сначала разговоры, которые сильнее всего влияют на безопасность, доверие, повторяющиеся конфликты и важные решения, затем менее срочные.
 

@@ -16,6 +16,10 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Pencil,
+  Trash2,
+  UserRound,
+  X,
 } from "lucide-react";
 import type { AppState } from "../global.js";
 import { languageNames, translations, type Language } from "./i18n.js";
@@ -50,13 +54,14 @@ const fallback: AppState = {
   running: false,
   contextSyncing: false,
   contextSyncProgress: 0,
+  portraitsUpdating: false,
   codex: { installed: false, authenticated: false, version: "" },
   remote: { configured: false, connected: false },
   memory: { configured: false, messageCount: 0, learnedCount: 0 },
   update: { available: false, downloading: false },
 };
 
-type SectionId = "overview" | "context" | "reports" | "settings";
+type SectionId = "overview" | "context" | "people" | "reports" | "settings";
 
 function compareVersions(left: string, right: string) {
   const a = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
@@ -101,6 +106,9 @@ export function App() {
   const [versionCheckBusy, setVersionCheckBusy] = useState(false);
   const [showAllPairTopics, setShowAllPairTopics] = useState(false);
   const [showAllReviewTopics, setShowAllReviewTopics] = useState(false);
+  const [selectedPortraitId, setSelectedPortraitId] = useState("owner");
+  const [editingObservationId, setEditingObservationId] = useState("");
+  const [observationDraft, setObservationDraft] = useState("");
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
@@ -153,10 +161,16 @@ export function App() {
     fr: { topicsFor: "Conversations avec", needReview: "à vérifier", all: "Tous", review: "Vérifier", approved: "Choisies", allowedOf: "choisies sur", allowSafe: "Choisir les sujets sûrs", search: "Rechercher une conversation", collapse: "Réduire", expand: "Afficher les détails", noFilteredTopics: "Aucun sujet ne correspond à ce filtre.", context: "De quoi s’agit-il", goal: "Ce qu’il faut comprendre", opening: "Comment la conversation peut commencer", more: "Afficher les autres", less: "Réduire la liste" },
   }[language];
   const navigationText = {
-    ru: { start: "Первый запуск", connection: "Подключение", context: "Исходный чат и темы", reports: "Итоги разговоров", settings: "Имя и автозапуск", setupTitle: "Подготовка к первому разговору", connectionTitle: "Подключение и темы", contextTitle: "Исходный чат и темы", reportsTitle: "Итоги разговоров", settingsTitle: "Имя и автозапуск" },
-    en: { start: "First run", connection: "Connection", context: "Source chat and topics", reports: "Conversation results", settings: "Name and startup", setupTitle: "Prepare the first conversation", connectionTitle: "Connection and topics", contextTitle: "Source chat and topics", reportsTitle: "Conversation results", settingsTitle: "Name and startup" },
-    cs: { start: "První spuštění", connection: "Propojení", context: "Zdrojový chat a témata", reports: "Výsledky rozhovorů", settings: "Jméno a spuštění", setupTitle: "Příprava prvního rozhovoru", connectionTitle: "Propojení a témata", contextTitle: "Zdrojový chat a témata", reportsTitle: "Výsledky rozhovorů", settingsTitle: "Jméno a spuštění" },
-    fr: { start: "Premier démarrage", connection: "Connexion", context: "Chat source et sujets", reports: "Résultats des conversations", settings: "Nom et démarrage", setupTitle: "Préparer la première conversation", connectionTitle: "Connexion et sujets", contextTitle: "Chat source et sujets", reportsTitle: "Résultats des conversations", settingsTitle: "Nom et démarrage" },
+    ru: { start: "Первый запуск", connection: "Подключение", context: "Исходный чат и темы", people: "Что знает мой агент", reports: "Итоги разговоров", settings: "Имя и автозапуск", setupTitle: "Подготовка к первому разговору", connectionTitle: "Подключение и темы", contextTitle: "Исходный чат и темы", peopleTitle: "Что знает мой агент", reportsTitle: "Итоги разговоров", settingsTitle: "Имя и автозапуск" },
+    en: { start: "First run", connection: "Connection", context: "Source chat and topics", people: "What my agent knows", reports: "Conversation results", settings: "Name and startup", setupTitle: "Prepare the first conversation", connectionTitle: "Connection and topics", contextTitle: "Source chat and topics", peopleTitle: "What my agent knows", reportsTitle: "Conversation results", settingsTitle: "Name and startup" },
+    cs: { start: "První spuštění", connection: "Propojení", context: "Zdrojový chat a témata", people: "Co můj agent ví", reports: "Výsledky rozhovorů", settings: "Jméno a spuštění", setupTitle: "Příprava prvního rozhovoru", connectionTitle: "Propojení a témata", contextTitle: "Zdrojový chat a témata", peopleTitle: "Co můj agent ví", reportsTitle: "Výsledky rozhovorů", settingsTitle: "Jméno a spuštění" },
+    fr: { start: "Premier démarrage", connection: "Connexion", context: "Chat source et sujets", people: "Ce que sait mon agent", reports: "Résultats des conversations", settings: "Nom et démarrage", setupTitle: "Préparer la première conversation", connectionTitle: "Connexion et sujets", contextTitle: "Chat source et sujets", peopleTitle: "Ce que sait mon agent", reportsTitle: "Résultats des conversations", settingsTitle: "Nom et démarrage" },
+  }[language];
+  const portraitText = {
+    ru: { eyebrow: "ПОРТРЕТЫ ЛЮДЕЙ", title: "Как агент понимает людей", hint: "Портреты строятся из исходного чата и уточняются после завершённых разговоров агентов.", you: "Вы", empty: "Пока о человеке недостаточно информации.", updating: "Дополняем портреты из завершённого разговора…", sourceChat: "Из исходного чата", sourceConversation: "Из разговора", edit: "Исправить", remove: "Удалить", save: "Сохранить", cancel: "Отмена", removeConfirm: "Удалить это суждение из портрета?", kinds: { fact: "Факт", view: "Позиция", preference: "Желание или граница", pattern: "Повторяющаяся реакция", uncertainty: "Неопределённость" } },
+    en: { eyebrow: "PEOPLE PORTRAITS", title: "How the agent understands people", hint: "Portraits come from the source chat and are refined after completed agent conversations.", you: "You", empty: "There is not enough information about this person yet.", updating: "Updating portraits from the completed conversation…", sourceChat: "From the source chat", sourceConversation: "From conversation", edit: "Edit", remove: "Delete", save: "Save", cancel: "Cancel", removeConfirm: "Delete this observation from the portrait?", kinds: { fact: "Fact", view: "View", preference: "Preference or boundary", pattern: "Recurring response", uncertainty: "Uncertainty" } },
+    cs: { eyebrow: "PORTRÉTY LIDÍ", title: "Jak agent chápe lidi", hint: "Portréty vznikají ze zdrojového chatu a upřesňují se po dokončených rozhovorech agentů.", you: "Vy", empty: "O této osobě zatím není dost informací.", updating: "Doplňujeme portréty z dokončeného rozhovoru…", sourceChat: "Ze zdrojového chatu", sourceConversation: "Z rozhovoru", edit: "Upravit", remove: "Smazat", save: "Uložit", cancel: "Zrušit", removeConfirm: "Smazat toto pozorování z portrétu?", kinds: { fact: "Fakt", view: "Postoj", preference: "Preference nebo hranice", pattern: "Opakovaná reakce", uncertainty: "Nejistota" } },
+    fr: { eyebrow: "PORTRAITS", title: "Comment l’agent comprend les personnes", hint: "Les portraits viennent du chat source et sont affinés après les conversations terminées.", you: "Vous", empty: "Il n’y a pas encore assez d’informations sur cette personne.", updating: "Mise à jour des portraits après la conversation…", sourceChat: "Du chat source", sourceConversation: "De la conversation", edit: "Modifier", remove: "Supprimer", save: "Enregistrer", cancel: "Annuler", removeConfirm: "Supprimer cette observation du portrait ?", kinds: { fact: "Fait", view: "Position", preference: "Préférence ou limite", pattern: "Réaction récurrente", uncertainty: "Incertitude" } },
   }[language];
   const ownerQuestionText = {
     ru: { eyebrow: "НУЖЕН ВАШ ОТВЕТ", title: "Агент не хочет додумывать", paused: "Разговор поставлен на паузу", privacy: "Ответ сначала получит только ваш агент. Второму агенту уйдёт лишь аккуратный вывод своими словами.", placeholder: "Ваш ответ", answer: "Ответить и продолжить", unknown: "Не знаю", decline: "Не хочу отвечать", processing: "Продолжаем разговор…" },
@@ -194,7 +208,11 @@ export function App() {
     cs: { local: `Téma od ${state.displayName || "tohoto počítače"}`, peer: `Téma od ${state.remote.peerName || "partnera"}`, both: "Navrhli oba", unknown: "Přidáno dříve" },
     fr: { local: `Sujet de ${state.displayName || "cet ordinateur"}`, peer: `Sujet de ${state.remote.peerName || "partenaire"}`, both: "Proposé par les deux", unknown: "Ajouté auparavant" },
   }[language];
-  const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
+  const pageTitle = activeSection === "context" ? navigationText.contextTitle : activeSection === "people" ? navigationText.peopleTitle : activeSection === "reports" ? navigationText.reportsTitle : activeSection === "settings" ? navigationText.settingsTitle : state.onboardingComplete ? navigationText.connectionTitle : navigationText.setupTitle;
+  const portraits = state.contextAnalysis?.portraits ?? [];
+  const selectedPortrait = portraits.find((portrait) => portrait.personId === selectedPortraitId)
+    ?? portraits.find((portrait) => portrait.isOwner)
+    ?? portraits[0];
   const selectedPairPersonId = counterpartPersonId || state.preferredCounterpartPersonId || state.remote.counterpartPersonId;
   const localPairTopics = state.contextAnalysis?.topics.filter((item) => item.approved && item.discussWithPersonId === selectedPairPersonId).map((item) => item.title) ?? [];
   const displayedPairTopics = [...new Set([...localPairTopics, ...state.pairTopics, ...state.pendingTopics, ...state.activeTopics])];
@@ -273,7 +291,7 @@ export function App() {
       const healthEvent = raw as { type?: string; codex?: AppState["codex"]; connected?: boolean };
       if (healthEvent.type === "continuation-updated") refreshState();
       if (healthEvent.type === "health" && healthEvent.codex) setState((current) => ({ ...current, codex: healthEvent.codex!, remote: { ...current.remote, connected: Boolean(healthEvent.connected) } }));
-      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; progress?: number };
+      const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; updating?: boolean; progress?: number };
       if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
       if (event.type === "context-analysis" && event.analysis) {
@@ -287,6 +305,7 @@ export function App() {
         setState((current) => ({ ...current, ownerQuestions: event.questions! }));
       }
       if (event.type === "context-sync") setState((current) => ({ ...current, contextSyncing: Boolean(event.syncing), contextSyncProgress: event.progress ?? 0 }));
+      if (event.type === "portraits-updating") setState((current) => ({ ...current, portraitsUpdating: Boolean(event.updating) }));
       if (event.type === "runtime") { setBusy(Boolean(event.running)); setState((current) => ({ ...current, running: Boolean(event.running) })); }
       if (event.type === "update") setState((current) => ({ ...current, update: {
         available: Boolean(event.available),
@@ -466,6 +485,23 @@ export function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }
 
+  async function savePortraitObservation(personId: string, observationId: string) {
+    if (!api || !observationDraft.trim()) return;
+    setError("");
+    try {
+      setState(await api.updatePortraitObservation({ personId, observationId, text: observationDraft }));
+      setEditingObservationId("");
+      setObservationDraft("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  async function removePortraitObservation(personId: string, observationId: string) {
+    if (!api || !window.confirm(portraitText.removeConfirm)) return;
+    setError("");
+    try { setState(await api.updatePortraitObservation({ personId, observationId, remove: true })); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
   async function completeOnboarding(personId: string) {
     if (!api) return;
     setError("");
@@ -551,6 +587,7 @@ export function App() {
         <nav>
           <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} /><span>{state.onboardingComplete ? navigationText.connection : navigationText.start}</span>{state.ownerQuestions.length > 0 && <b className="nav-badge">{state.ownerQuestions.length}</b>}</button>
           <button className={activeSection === "context" ? "active" : ""} onClick={() => goTo("context")}><BookHeart size={18} />{navigationText.context}</button>
+          <button className={activeSection === "people" ? "active" : ""} onClick={() => goTo("people")}><UserRound size={18} />{navigationText.people}</button>
           <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{navigationText.reports}</button>
           <button className={activeSection === "settings" ? "active" : ""} onClick={() => goTo("settings")}><Settings2 size={18} />{navigationText.settings}</button>
         </nav>
@@ -674,6 +711,22 @@ export function App() {
             <div className="input-row"><input aria-label={workflowText.addTopic} disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim() || Boolean(activeDictation)} onClick={() => void addTopic()}>{t.add}</button></div>
             <DictationControl language={language} disabled={!state.remote.counterpartPersonId || Boolean(activeDictation && activeDictation !== "new-topic")} onText={(text) => setTopic((current) => appendDictation(current, text))} onBusyChange={(value) => setActiveDictation((current) => value ? "new-topic" : current === "new-topic" ? "" : current)} />
             <div className="actions"><button className="primary" disabled={busy || !state.remote.connected || state.remote.dialogueCompatible === false || !state.pendingTopics.length} onClick={() => void discussAllTopics()}><Sparkles size={17} />{busy ? workflowText.discussing : workflowText.discuss}</button></div>
+          </section>}
+
+          {activeSection === "people" && <section className="panel portraits-panel" id="people">
+            <div className="panel-title"><div><p className="eyebrow">{portraitText.eyebrow}</p><h3>{portraitText.title}</h3></div><UserRound size={20} /></div>
+            <p className="portrait-hint">{portraitText.hint}</p>
+            {state.portraitsUpdating && <div className="portrait-updating" role="status"><LoaderCircle className="spin" size={17} />{portraitText.updating}</div>}
+            {portraits.length > 0 ? <>
+              <div className="portrait-person-tabs" role="tablist">{portraits.map((portrait) => <button type="button" role="tab" aria-selected={portrait.personId === selectedPortrait?.personId} className={portrait.personId === selectedPortrait?.personId ? "active" : ""} key={portrait.personId} onClick={() => { setSelectedPortraitId(portrait.personId); setEditingObservationId(""); }}><span>{portrait.label}</span>{portrait.isOwner && <small>{portraitText.you}</small>}<b>{portrait.observations.length}</b></button>)}</div>
+              {selectedPortrait && <div className="portrait-sheet">
+                <div className="portrait-sheet-heading"><div><h4>{selectedPortrait.label}</h4>{selectedPortrait.relationship && <span>{selectedPortrait.relationship}</span>}</div><small>{selectedPortrait.observations.length}</small></div>
+                <div className="portrait-observations">{selectedPortrait.observations.map((observation) => <article className="portrait-observation" key={observation.id}>
+                  <div className="portrait-observation-copy"><span className={`portrait-kind ${observation.kind}`}>{portraitText.kinds[observation.kind]}</span>{editingObservationId === observation.id ? <div className="portrait-edit"><textarea autoFocus value={observationDraft} maxLength={500} onChange={(event) => setObservationDraft(event.target.value)} /><div><button className="primary" disabled={!observationDraft.trim()} onClick={() => void savePortraitObservation(selectedPortrait.personId, observation.id)}>{portraitText.save}</button><button className="ghost" onClick={() => { setEditingObservationId(""); setObservationDraft(""); }}><X size={15} />{portraitText.cancel}</button></div></div> : <p>{observation.text}</p>}<small>{observation.sourceType === "conversation" ? `${portraitText.sourceConversation}: ${observation.sourceLabel || "—"}` : portraitText.sourceChat}</small></div>
+                  {editingObservationId !== observation.id && <div className="portrait-observation-actions"><button title={portraitText.edit} aria-label={portraitText.edit} onClick={() => { setEditingObservationId(observation.id); setObservationDraft(observation.text); }}><Pencil size={15} /></button><button title={portraitText.remove} aria-label={portraitText.remove} onClick={() => void removePortraitObservation(selectedPortrait.personId, observation.id)}><Trash2 size={15} /></button></div>}
+                </article>)}{!selectedPortrait.observations.length && <div className="empty">{portraitText.empty}</div>}</div>
+              </div>}
+            </> : <div className="empty tall"><UserRound size={28} /><span>{state.contextAnalysis?.status === "analyzing" ? workflowText.analyzing : portraitText.empty}</span></div>}
           </section>}
 
           {activeSection === "reports" && <section className="panel report-panel" id="reports">

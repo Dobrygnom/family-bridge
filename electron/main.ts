@@ -24,7 +24,8 @@ let macUpdater: MacReleaseUpdater | null = null;
 let updateInstallIsQuitting = false;
 let promptedUpdateVersion: string | undefined;
 let windowsUpdateVersion: string | undefined;
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (process.env.FAMILY_BRIDGE_E2E_USER_DATA) app.setPath("userData", path.resolve(process.env.FAMILY_BRIDGE_E2E_USER_DATA));
+const hasSingleInstanceLock = process.env.FAMILY_BRIDGE_E2E_ALLOW_SECOND_INSTANCE === "1" || app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) app.quit();
 app.on("second-instance", () => {
@@ -231,6 +232,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
   ipcMain.handle("bridge:sync-context", () => service.syncContext());
   ipcMain.handle("bridge:refresh-context-now", () => service.refreshContextNow());
+  ipcMain.handle("bridge:update-portrait-observation", (_event, input: unknown) => service.updatePortraitObservation(input));
   ipcMain.handle("bridge:complete-onboarding", (_event, counterpartPersonId?: string) => service.completeOnboarding(counterpartPersonId));
   ipcMain.handle("bridge:open-reports", async () => {
     const internalReports = path.join(app.getPath("userData"), "reports");

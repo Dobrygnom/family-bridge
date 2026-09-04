@@ -20,6 +20,7 @@ import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supports
 import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
 import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, type TopicBrief } from "../src/core/conversation-quality.js";
+import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -235,6 +236,8 @@ export class BackgroundService {
   private health = { installed: false, authenticated: false, version: "" };
   private connected = false;
   private analysisWrites: Promise<void> = Promise.resolve();
+  private portraitUpdates: Promise<void> = Promise.resolve();
+  private portraitsUpdating = false;
   private syncOperation?: Promise<Awaited<ReturnType<BackgroundService["state"]>>>;
   private readonly continuing = new Set<string>();
   private running = false;
@@ -294,7 +297,7 @@ export class BackgroundService {
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
     const reportSummaries = conversationState.reportSummaries;
     const dialogueCompatible = !this.options.experienceResetVersion || stored.remote?.peerExperienceVersion === this.options.experienceResetVersion;
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerVersionCheck: this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerVersionCheck: this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
@@ -501,7 +504,7 @@ export class BackgroundService {
 
   private async analyzeContext(sourceId: string, sourceHash: string, messages: Array<{ text: string }>, previous?: ContextAnalysis) {
     this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
-    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], topics: previous?.topics ?? [] };
+    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [] };
     await this.writeContextAnalysis(analyzing);
     this.emit({ type: "context-analysis", analysis: analyzing });
     try {
@@ -778,7 +781,9 @@ export class BackgroundService {
     try {
       const threads = await this.listContextThreads();
       const latest = threads.find((thread) => thread.id === selected.id);
-      if (force || contextNeedsSync(selected, latest)) await this.syncContext(latest);
+      const analysis = this.readContextAnalysis();
+      const analysisOutdated = !analysis || analysis.analysisVersion !== CONTEXT_ANALYSIS_VERSION || analysis.sourceId !== selected.id;
+      if (force || analysisOutdated || contextNeedsSync(selected, latest)) await this.syncContext(latest);
     } catch (error) {
       this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -791,10 +796,34 @@ export class BackgroundService {
     return this.state();
   }
 
+  async updatePortraitObservation(input: unknown) {
+    const value = input && typeof input === "object" ? input as { personId?: unknown; observationId?: unknown; text?: unknown; remove?: unknown } : {};
+    if (typeof value.personId !== "string" || typeof value.observationId !== "string") throw new Error("Суждение не найдено");
+    const analysis = this.readContextAnalysis();
+    if (!analysis) throw new Error("Сначала выберите исходный чат");
+    const portraits = applyPortraitObservationUpdate(analysis.portraits ?? [], {
+      personId: value.personId,
+      observationId: value.observationId,
+      text: typeof value.text === "string" ? value.text : undefined,
+      remove: value.remove === true,
+    });
+    const next = { ...analysis, portraits, analyzedAt: new Date().toISOString() };
+    await this.writeContextAnalysis(next);
+    this.emit({ type: "context-analysis", analysis: next });
+    return this.state();
+  }
+
   async setDisplayName(value: unknown) {
     const displayName = typeof value === "string" ? value.trim() : "";
     if (!displayName || displayName.length > 50) throw new Error("Введите имя длиной от 1 до 50 символов");
     await this.store.update({ displayName, identityConfigured: true });
+    const analysis = this.readContextAnalysis();
+    if (analysis?.portraits?.some((portrait) => portrait.isOwner)) {
+      const portraits = analysis.portraits.map((portrait) => portrait.isOwner ? { ...portrait, label: displayName } : portrait);
+      const updated = { ...analysis, portraits };
+      await this.writeContextAnalysis(updated);
+      this.emit({ type: "context-analysis", analysis: updated });
+    }
     return this.state();
   }
 
@@ -1200,6 +1229,11 @@ export class BackgroundService {
         brief?.goal ? `Цель разговора: ${brief.goal}` : "",
         brief?.openingQuestion ? `Предлагаемый первый вопрос: ${brief.openingQuestion}` : "",
         approvedRelatedContext ? `Другие разрешённые владельцем темы с этим же человеком, которые можно использовать только как фоновый контекст:\n${approvedRelatedContext}` : "",
+        analysis?.portraits?.length ? `Локальные портреты людей, собранные из исходного чата и уже завершённых разговоров. Суждения о собеседнике остаются рабочей картиной владельца, а не объективной истиной:\n${analysis.portraits
+          .filter((portrait) => portrait.isOwner || portrait.personId === counterpartPersonId)
+          .map((portrait) => `${portrait.label}:\n${portrait.observations.map((observation) => `- [${observation.kind}] ${observation.text}`).join("\n")}`)
+          .join("\n\n")
+          .slice(0, 24_000)}` : "",
       ].filter(Boolean).join("\n");
       memory = `${memory}\n\n${currentContext}\nИспользуй только действительно относящиеся к теме сведения. Это односторонняя локальная гипотеза, а не доказанный факт и не разрешение пересказывать исходный чат.`;
     }
@@ -1501,6 +1535,62 @@ export class BackgroundService {
     this.emitTopicState(next);
     this.publishConversations(next);
     this.emit({ type: "status", status: "completed" });
+    if (result.completionState !== "needs_follow_up") this.queuePortraitUpdate(conversationId, topic, messages, completedAt);
+  }
+
+  private queuePortraitUpdate(conversationId: string, topic: string, messages: Array<{ from: string; text: string }>, completedAt: string) {
+    if (this.options.backgroundTasks === false) return;
+    const operation = this.portraitUpdates.then(async () => {
+      const state = await this.store.read();
+      const analysis = this.readContextAnalysis();
+      const counterpartPersonId = state.remote?.counterpartPersonId;
+      const counterpart = analysis?.people.find((person) => person.id === counterpartPersonId);
+      if (!analysis?.portraits?.length || !counterpartPersonId || !counterpart) return;
+      const ownerPortrait = analysis.portraits.find((portrait) => portrait.isOwner);
+      const peerPortrait = analysis.portraits.find((portrait) => portrait.personId === counterpartPersonId);
+      if (!ownerPortrait || !peerPortrait) return;
+      this.portraitsUpdating = true;
+      this.emit({ type: "portraits-updating", updating: true });
+      try {
+        const updater = new CodexPortraitUpdater(defaultCodexCommand(), path.join(this.userData, "portrait-updates"), path.join(this.resourcesPath, "schemas", "portrait-updates.schema.json"));
+        const preparedMessages = messages.flatMap((message) => {
+          const personId = message.from === state.owner ? ownerPortrait.personId : counterpartPersonId;
+          const speaker = message.from === state.owner ? ownerPortrait.label : counterpart.label;
+          const text = typeof message.text === "string" ? message.text.trim() : "";
+          return text ? [{ personId, speaker, text }] : [];
+        });
+        const portraits = await updater.update({
+          portraits: analysis.portraits,
+          participants: [{ personId: ownerPortrait.personId, label: ownerPortrait.label }, { personId: counterpartPersonId, label: counterpart.label }],
+          topic,
+          conversationId,
+          messages: preparedMessages,
+          language: state.language,
+          completedAt,
+        });
+        if (JSON.stringify(portraits) !== JSON.stringify(analysis.portraits)) {
+          const current = this.readContextAnalysis();
+          if (!current || current.sourceId !== analysis.sourceId) return;
+          const originalIds = new Set(analysis.portraits.flatMap((portrait) => portrait.observations.map((observation) => observation.id)));
+          const additions = new Map(portraits.map((portrait) => [portrait.personId, portrait.observations.filter((observation) => !originalIds.has(observation.id))]));
+          const mergedPortraits = (current.portraits ?? []).map((portrait) => {
+            const currentIds = new Set(portrait.observations.map((observation) => observation.id));
+            const fresh = (additions.get(portrait.personId) ?? []).filter((observation) => !currentIds.has(observation.id));
+            return fresh.length ? { ...portrait, observations: [...fresh, ...portrait.observations].slice(0, 40), updatedAt: completedAt } : portrait;
+          });
+          const updated = { ...current, portraits: mergedPortraits, analyzedAt: new Date().toISOString() };
+          await this.writeContextAnalysis(updated);
+          this.emit({ type: "context-analysis", analysis: updated });
+          this.diagnostics.record("portraits.updated", { people: mergedPortraits.length });
+        }
+      } catch {
+        this.diagnostics.record("portraits.failed");
+      } finally {
+        this.portraitsUpdating = false;
+        this.emit({ type: "portraits-updating", updating: false });
+      }
+    });
+    this.portraitUpdates = operation.catch(() => undefined);
   }
 
   async addTopic(topic: string) {
@@ -1567,7 +1657,7 @@ export class BackgroundService {
     this.emit({ type: "topics", topics: state.pendingTopics, pairTopics: state.pairTopics, activeTopics: state.activeTopics, topicSources: state.topicSources });
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName?: string; peerVersion?: string; peerLastSeenAt?: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: Record<string, TopicSource[]> } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName?: string; peerVersion?: string; peerLastSeenAt?: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "portraits-updating"; updating: boolean } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: Record<string, TopicSource[]> } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 

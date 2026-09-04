@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",
@@ -17,7 +17,10 @@
     "verify:installed-ui": "tsx scripts/verify-installed-ui.ts",
     "verify:fresh-ui": "tsx scripts/verify-fresh-ui.ts",
     "test:select-context": "tsx scripts/select-context-for-test.ts",
-    "verify:context-source": "tsx scripts/verify-context-source.ts"
+    "verify:context-source": "tsx scripts/verify-context-source.ts",
+    "verify:portraits": "tsx scripts/verify-person-portraits.ts",
+    "verify:portrait-update": "tsx scripts/verify-portrait-update.ts",
+    "verify:portraits-ui": "tsx scripts/verify-person-portraits-ui.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

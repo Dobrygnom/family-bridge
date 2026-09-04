@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["people", "topics"],
+  "required": ["people", "portraits", "topics"],
   "properties": {
     "people": {
       "type": "array",
@@ -15,6 +15,29 @@
           "label": { "type": "string" },
           "relationship": { "type": "string" },
           "aliases": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "portraits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["person_key", "observations"],
+        "properties": {
+          "person_key": { "type": "string" },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "text"],
+              "properties": {
+                "kind": { "type": "string", "enum": ["fact", "view", "preference", "pattern", "uncertainty"] },
+                "text": { "type": "string" }
+              }
+            }
+          }
         }
       }
     },
