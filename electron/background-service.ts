@@ -19,6 +19,7 @@ import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
 import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
+import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, type TopicBrief } from "../src/core/conversation-quality.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +38,7 @@ interface TopicPayload {
   versionOnly?: boolean;
   requestUpdateCheck?: boolean;
   requestVersion?: boolean;
+  brief?: TopicBrief;
 }
 
 interface DialoguePayload {
@@ -123,15 +125,22 @@ export function recoverInterruptedTopics(pendingTopics: string[], inFlightTopics
 }
 
 export function mergeTopicCatalog(...sources: string[][]) {
-  return [...new Set(sources.flat().map((topic) => topic.trim()).filter(Boolean))];
+  const topics = new Map<string, string>();
+  for (const raw of sources.flat()) {
+    const topic = raw.trim().replace(/\s+/g, " ");
+    if (topic && !topics.has(topicKey(topic))) topics.set(topicKey(topic), topic);
+  }
+  return [...topics.values()];
 }
 
 export function markTopicSource(topicSources: Record<string, TopicSource[]>, topic: string, source: TopicSource) {
-  const current = topicSources[topic] ?? [];
+  const existingKey = Object.keys(topicSources).find((key) => topicKey(key) === topicKey(topic));
+  const key = existingKey ?? topic;
+  const current = topicSources[key] ?? [];
   const nextSources = source === "unknown"
     ? (current.length ? current : [source])
     : [...new Set([...current.filter((item) => item !== "unknown"), source])];
-  return { ...topicSources, [topic]: nextSources };
+  return { ...topicSources, [key]: nextSources };
 }
 
 export function migrateTopicSources(topicSources: Record<string, TopicSource[]>, pairTopics: string[], localTopics: string[]) {
@@ -172,6 +181,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
         answerFromOwnerId?: OwnerId;
         topicSources?: TopicSource[];
         comparisonSummary?: string;
+        completionState?: "completed" | "needs_follow_up";
         completedAt?: string;
         messages?: Array<{ from?: string; text?: string; payload?: string }>;
       };
@@ -205,6 +215,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
         localPosition: answerIsLocal ? summary : lastLocal,
         peerPosition: answerIsLocal ? lastPeer : summary,
         comparison: report.comparisonSummary?.trim() || undefined,
+        ...(report.completionState ? { completionState: report.completionState } : {}),
         completedAt: report.completedAt || "",
         messageCount: messages.length,
         messages,
@@ -547,7 +558,9 @@ export class BackgroundService {
     const protectedTopics = new Set([...pendingTopics, ...stored.activeTopics, ...readReportSummaries(stored.reports).map((report) => report.topic)]);
     const pairTopics = mergeTopicCatalog(stored.pairTopics.filter((title) => title !== topic.title || protectedTopics.has(title)), pendingTopics);
     const topicSources = pendingTopics.includes(topic.title) ? markTopicSource(stored.topicSources, topic.title, "local") : stored.topicSources;
-    const next = await this.store.update({ pendingTopics, pairTopics, topicSources });
+    const brief = shareableTopicBrief(topic);
+    const topicBriefs = topic.approved && brief ? { ...stored.topicBriefs, [topic.title]: brief } : stored.topicBriefs;
+    const next = await this.store.update({ pendingTopics, pairTopics, topicSources, topicBriefs });
     this.emitTopicState(next);
     if (pendingTopics.includes(topic.title)) {
       try { await this.shareTopic(topic.title); } catch { /* it will also be shared when the pair becomes available */ }
@@ -574,7 +587,12 @@ export class BackgroundService {
     const pairTopics = mergeTopicCatalog(stored.pairTopics.filter((title) => !changedTitles.has(title) || protectedTopics.has(title)), activated);
     let topicSources = stored.topicSources;
     for (const title of activated) topicSources = markTopicSource(topicSources, title, "local");
-    const next = await this.store.update({ pendingTopics, pairTopics, topicSources });
+    const topicBriefs = { ...stored.topicBriefs };
+    for (const topic of changed.filter((item) => item.approved)) {
+      const brief = shareableTopicBrief(topic);
+      if (brief) topicBriefs[topic.title] = brief;
+    }
+    const next = await this.store.update({ pendingTopics, pairTopics, topicSources, topicBriefs });
     this.emitTopicState(next);
     for (const title of activated) {
       try { await this.shareTopic(title); } catch { /* it will also be shared when the pair becomes available */ }
@@ -656,10 +674,16 @@ export class BackgroundService {
     const pairTopics = mergeTopicCatalog(state.pairTopics, approvedTopics, state.pendingTopics, state.activeTopics);
     let topicSources = state.topicSources;
     for (const topic of approvedTopics) topicSources = markTopicSource(topicSources, topic, "local");
+    const topicBriefs = { ...state.topicBriefs };
+    for (const topic of analysis?.topics ?? []) {
+      if (!topic.approved || topic.discussWithPersonId !== state.remote?.counterpartPersonId) continue;
+      const brief = shareableTopicBrief(topic);
+      if (brief) topicBriefs[topic.title] = brief;
+    }
     if (pairTopics.length !== state.pairTopics.length || pairTopics.some((topic, index) => topic !== state.pairTopics[index])) {
-      state = await this.store.update({ pairTopics, topicSources });
-    } else if (topicSources !== state.topicSources) {
-      state = await this.store.update({ topicSources });
+      state = await this.store.update({ pairTopics, topicSources, topicBriefs });
+    } else if (topicSources !== state.topicSources || JSON.stringify(topicBriefs) !== JSON.stringify(state.topicBriefs)) {
+      state = await this.store.update({ topicSources, topicBriefs });
     }
     const context = this.readContextSource();
     this.diagnostics.record("startup.saved-state", { onboarding: state.onboardingComplete, sourceReady: context?.status === "ready", analysisStatus: analysis?.status, people: analysis?.people.length ?? 0, topics: analysis?.topics.length ?? 0, reports: state.reports.length });
@@ -758,13 +782,19 @@ export class BackgroundService {
   }
 
   private async activateContextTopics(counterpartPersonId: string) {
-    const titles = topicsForCounterpart(this.readContextAnalysis(), counterpartPersonId).map((topic) => topic.title);
+    const routedTopics = topicsForCounterpart(this.readContextAnalysis(), counterpartPersonId);
+    const titles = routedTopics.map((topic) => topic.title);
     const stored = await this.store.read();
     const pendingTopics = mergeTopicCatalog(titles);
     const pairTopics = mergeTopicCatalog(stored.pairTopics, titles);
     let topicSources = stored.topicSources;
     for (const title of titles) topicSources = markTopicSource(topicSources, title, "local");
-    const next = await this.store.update({ pendingTopics, pairTopics, topicSources });
+    const topicBriefs = { ...stored.topicBriefs };
+    for (const topic of routedTopics) {
+      const brief = shareableTopicBrief(topic);
+      if (brief) topicBriefs[topic.title] = brief;
+    }
+    const next = await this.store.update({ pendingTopics, pairTopics, topicSources, topicBriefs });
     this.emitTopicState(next);
     for (const title of titles) {
       try { await this.shareTopic(title); } catch { /* the first connected poll will retry local topics */ }
@@ -828,7 +858,7 @@ export class BackgroundService {
     if (!recipientId) throw new Error("Peer has not joined");
     let text = request.preparedMessage;
     if (!text) {
-      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName);
+      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName, request.topic, this.savedTopicBrief(state.topicBriefs, request.topic), state.remote.counterpartPersonId);
       const response = await agent.start(continuationPrompt(request.topic, request.history, request.instruction));
       if (response.status === "unsafe") throw new Error("Unsafe continuation");
       if (this.hasOwnerQuestion(response)) {
@@ -915,8 +945,9 @@ export class BackgroundService {
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
     if (!recipientId) throw new Error("Второй участник ещё не подключился");
     const conversationId = randomUUID();
-    const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName);
-    const response = await agent.start(`Ты начинаешь этот разговор. Тема — вопрос к человеку, с которым ты сейчас говоришь: «${topic}». Сформулируй один короткий и прямой вопрос от первого лица «я» к собеседнику на «ты». Не называй ни себя, ни собеседника агентом и не обсуждай вас обоих в третьем лице. Не предлагай за собеседника решение, процедуру или общий компромисс. Ты — инициатор, поэтому shared_summary оставь пустым, а status поставь continue.`);
+    const brief = this.savedTopicBrief(stored.topicBriefs, topic) ?? shareableTopicBrief(findTopicContext(this.readContextAnalysis(), topic));
+    const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName, topic, brief, stored.remote.counterpartPersonId);
+    const response = await agent.start(conversationOpeningPrompt(stored.displayName, topic, brief));
     if (this.hasOwnerQuestion(response)) {
       await this.queueOwnerQuestion({ conversationId, topic, question: response.owner_question, peerName: stored.remote.peerName, nextSequence: 1, transcript: [] });
       return;
@@ -943,7 +974,8 @@ export class BackgroundService {
     if (!recipientId) return;
     const controlId = randomUUID();
     await this.remote.send({ pairId: pair.id, conversationId: controlId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, versionOnly, requestUpdateCheck, requestVersion } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
+      payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, versionOnly, requestUpdateCheck, requestVersion,
+        ...(!versionOnly ? { brief: this.savedTopicBrief(stored.topicBriefs, topic) ?? shareableTopicBrief(findTopicContext(this.readContextAnalysis(), topic)) } : {}) } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
   }
 
   async requestPeerVersionCheck() {
@@ -1034,7 +1066,12 @@ export class BackgroundService {
     };
   }
 
-  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string) {
+  private savedTopicBrief(briefs: Record<string, TopicBrief>, topic: string) {
+    const key = Object.keys(briefs).find((candidate) => topicKey(candidate) === topicKey(topic));
+    return key ? sanitizeTopicBrief(briefs[key]) : undefined;
+  }
+
+  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string, topic?: string, sharedBrief?: TopicBrief, counterpartPersonId?: string) {
     const existing = this.remoteAgents.get(conversationId);
     if (existing) return existing;
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
@@ -1062,6 +1099,26 @@ export class BackgroundService {
       const examplesFile = path.join(memoryRoot, "style-samples.jsonl");
       if (existsSync(examplesFile)) communicationExamples = readFileSync(examplesFile, "utf8").slice(-30_000);
     } catch { /* optional */ }
+    if (topic) {
+      const analysis = this.readContextAnalysis();
+      const matchedTopic = findTopicContext(analysis, topic);
+      const localTopic = matchedTopic?.approved && (!counterpartPersonId || matchedTopic.discussWithPersonId === counterpartPersonId) ? matchedTopic : undefined;
+      const brief = shareableTopicBrief(localTopic) ?? sharedBrief;
+      const approvedRelatedContext = (analysis?.topics ?? [])
+        .filter((item) => item.approved && counterpartPersonId && item.discussWithPersonId === counterpartPersonId && item.id !== localTopic?.id)
+        .map((item) => `- ${item.title}: ${item.reason}`)
+        .join("\n")
+        .slice(0, 24_000);
+      const currentContext = [
+        `Текущая тема: ${topic}`,
+        brief?.context ? `Короткий контекст, разрешённый для этой темы: ${brief.context}` : "",
+        localTopic?.reason ? `Локальная гипотеза из выбранного чата владельца: ${localTopic.reason}` : "",
+        brief?.goal ? `Цель разговора: ${brief.goal}` : "",
+        brief?.openingQuestion ? `Предлагаемый первый вопрос: ${brief.openingQuestion}` : "",
+        approvedRelatedContext ? `Другие разрешённые владельцем темы с этим же человеком, которые можно использовать только как фоновый контекст:\n${approvedRelatedContext}` : "",
+      ].filter(Boolean).join("\n");
+      memory = `${memory}\n\n${currentContext}\nИспользуй только действительно относящиеся к теме сведения. Это односторонняя локальная гипотеза, а не доказанный факт и не разрешение пересказывать исходный чат.`;
+    }
     const agent = new CodexCliAgent({ id: owner, displayName: ownerName,
       ownerName, peerName: peerName || "Партнёр",
       perspective: `Используй локальную психологическую память как фон, не цитируя её дословно:\n${memory}`,
@@ -1115,6 +1172,7 @@ export class BackgroundService {
           return;
         }
         const incomingTopic = envelope.payload.topic;
+        const incomingBrief = sanitizeTopicBrief(envelope.payload.brief);
         const current = await this.store.read();
         const blocked = current.blockedTopics.some((item) => incomingTopic.toLowerCase().includes(item.toLowerCase()));
         if (!blocked) {
@@ -1122,6 +1180,7 @@ export class BackgroundService {
             pendingTopics: mergeTopicCatalog(current.pendingTopics, [incomingTopic]),
             pairTopics: mergeTopicCatalog(current.pairTopics, [incomingTopic]),
             topicSources: markTopicSource(current.topicSources, incomingTopic, "peer"),
+            topicBriefs: incomingBrief ? { ...current.topicBriefs, [incomingTopic]: incomingBrief } : current.topicBriefs,
           });
           this.emitTopicState(next);
         }
@@ -1153,7 +1212,6 @@ export class BackgroundService {
       });
       this.emitTopicState(activeState);
       const existingAgent = this.remoteAgents.get(envelope.conversation_id);
-      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName);
       const inherited = dialogue.continuation && envelope.sequence_number === 1
         ? sharedHistory(dialogue.continuation.history) : [];
       if (dialogue.continuation && envelope.sequence_number === 1) {
@@ -1168,17 +1226,28 @@ export class BackgroundService {
       this.remoteMessages.set(envelope.conversation_id, messages);
       await this.persistTranscript(envelope.conversation_id, dialogue.topic, messages);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
-      if (dialogue.status === "complete") {
+      const incomingCompletion = completionReadiness({ sequence: envelope.sequence_number, message: dialogue.text, sharedSummary: dialogue.sharedSummary });
+      if (dialogue.status === "complete" && incomingCompletion.ready) {
         await this.remote.acknowledge(envelope.id);
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text, messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary });
         return;
       }
-      if (envelope.sequence_number >= 8) {
+      if (envelope.sequence_number >= MAX_REMOTE_MESSAGES) {
         await this.remote.acknowledge(envelope.id);
-        await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || "Не получилось получить достаточно ясный ответ.", messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary });
+        await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text || "Разговор пока не завершён.", messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary, completionState: "needs_follow_up" });
         return;
       }
-      const response = existingAgent ? await agent.respond(dialogue.text) : await agent.start(previousMessages.length ? incomingContinuationPrompt(previousMessages, dialogue.text) : dialogue.text);
+      const brief = this.savedTopicBrief(currentTopics.topicBriefs, dialogue.topic);
+      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName, dialogue.topic, brief, stored.remote.counterpartPersonId);
+      const guidance = dialogue.status === "complete" && !incomingCompletion.ready
+        ? prematureCompletionInstruction(dialogue.topic, incomingCompletion.reasons)
+        : "";
+      const initialResponse = existingAgent
+        ? await agent.respond(dialogue.text, guidance)
+        : await agent.start(previousMessages.length
+          ? `${incomingContinuationPrompt(previousMessages, dialogue.text)}${guidance ? `\n\nВнутренняя инструкция продолжения:\n${guidance}` : ""}`
+          : `${dialogue.text}${guidance ? `\n\nВнутренняя инструкция продолжения (это не слова собеседника):\n${guidance}` : ""}`);
+      const response = await this.ensureConversationContinuesNaturally(agent, initialResponse, dialogue.topic, envelope.sequence_number + 1);
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: dialogue.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
         await this.remote.acknowledge(envelope.id);
@@ -1200,6 +1269,17 @@ export class BackgroundService {
 
   private hasOwnerQuestion(response: AgentResponse) {
     return response.status === "paused" && Boolean(response.owner_question.trim());
+  }
+
+  private async ensureConversationContinuesNaturally(agent: AgentRuntime, response: AgentResponse, topic: string, sequence: number) {
+    if (response.status !== "complete") return response;
+    const assessment = completionReadiness({ sequence, message: response.message_to_peer, sharedSummary: response.shared_summary });
+    if (assessment.ready) return response;
+    const instruction = prematureCompletionInstruction(topic, assessment.reasons);
+    const revised = agent.revise ? await agent.revise(instruction) : response;
+    const secondAssessment = completionReadiness({ sequence, message: revised.message_to_peer, sharedSummary: revised.shared_summary });
+    if (revised.status !== "complete" || secondAssessment.ready) return revised;
+    return { ...revised, status: "continue" as const, shared_summary: "", comparison_summary: "" };
   }
 
   private publicOwnerQuestions(questions: PendingOwnerQuestion[]): OwnerQuestionView[] {
@@ -1250,11 +1330,12 @@ export class BackgroundService {
           : "Владелец не хочет отвечать на этот вопрос. Уважай границу, не задавай его снова и продолжи без этого факта.";
       const privacyInstruction = "Используй ответ только для собственного рассуждения. Второму агенту передай лишь минимально необходимый вывод своими словами: не цитируй сырой ответ и не сообщай лишние личные детали. owner_question оставь пустым, если нового действительно необходимого вопроса нет.";
       const existingAgent = this.remoteAgents.get(pending.conversationId);
-      const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName);
+      const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId);
       const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
-      const response = existingAgent
+      const initialResponse = existingAgent
         ? await (agent.respondToOwner?.(`${reply}\n\n${privacyInstruction}`) ?? agent.respond(`${reply}\n\n${privacyInstruction}`))
         : await agent.start(`Возобнови поставленный на паузу разговор по теме «${pending.topic}».\n\nУже переданные между агентами реплики:\n${transcript}\n\nТвой локальный вопрос был: ${pending.question}\n${reply}\n\n${privacyInstruction}`);
+      const response = await this.ensureConversationContinuesNaturally(agent, initialResponse, pending.topic, pending.nextSequence);
 
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({
@@ -1298,7 +1379,7 @@ export class BackgroundService {
     this.publishConversations(next);
   }
 
-  private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>, result: { answerFrom?: string; answerFromOwnerId?: OwnerId; comparisonSummary?: string } = {}) {
+  private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>, result: { answerFrom?: string; answerFromOwnerId?: OwnerId; comparisonSummary?: string; completionState?: "completed" | "needs_follow_up" } = {}) {
     const reportsDir = path.join(this.userData, "reports");
     await mkdir(reportsDir, { recursive: true });
     const reportPath = path.join(reportsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-remote.json`);
@@ -1313,6 +1394,7 @@ export class BackgroundService {
       answerFrom: result.answerFrom,
       answerFromOwnerId: result.answerFromOwnerId,
       comparisonSummary: result.comparisonSummary?.trim() || undefined,
+      completionState: result.completionState ?? "completed",
       topicSources: state.topicSources[topic] ?? ["unknown"],
       messages,
       completedAt,

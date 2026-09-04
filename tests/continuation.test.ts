@@ -89,7 +89,7 @@ test("retry after send failure reuses the prepared message without charging for 
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
-test("receiving a continuation supplies the same prior shared history to the second agent", async () => {
+test("receiving a continuation supplies prior history and does not treat its first answer as a finished conversation", async () => {
   const f = await fixture();
   let received = "";
   try {
@@ -100,16 +100,14 @@ test("receiving a continuation supplies the same prior shared history to the sec
     assert.match(received, /Давай согласуем время заранее/);
     assert.match(received, /Новая реплика собеседника:\nА вечером/);
     const state = await f.store.read();
-    assert.equal(state.reports.length, 2);
-    const latest = JSON.parse(await readFile(state.reports[0], "utf8"));
-    assert.equal(latest.parentReportId, "original-id");
-    assert.equal(latest.messages.length, 4);
-    await (f.service as any).pumpRemote();
-    assert.equal((await f.store.read()).reports.length, 2, "A redelivered completed message must not restart the conversation");
+    assert.equal(state.reports.length, 1);
+    assert.equal(f.sent.length, 1);
+    assert.equal((f.sent[0] as any).payload.status, "continue");
+    assert.equal(state.conversationTranscripts["continued-id"].messages.length, 4);
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
-test("received messages are pushed to the open conversation before the local agent finishes", async () => {
+test("received messages are pushed live and a first answer remains open for a real exchange", async () => {
   const f = await fixture();
   let finish!: (reply: AgentResponse) => void;
   let visible = await f.service.state() as AppState;
@@ -133,17 +131,57 @@ test("received messages are pushed to the open conversation before the local age
     assert.equal(visible.liveConversations?.[0].inheritedMessageCount, 2);
     finish(response("Ответ готов", "complete"));
     await processing;
-    assert.equal(latestContinuation(visible, "original-id")?.complete, true);
+    assert.equal(latestContinuation(visible, "original-id")?.complete, false);
     assert.equal(latestContinuation(visible, "original-id")?.messages.length, 2);
-    assert.equal(visible.reports.length, 2);
-    assert.ok(pushes.length >= 3, "Incoming, outgoing, and completed snapshots are all delivered");
+    assert.equal(visible.reports.length, 1);
+    assert.ok(pushes.length >= 2, "Incoming and outgoing snapshots are delivered without a reload");
     assert.doesNotMatch(JSON.stringify(pushes), /encryptionSecret|instruction|preparedMessage/);
-    assert.equal((await f.service.state()).liveConversations.length, 0);
+    assert.equal((await f.service.state()).liveConversations.length, 1);
   } finally {
     if (finish) finish(response("Finished", "complete"));
     await processing;
     await rm(f.dir, { recursive: true, force: true });
   }
+});
+
+test("a peer cannot finish a new conversation with its first answer", async () => {
+  const f = await fixture();
+  try {
+    await f.store.update({ owner: "katya" });
+    (f.service as any).localRemoteAgent = () => ({ start: async () => response("Я тебя услышала. А что для тебя здесь самое важное?", "complete") });
+    f.transport.claimNext = async () => ({ id: "early-complete", conversation_id: "early", sequence_number: 2, sender_agent: "dima",
+      payload: { kind: "dialogue", topic: "Границы", text: "Мне нужно больше времени.", status: "complete", sharedSummary: "Мне нужно время." } });
+    await (f.service as any).pumpRemote();
+    assert.equal((await f.store.read()).reports.length, 1);
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].payload.status, "continue");
+    assert.equal(f.sent[0].payload.sharedSummary, "");
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("a natural fourth message with a concrete result can finish the exchange", async () => {
+  const f = await fixture();
+  try {
+    await f.store.update({ owner: "katya", conversationTranscripts: { natural: { topic: "Границы", messages: [
+      { from: "katya", text: "Что тебе важно?" },
+      { from: "dima", text: "Чтобы у меня было время ответить." },
+      { from: "katya", text: "Хорошо, я не буду требовать ответа сразу." },
+    ] } } });
+    (f.service as any).localRemoteAgent = () => { throw new Error("A completed exchange must not start another agent turn"); };
+    let delivered = false;
+    f.transport.claimNext = async () => {
+      if (delivered) return null;
+      delivered = true;
+      return { id: "natural-complete", conversation_id: "natural", sequence_number: 4, sender_agent: "dima",
+        payload: { kind: "dialogue", topic: "Границы", text: "Да, этого мне достаточно.", status: "complete", sharedSummary: "Мне важно иметь время на ответ, и ты готова его дать." } };
+    };
+    await (f.service as any).pumpRemote();
+    const state = await f.store.read();
+    assert.equal(state.reports.length, 2);
+    const latest = JSON.parse(await readFile(state.reports[0], "utf8"));
+    assert.equal(latest.messages.length, 4);
+    assert.equal(latest.completionState, "completed");
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
 test("older peer, unknown report and blocked topic never start a continuation", async () => {

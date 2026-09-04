@@ -11,6 +11,11 @@ const outputDir = path.join(root, ".family-bridge", "demo-output");
 const useMock = process.argv.includes("--mock");
 const topic =
   "Как совместить потребность одного партнёра в заранее понятном плане выходных с потребностью другого сохранять гибкость";
+const topicBrief = {
+  context: "Когда планы на выходные меняются в последний момент, Дима воспринимает это как ненадёжность, а Катя — заранее расписанные выходные как контроль.",
+  goal: "понять, какой минимум можно заранее зафиксировать, не отнимая свободу менять остальное",
+  openingQuestion: "Какой минимум в планах выходных тебе было бы нормально подтверждать заранее?",
+};
 
 const response = (
   message_to_peer: string,
@@ -81,7 +86,7 @@ const coordinator = new ConversationCoordinator(dima, katya, undefined, {
 
 console.log(`Family Bridge demo (${useMock ? "mock" : "real Codex CLI"})`);
 console.log(`Тема: ${topic}\n`);
-const report = await coordinator.run(topic);
+const report = await coordinator.run(topic, topicBrief);
 const reportPath = path.join(outputDir, `report-${Date.now()}.json`);
 await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
 console.log(`\n[готово] ${report.status}, ходов: ${report.turns}`);

@@ -7,6 +7,7 @@ import type {
   ConversationStatus,
 } from "./types.js";
 import { InMemoryTransport } from "./transport.js";
+import { completionReadiness, conversationOpeningPrompt, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, type TopicBrief } from "./conversation-quality.js";
 
 export interface CoordinatorOptions {
   maxTurns?: number;
@@ -29,11 +30,11 @@ export class ConversationCoordinator {
     private readonly transport = new InMemoryTransport(),
     options: CoordinatorOptions = {},
   ) {
-    this.maxTurns = options.maxTurns ?? 8;
+    this.maxTurns = options.maxTurns ?? MAX_REMOTE_MESSAGES;
     this.onEvent = options.onEvent ?? (() => undefined);
   }
 
-  async run(topic: string): Promise<ConversationReport> {
+  async run(topic: string, brief?: TopicBrief): Promise<ConversationReport> {
     const conversationId = randomUUID();
     const startedAt = new Date().toISOString();
     const reports: Partial<Record<AgentId, string>> = {};
@@ -41,12 +42,9 @@ export class ConversationCoordinator {
     let sharedSummary = "";
     let status: ConversationStatus = "agenda_negotiation";
     let turns = 0;
-    const completedAgents = new Set<AgentId>();
 
     this.onEvent({ type: "status", status });
-    const opening = await this.dima.start(
-      `Предложи второму семейному агенту обсудить тему: ${topic}`,
-    );
+    const opening = await this.dima.start(conversationOpeningPrompt("Дима", topic, brief));
     this.capture("dima", opening, reports, topicSet, (value) => {
       sharedSummary = value || sharedSummary;
     });
@@ -78,6 +76,15 @@ export class ConversationCoordinator {
           turns === 1 && active.id === "katya"
             ? await active.start(message.payload)
             : await active.respond(message.payload);
+        if (response.status === "complete") {
+          const assessment = completionReadiness({ sequence: turns + 1, message: response.message_to_peer, sharedSummary: response.shared_summary });
+          if (!assessment.ready) {
+            const revised = active.revise ? await active.revise(prematureCompletionInstruction(topic, assessment.reasons)) : response;
+            response = revised.status === "complete"
+              ? { ...revised, status: "continue", shared_summary: "", comparison_summary: "" }
+              : revised;
+          }
+        }
         this.transport.acknowledge(message.id);
       } catch (error) {
         this.transport.release(message.id);
@@ -117,15 +124,15 @@ export class ConversationCoordinator {
         break;
       }
       if (response.status === "complete") {
-        completedAgents.add(active.id);
         status = "synthesizing";
         this.onEvent({ type: "status", status });
-        if (completedAgents.size === 2) break;
+        break;
       }
       active = active.id === "dima" ? this.katya : this.dima;
     }
 
-    if (status === "active" || status === "synthesizing") status = "completed";
+    if (status === "synthesizing") status = "completed";
+    else if (status === "active") status = "paused";
     this.onEvent({ type: "status", status });
 
     return {

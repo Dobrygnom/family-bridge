@@ -84,6 +84,10 @@ test("pair topic catalog stays visible after its launch queue is consumed", () =
   );
 });
 
+test("topic catalog removes whitespace and case-only duplicates", () => {
+  assert.deepEqual(mergeTopicCatalog(["Твёрдые планы", "  твёрдые   планы  ", "Другой вопрос"]), ["Твёрдые планы", "Другой вопрос"]);
+});
+
 test("topic provenance keeps local and peer proposals without guessing old data", () => {
   let sources = markTopicSource({}, "Общее будущее", "unknown");
   sources = markTopicSource(sources, "Общее будущее", "local");

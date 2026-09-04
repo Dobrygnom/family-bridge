@@ -47,6 +47,7 @@ export interface ConversationReport {
 export interface AgentRuntime {
   readonly id: AgentId;
   start(initialPrompt: string): Promise<AgentResponse>;
-  respond(peerMessage: string): Promise<AgentResponse>;
+  respond(peerMessage: string, guidance?: string): Promise<AgentResponse>;
   respondToOwner?(ownerMessage: string): Promise<AgentResponse>;
+  revise?(instruction: string): Promise<AgentResponse>;
 }

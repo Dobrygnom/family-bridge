@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { TopicBrief } from "../src/core/conversation-quality.js";
 
 export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
@@ -37,6 +38,7 @@ export interface StoredState {
   inFlightTopics: string[];
   pairTopics: string[];
   topicSources: Record<string, TopicSource[]>;
+  topicBriefs: Record<string, TopicBrief>;
   topicSourceMigrationVersion?: string;
   activeTopics: string[];
   blockedTopics: string[];
@@ -71,6 +73,7 @@ const defaults: StoredState = {
   inFlightTopics: [],
   pairTopics: [],
   topicSources: {},
+  topicBriefs: {},
   activeTopics: [],
   blockedTopics: [],
   reports: [],

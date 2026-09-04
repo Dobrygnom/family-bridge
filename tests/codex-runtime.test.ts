@@ -34,6 +34,9 @@ test("agent prompt carries the selected language and lets the app infer style fr
   assert.match(prompt, /не хватает важного факта/);
   assert.match(prompt, /по умолчанию отвечай самостоятельно/);
   assert.match(prompt, /не ставь разговор на паузу ради примера/);
+  assert.match(prompt, /оба высказались и отреагировали на позицию другого/);
+  assert.match(prompt, /На первый вопрос дай содержательный ответ, но поставь status="continue"/);
+  assert.match(prompt, /не растягивай беседу пустыми/);
 });
 
 test("owner question gets a strict autonomy review before the conversation is paused", () => {

@@ -2,6 +2,7 @@ import type { ConversationReport } from "./core/types.js";
 import type { DictationResult } from "./core/dictation.js";
 import type { PeerVersionCheck } from "./core/peer-version.js";
 import type { LiveConversation } from "./core/conversation-updates.js";
+import type { TopicBrief } from "./core/conversation-quality.js";
 
 export interface AppState {
   owner: "dima" | "katya";
@@ -14,10 +15,11 @@ export interface AppState {
   pendingTopics: string[];
   pairTopics: string[];
   topicSources: Record<string, Array<"local" | "peer" | "unknown">>;
+  topicBriefs: Record<string, TopicBrief>;
   activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
-  reportSummaries: Array<{ id: string; parentReportId?: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
+  reportSummaries: Array<{ id: string; parentReportId?: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completionState?: "completed" | "needs_follow_up"; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
   continuationStates?: Array<{ id: string; parentReportId: string; status: "starting" | "waiting" | "complete" | "error" }>;
   conversationRevision?: number;

@@ -10,7 +10,7 @@ const base = {
   shared_summary: "",
 };
 
-test("coordinator alternates agents and finishes on completion", async () => {
+test("coordinator gives both people room to react before accepting completion", async () => {
   const order: string[] = [];
   const dima = new MockAgent("dima", [
     { ...base, message_to_peer: "a1", status: "continue" },
@@ -31,7 +31,14 @@ test("coordinator alternates agents and finishes on completion", async () => {
     },
   });
   const report = await coordinator.run("topic");
-  assert.deepEqual(order, ["dima", "katya", "dima"]);
+  assert.deepEqual(order, ["dima", "katya", "dima", "katya"]);
   assert.equal(report.status, "completed");
   assert.equal(report.sharedSummary, "done");
+});
+
+test("coordinator marks a turn-limit stop as paused rather than a successful result", async () => {
+  const continuing = (id: "dima" | "katya") => new MockAgent(id, [{ ...base, message_to_peer: "ещё не закончили", status: "continue" }]);
+  const report = await new ConversationCoordinator(continuing("dima"), continuing("katya"), undefined, { maxTurns: 4 }).run("topic");
+  assert.equal(report.turns, 4);
+  assert.equal(report.status, "paused");
 });
