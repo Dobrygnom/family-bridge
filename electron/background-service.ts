@@ -19,8 +19,9 @@ import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
 import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
-import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, type TopicBrief } from "../src/core/conversation-quality.js";
+import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
 import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
+import { CodexTopicRefiner, type TopicRefiner } from "../src/core/topic-refinement.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -95,6 +96,7 @@ interface BackgroundServiceOptions {
   experienceResetVersion?: string;
   reportsExportDirectory?: string;
   requestUpdateCheck?: () => void;
+  topicRefiner?: TopicRefiner;
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
@@ -538,12 +540,31 @@ export class BackgroundService {
   }
 
   async updateContextTopic(input: unknown) {
-    const value = input && typeof input === "object" ? input as { topicId?: unknown; aboutPersonIds?: unknown; discussWithPersonId?: unknown; approved?: unknown } : {};
+    const value = input && typeof input === "object" ? input as { topicId?: unknown; aboutPersonIds?: unknown; discussWithPersonId?: unknown; approved?: unknown; title?: unknown; context?: unknown; goal?: unknown; openingQuestion?: unknown } : {};
     if (typeof value.topicId !== "string") throw new Error("Тема не найдена");
     const analysis = this.readContextAnalysis();
     if (!analysis) throw new Error("Сначала проанализируйте базовый чат");
     const topic = analysis.topics.find((item) => item.id === value.topicId);
     if (!topic) throw new Error("Тема не найдена");
+    const previousTitle = topic.title;
+    const editsContent = ["title", "context", "goal", "openingQuestion"].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+    if (editsContent && topic.approved) throw new Error("Сначала снимите выбор темы, чтобы изменить её");
+    if (Object.prototype.hasOwnProperty.call(value, "title")) {
+      if (typeof value.title !== "string" || !value.title.trim() || value.title.trim().length > 240) throw new Error("Название темы должно быть короче 240 символов");
+      const title = value.title.trim().replace(/\s+/g, " ");
+      if (analysis.topics.some((item) => item.id !== topic.id && item.discussWithPersonId === topic.discussWithPersonId && topicKey(item.title) === topicKey(title))) throw new Error("Такая тема для этого человека уже есть");
+      topic.title = title;
+    }
+    if (["context", "goal", "openingQuestion"].some((key) => Object.prototype.hasOwnProperty.call(value, key))) {
+      const fields = { context: value.context, goal: value.goal, openingQuestion: value.openingQuestion };
+      if (typeof fields.context !== "string" || !fields.context.trim() || fields.context.trim().length > 500) throw new Error("Опишите ситуацию текстом до 500 символов");
+      if (typeof fields.goal !== "string" || !fields.goal.trim() || fields.goal.trim().length > 800) throw new Error("Опишите цель разговора текстом до 800 символов");
+      if (typeof fields.openingQuestion !== "string" || !fields.openingQuestion.trim() || fields.openingQuestion.trim().length > 800) throw new Error("Добавьте первый вопрос текстом до 800 символов");
+      const brief = sanitizeTopicBrief(fields);
+      if (!brief) throw new Error("Заполните уточнение темы");
+      const stored = await this.store.read();
+      topic.reason = topicReasonFromBrief(brief, stored.language);
+    }
     if (typeof value.discussWithPersonId === "string") {
       if (!analysis.people.some((person) => person.id === value.discussWithPersonId)) throw new Error("Адресат темы не найден");
       topic.discussWithPersonId = value.discussWithPersonId;
@@ -560,19 +581,54 @@ export class BackgroundService {
     await this.writeContextAnalysis(analysis);
     this.emit({ type: "context-analysis", analysis });
     const stored = await this.store.read();
-    let pendingTopics = stored.pendingTopics.filter((item) => item !== topic.title);
+    let pendingTopics = stored.pendingTopics.filter((item) => item !== previousTitle && item !== topic.title);
     if (topic.approved && topic.discussWithPersonId === stored.remote?.counterpartPersonId) pendingTopics = [...new Set([...pendingTopics, topic.title])];
     const protectedTopics = new Set([...pendingTopics, ...stored.activeTopics, ...readReportSummaries(stored.reports).map((report) => report.topic)]);
-    const pairTopics = mergeTopicCatalog(stored.pairTopics.filter((title) => title !== topic.title || protectedTopics.has(title)), pendingTopics);
-    const topicSources = pendingTopics.includes(topic.title) ? markTopicSource(stored.topicSources, topic.title, "local") : stored.topicSources;
+    const pairTopics = mergeTopicCatalog(stored.pairTopics.filter((title) => (title !== previousTitle && title !== topic.title) || protectedTopics.has(title)), pendingTopics);
+    let topicSources = { ...stored.topicSources };
+    let topicBriefs = { ...stored.topicBriefs };
+    if (previousTitle !== topic.title && !protectedTopics.has(previousTitle)) {
+      delete topicSources[previousTitle];
+      delete topicBriefs[previousTitle];
+    }
+    if (pendingTopics.includes(topic.title)) topicSources = markTopicSource(topicSources, topic.title, "local");
     const brief = shareableTopicBrief(topic);
-    const topicBriefs = topic.approved && brief ? { ...stored.topicBriefs, [topic.title]: brief } : stored.topicBriefs;
+    if (topic.approved && brief) topicBriefs[topic.title] = brief;
     const next = await this.store.update({ pendingTopics, pairTopics, topicSources, topicBriefs });
     this.emitTopicState(next);
     if (pendingTopics.includes(topic.title)) {
       try { await this.shareTopic(topic.title); } catch { /* it will also be shared when the pair becomes available */ }
     }
     return this.state();
+  }
+
+  async refineContextTopic(input: unknown) {
+    const value = input && typeof input === "object" ? input as { topicId?: unknown; instruction?: unknown } : {};
+    if (typeof value.topicId !== "string") throw new Error("Тема не найдена");
+    if (typeof value.instruction !== "string" || !value.instruction.trim()) throw new Error("Напишите, что нужно уточнить");
+    if (value.instruction.trim().length > 4_000) throw new Error("Уточнение должно быть короче 4000 символов");
+    const analysis = this.readContextAnalysis();
+    if (!analysis) throw new Error("Сначала проанализируйте базовый чат");
+    const topic = analysis.topics.find((item) => item.id === value.topicId);
+    if (!topic) throw new Error("Тема не найдена");
+    if (topic.approved) throw new Error("Сначала снимите выбор темы, чтобы изменить её");
+    const brief = shareableTopicBrief(topic);
+    if (!brief) throw new Error("В теме недостаточно контекста для уточнения");
+    const stored = await this.store.read();
+    const refiner = this.options.topicRefiner ?? new CodexTopicRefiner(
+      defaultCodexCommand(),
+      path.join(this.userData, "topic-refinement"),
+      path.join(this.resourcesPath, "schemas", "topic-refinement.schema.json"),
+    );
+    this.diagnostics.record("topic.refinement.start", { topicId: topic.id });
+    try {
+      const result = await refiner.refine({ title: topic.title, brief, instruction: value.instruction.trim(), language: stored.language });
+      this.diagnostics.record("topic.refinement.ready", { topicId: topic.id });
+      return result;
+    } catch (error) {
+      this.diagnostics.record("topic.refinement.failed", { topicId: topic.id });
+      throw error;
+    }
   }
 
   async updateContextTopics(input: unknown) {

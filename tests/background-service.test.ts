@@ -103,6 +103,108 @@ test("topic provenance migration preserves the catalog and only attributes known
   assert.deepEqual(migrated["Тема 14"], ["unknown"]);
 });
 
+test("a topic can be clarified locally before approval and only the edited brief is queued", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-topic-edit-test-"));
+  try {
+    const memory = path.join(directory, "psychologist-memory");
+    await mkdir(memory, { recursive: true });
+    await writeFile(path.join(memory, "context-analysis.json"), JSON.stringify({
+      analysisVersion: 4,
+      sourceId: "chat",
+      sourceHash: "hash",
+      analyzedAt: new Date(0).toISOString(),
+      status: "ready",
+      people: [{ id: "katya", label: "Катя", relationship: "wife", aliases: [] }],
+      topics: [{
+        id: "topic-1",
+        title: "Старая формулировка",
+        aboutPersonIds: ["katya"],
+        discussWithPersonId: "katya",
+        sensitivity: "direct",
+        reason: "Наблюдаемая динамика: Старый контекст. Психологическая цель: Старая цель. Первый вопрос: Старый вопрос?",
+        approved: false,
+      }],
+    }));
+    const store = new AtomicStore(directory);
+    await store.update({ language: "ru", remote: { pairId: "pair", encryptionSecret: "secret", counterpartPersonId: "katya" } });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { backgroundTasks: false });
+
+    await service.updateContextTopic({
+      topicId: "topic-1",
+      title: "Уточнённая формулировка",
+      context: "Конкретный повторяющийся эпизод.",
+      goal: "Понять позиции обоих.",
+      openingQuestion: "Как ты это видишь?",
+    });
+    const edited = JSON.parse(await readFile(path.join(memory, "context-analysis.json"), "utf8"));
+    assert.equal(edited.topics[0].title, "Уточнённая формулировка");
+    assert.match(edited.topics[0].reason, /Конкретный повторяющийся эпизод/);
+    assert.deepEqual((await store.read()).pendingTopics, []);
+
+    await service.updateContextTopic({ topicId: "topic-1", approved: true });
+    const queued = await store.read();
+    assert.deepEqual(queued.pendingTopics, ["Уточнённая формулировка"]);
+    assert.deepEqual(queued.topicBriefs["Уточнённая формулировка"], {
+      context: "Конкретный повторяющийся эпизод.",
+      goal: "Понять позиции обоих.",
+      openingQuestion: "Как ты это видишь?",
+    });
+    await assert.rejects(() => service.updateContextTopic({ topicId: "topic-1", title: "Нельзя менять после выбора" }), /Сначала снимите выбор темы/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("synchronous topic refinement returns an exact preview without saving or sharing it", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-topic-refinement-test-"));
+  try {
+    const memory = path.join(directory, "psychologist-memory");
+    await mkdir(memory, { recursive: true });
+    const analysisPath = path.join(memory, "context-analysis.json");
+    await writeFile(analysisPath, JSON.stringify({
+      analysisVersion: 4,
+      sourceId: "chat",
+      sourceHash: "hash",
+      analyzedAt: new Date(0).toISOString(),
+      status: "ready",
+      people: [{ id: "katya", label: "Катя", relationship: "wife", aliases: [] }],
+      topics: [{
+        id: "topic-1",
+        title: "Общий вопрос",
+        aboutPersonIds: ["katya"],
+        discussWithPersonId: "katya",
+        sensitivity: "direct",
+        reason: "Наблюдаемая динамика: Непонятный случай. Психологическая цель: Понять позицию. Первый вопрос: Что ты думаешь?",
+        approved: false,
+      }],
+    }));
+    const originalAnalysis = await readFile(analysisPath, "utf8");
+    const store = new AtomicStore(directory);
+    await store.update({ language: "ru", remote: { pairId: "pair", encryptionSecret: "secret", counterpartPersonId: "katya" } });
+    let receivedInstruction = "";
+    const preview = {
+      title: "Обсудить вчерашний разговор",
+      context: "Вчера разговор оборвался до ответа на главный вопрос.",
+      goal: "Понять позицию Кати.",
+      openingQuestion: "Скажи, пожалуйста, как ты сама это видишь?",
+    };
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, {
+      backgroundTasks: false,
+      topicRefiner: { refine: async (input) => { receivedInstruction = input.instruction; return preview; } },
+    });
+
+    assert.deepEqual(await service.refineContextTopic({ topicId: "topic-1", instruction: "Добавь контекст про вчера" }), preview);
+    assert.equal(receivedInstruction, "Добавь контекст про вчера");
+    assert.equal(await readFile(analysisPath, "utf8"), originalAnalysis);
+    const stored = await store.read();
+    assert.deepEqual(stored.pendingTopics, []);
+    assert.equal(JSON.stringify(stored).includes("Добавь контекст про вчера"), false);
+    assert.equal(JSON.stringify(stored).includes(preview.title), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("old applications cannot repopulate reset topics with stale legacy messages", () => {
   assert.equal(shouldIgnoreLegacyTopicAfterReset("0.3.25", undefined), true);
   assert.equal(shouldIgnoreLegacyTopicAfterReset("0.3.25", "0.3.25"), false);

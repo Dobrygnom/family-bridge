@@ -96,6 +96,12 @@ export function App() {
   const [topicFilter, setTopicFilter] = useState<"all" | "review" | "approved">("all");
   const [topicSearch, setTopicSearch] = useState("");
   const [expandedTopicIds, setExpandedTopicIds] = useState<Set<string>>(() => new Set());
+  const [editingTopicId, setEditingTopicId] = useState("");
+  const [topicDraft, setTopicDraft] = useState({ title: "", context: "", goal: "", openingQuestion: "" });
+  const [topicRefinementInstruction, setTopicRefinementInstruction] = useState("");
+  const [refiningTopicId, setRefiningTopicId] = useState("");
+  const [topicRefinementReady, setTopicRefinementReady] = useState(false);
+  const [savingTopicId, setSavingTopicId] = useState("");
   const [inviteCopied, setInviteCopied] = useState(false);
   const [ownerAnswers, setOwnerAnswers] = useState<Record<string, string>>(() => {
     try { return parseOwnerDrafts(localStorage.getItem(OWNER_DRAFTS_KEY)); } catch { return {}; }
@@ -155,10 +161,10 @@ export function App() {
     fr: { eyebrow: "PREMIER DÉMARRAGE", title: "Préparons d'abord votre contexte", lead: "Choisissez un chat comme base privée de votre agent. Les messages bruts restent sur cet ordinateur.", chooseTitle: "1. Choisissez un chat de base", chooseHint: "Nous ouvrirons vos projets et chats Codex.", confirmHint: "Ce chat a déjà été choisi. Vous pouvez le réutiliser ou en choisir un autre.", useSaved: "Utiliser ce chat", processingTitle: "Préparation du contexte", resumeTitle: "Mise à jour du contexte enregistré", export: "Lecture de vos messages", people: "Identification des personnes", topics: "Préparation des conversations possibles", finalizing: "Assemblage des recommandations", waiting: "Cela peut prendre quelques minutes. Vous pouvez laisser l'application ouverte.", resumeWaiting: "Les personnes et sujets existants sont conservés. Seuls les changements du chat sont ajoutés.", reviewTitle: "Choisissez les conversations", reviewHint: "Choisissez d’abord une personne. Chaque sujet affiche la situation, l’objectif et une ouverture possible. Rien n'est partagé sans votre accord.", finish: "Préparer les conversations choisies", noPeople: "Aucune personne n'a été identifiée. Actualisez l'export ou choisissez un autre chat." },
   }[language];
   const registryText = {
-    ru: { topicsFor: "Разговоры с", needReview: "нужно проверить", all: "Все", review: "Проверить", approved: "Выбраны", allowedOf: "выбрано из", allowSafe: "Выбрать безопасные", search: "Найти разговор", collapse: "Свернуть", expand: "Показать подробности", noFilteredTopics: "В этом фильтре тем нет.", context: "О чём речь", goal: "Что хочется понять", opening: "Как может начаться разговор", more: "Показать остальные", less: "Свернуть список" },
-    en: { topicsFor: "Conversations with", needReview: "need review", all: "All", review: "Review", approved: "Selected", allowedOf: "selected of", allowSafe: "Select safe topics", search: "Find a conversation", collapse: "Collapse", expand: "Show details", noFilteredTopics: "No topics match this filter.", context: "What this is about", goal: "What to understand", opening: "How the conversation may start", more: "Show the rest", less: "Collapse list" },
-    cs: { topicsFor: "Rozhovory s", needReview: "je třeba zkontrolovat", all: "Vše", review: "Zkontrolovat", approved: "Vybráno", allowedOf: "vybráno z", allowSafe: "Vybrat bezpečná témata", search: "Najít rozhovor", collapse: "Sbalit", expand: "Zobrazit podrobnosti", noFilteredTopics: "Tomuto filtru neodpovídají žádná témata.", context: "O čem to je", goal: "Čemu porozumět", opening: "Jak může rozhovor začít", more: "Zobrazit ostatní", less: "Sbalit seznam" },
-    fr: { topicsFor: "Conversations avec", needReview: "à vérifier", all: "Tous", review: "Vérifier", approved: "Choisies", allowedOf: "choisies sur", allowSafe: "Choisir les sujets sûrs", search: "Rechercher une conversation", collapse: "Réduire", expand: "Afficher les détails", noFilteredTopics: "Aucun sujet ne correspond à ce filtre.", context: "De quoi s’agit-il", goal: "Ce qu’il faut comprendre", opening: "Comment la conversation peut commencer", more: "Afficher les autres", less: "Réduire la liste" },
+    ru: { topicsFor: "Разговоры с", needReview: "нужно проверить", all: "Все", review: "Проверить", approved: "Выбраны", allowedOf: "выбрано из", allowSafe: "Выбрать безопасные", search: "Найти разговор", collapse: "Свернуть", expand: "Показать подробности", noFilteredTopics: "В этом фильтре тем нет.", context: "О чём речь", goal: "Что хочется понять", opening: "Как может начаться разговор", more: "Показать остальные", less: "Свернуть список", refine: "Уточнить тему", topicLabel: "Название разговора", save: "Сохранить уточнение", retry: "Попробовать ещё раз", cancel: "Отмена", editHint: "Сохранение не отправляет тему. Для передачи её нужно отдельно выбрать галочкой.", selectedHint: "Тема уже выбрана. Снимите выбор, чтобы уточнить её.", instruction: "Что здесь непонятно или какого контекста не хватает?", instructionPlaceholder: "Расскажите агенту, о чём на самом деле речь, или попросите объяснить тему яснее", prepare: "Уточнить тему", preparing: "Агент уточняет тему…", preview: "Теперь тема будет выглядеть так", previewHint: "Это точный текст для передачи. Ваше пояснение останется только у вашего агента.", prepared: "Тема уточнена" },
+    en: { topicsFor: "Conversations with", needReview: "need review", all: "All", review: "Review", approved: "Selected", allowedOf: "selected of", allowSafe: "Select safe topics", search: "Find a conversation", collapse: "Collapse", expand: "Show details", noFilteredTopics: "No topics match this filter.", context: "What this is about", goal: "What to understand", opening: "How the conversation may start", more: "Show the rest", less: "Collapse list", refine: "Clarify topic", topicLabel: "Conversation title", save: "Save clarification", retry: "Try again", cancel: "Cancel", editHint: "Saving does not share the topic. Select it separately to share it.", selectedHint: "This topic is already selected. Deselect it before clarifying it.", instruction: "What is unclear or what context is missing?", instructionPlaceholder: "Tell your agent what this is really about, or ask it to explain the topic more clearly", prepare: "Clarify topic", preparing: "Your agent is clarifying the topic…", preview: "The topic will now look like this", previewHint: "This is the exact text to be shared. Your explanation stays with your agent.", prepared: "Topic clarified" },
+    cs: { topicsFor: "Rozhovory s", needReview: "je třeba zkontrolovat", all: "Vše", review: "Zkontrolovat", approved: "Vybráno", allowedOf: "vybráno z", allowSafe: "Vybrat bezpečná témata", search: "Najít rozhovor", collapse: "Sbalit", expand: "Zobrazit podrobnosti", noFilteredTopics: "Tomuto filtru neodpovídají žádná témata.", context: "O čem to je", goal: "Čemu porozumět", opening: "Jak může rozhovor začít", more: "Zobrazit ostatní", less: "Sbalit seznam", refine: "Upřesnit téma", topicLabel: "Název rozhovoru", save: "Uložit upřesnění", retry: "Zkusit znovu", cancel: "Zrušit", editHint: "Uložení téma neodešle. Pro sdílení ho poté vyberte zvlášť.", selectedHint: "Téma je již vybráno. Před upřesněním výběr zrušte.", instruction: "Co je nejasné nebo jaký kontext chybí?", instructionPlaceholder: "Vysvětlete agentovi, o co skutečně jde, nebo ho požádejte o jasnější popis", prepare: "Upřesnit téma", preparing: "Váš agent upřesňuje téma…", preview: "Téma bude nyní vypadat takto", previewHint: "Toto je přesný text ke sdílení. Vaše vysvětlení zůstane jen u vašeho agenta.", prepared: "Téma je upřesněno" },
+    fr: { topicsFor: "Conversations avec", needReview: "à vérifier", all: "Tous", review: "Vérifier", approved: "Choisies", allowedOf: "choisies sur", allowSafe: "Choisir les sujets sûrs", search: "Rechercher une conversation", collapse: "Réduire", expand: "Afficher les détails", noFilteredTopics: "Aucun sujet ne correspond à ce filtre.", context: "De quoi s’agit-il", goal: "Ce qu’il faut comprendre", opening: "Comment la conversation peut commencer", more: "Afficher les autres", less: "Réduire la liste", refine: "Clarifier le sujet", topicLabel: "Titre de la conversation", save: "Enregistrer la clarification", retry: "Réessayer", cancel: "Annuler", editHint: "L’enregistrement ne partage pas le sujet. Sélectionnez-le ensuite séparément.", selectedHint: "Ce sujet est déjà sélectionné. Désélectionnez-le avant de le clarifier.", instruction: "Qu’est-ce qui n’est pas clair ou quel contexte manque ?", instructionPlaceholder: "Expliquez à votre agent de quoi il s’agit réellement ou demandez-lui de rendre le sujet plus clair", prepare: "Clarifier le sujet", preparing: "Votre agent clarifie le sujet…", preview: "Le sujet se présentera maintenant ainsi", previewHint: "C’est le texte exact à partager. Votre explication reste uniquement avec votre agent.", prepared: "Sujet clarifié" },
   }[language];
   const navigationText = {
     ru: { start: "Первый запуск", connection: "Подключение", context: "Исходный чат и темы", people: "Что знает мой агент", reports: "Итоги разговоров", settings: "Имя и автозапуск", setupTitle: "Подготовка к первому разговору", connectionTitle: "Подключение и темы", contextTitle: "Исходный чат и темы", peopleTitle: "Что знает мой агент", reportsTitle: "Итоги разговоров", settingsTitle: "Имя и автозапуск" },
@@ -478,11 +484,51 @@ export function App() {
     finally { setVersionCheckBusy(false); }
   }
 
-  async function updateContextTopic(topicId: string, update: { aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean }) {
+  async function updateContextTopic(topicId: string, update: { aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }) {
     if (!api) return;
     setError("");
     try { setState(await api.updateContextTopic({ topicId, ...update })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  function beginTopicEdit(item: NonNullable<AppState["contextAnalysis"]>["topics"][number]) {
+    const brief = shareableTopicBrief(item);
+    setEditingTopicId(item.id);
+    setTopicDraft({ title: item.title, context: brief?.context ?? "", goal: brief?.goal ?? "", openingQuestion: brief?.openingQuestion ?? "" });
+    setTopicRefinementInstruction("");
+    setTopicRefinementReady(false);
+  }
+
+  function cancelTopicEdit() {
+    setEditingTopicId("");
+    setTopicDraft({ title: "", context: "", goal: "", openingQuestion: "" });
+    setTopicRefinementInstruction("");
+    setTopicRefinementReady(false);
+  }
+
+  async function refineTopicEdit(topicId: string) {
+    if (!api || refiningTopicId || !topicRefinementInstruction.trim()) return;
+    setRefiningTopicId(topicId);
+    setTopicRefinementReady(false);
+    setError("");
+    try {
+      const result = await api.refineContextTopic({ topicId, instruction: topicRefinementInstruction.trim() });
+      setTopicDraft(result);
+      setTopicRefinementReady(true);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setRefiningTopicId(""); }
+  }
+
+  async function saveTopicEdit(topicId: string) {
+    if (!api || savingTopicId || !topicRefinementReady || !topicDraft.title.trim() || !topicDraft.context.trim() || !topicDraft.goal.trim() || !topicDraft.openingQuestion.trim()) return;
+    setSavingTopicId(topicId);
+    setError("");
+    try {
+      setState(await api.updateContextTopic({ topicId, ...topicDraft }));
+      setShowAllReviewTopics(true);
+      cancelTopicEdit();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSavingTopicId(""); }
   }
 
   async function savePortraitObservation(personId: string, observationId: string) {
@@ -556,11 +602,33 @@ export function App() {
       <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span><button className="ghost" onClick={() => void approveSafeTopics(selectedPerson.id)}>{registryText.allowSafe}</button></div>
       <div className="topic-rows">{visibleTopics.map((item) => {
         const expanded = expandedTopicIds.has(item.id);
+        const editing = editingTopicId === item.id;
         const about = item.aboutPersonIds.map(personLabel).join(", ") || "—";
         const brief = shareableTopicBrief(item);
         return <div className={`topic-row ${item.sensitivity} ${expanded ? "expanded" : ""}`} key={item.id}>
-          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
-          {expanded && <div className="topic-row-detail"><div className="topic-brief-grid">{brief?.context && <div><small>{registryText.context}</small><p>{brief.context}</p></div>}{brief?.goal && <div><small>{registryText.goal}</small><p>{brief.goal}</p></div>}{brief?.openingQuestion && <div className="topic-opening"><small>{registryText.opening}</small><p>«{brief.openingQuestion}»</p></div>}</div><div className="route-fields"><label>{workflowText.about}<select value={item.aboutPersonIds[0] || ""} onChange={(event) => void updateContextTopic(item.id, { aboutPersonIds: [event.target.value] })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label><label>{workflowText.with}<select value={item.discussWithPersonId} onChange={(event) => void updateContextTopic(item.id, { discussWithPersonId: event.target.value })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label></div>{item.sensitivity === "cross_person" && <small className="route-warning">{workflowText.cross}</small>}{item.sensitivity === "unclear" && <small className="route-warning">{workflowText.unclear}</small>}</div>}
+          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} disabled={editing || savingTopicId === item.id} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
+          {expanded && <div className="topic-row-detail">
+            {editing ? <div className="topic-edit">
+              <div className="topic-refinement-request">
+                <label>{registryText.instruction}<textarea value={topicRefinementInstruction} maxLength={4000} placeholder={registryText.instructionPlaceholder} disabled={refiningTopicId === item.id} onChange={(event) => { setTopicRefinementInstruction(event.target.value); setTopicRefinementReady(false); }} /></label>
+                {!topicRefinementReady && <div className="topic-refinement-actions"><button className="primary" disabled={refiningTopicId === item.id || !topicRefinementInstruction.trim()} onClick={() => void refineTopicEdit(item.id)}>{refiningTopicId === item.id ? <><LoaderCircle className="spin" size={16} />{registryText.preparing}</> : registryText.prepare}</button><button className="ghost" disabled={refiningTopicId === item.id} onClick={cancelTopicEdit}>{registryText.cancel}</button></div>}
+              </div>
+              {topicRefinementReady && <>
+                <div className="topic-preview-heading"><strong>{registryText.preview}</strong><span><Check size={15} />{registryText.prepared}</span><small>{registryText.previewHint}</small></div>
+                <div className="topic-preview-card">
+                  <div className="topic-preview-title"><small>{registryText.topicLabel}</small><h5>{topicDraft.title}</h5></div>
+                  <div><small>{registryText.context}</small><p>{topicDraft.context}</p></div>
+                  <div><small>{registryText.goal}</small><p>{topicDraft.goal}</p></div>
+                  <div className="topic-preview-opening"><small>{registryText.opening}</small><p>«{topicDraft.openingQuestion}»</p></div>
+                </div>
+                <small>{registryText.editHint}</small>
+                <div className="topic-edit-actions"><button className="primary" disabled={savingTopicId === item.id} onClick={() => void saveTopicEdit(item.id)}>{registryText.save}</button><button className="ghost" disabled={savingTopicId === item.id} onClick={() => setTopicRefinementReady(false)}>{registryText.retry}</button><button className="ghost" disabled={savingTopicId === item.id} onClick={cancelTopicEdit}>{registryText.cancel}</button></div>
+              </>}
+            </div> : <div className="topic-brief-grid">{brief?.context && <div><small>{registryText.context}</small><p>{brief.context}</p></div>}{brief?.goal && <div><small>{registryText.goal}</small><p>{brief.goal}</p></div>}{brief?.openingQuestion && <div className="topic-opening"><small>{registryText.opening}</small><p>«{brief.openingQuestion}»</p></div>}</div>}
+            <div className="route-fields"><label>{workflowText.about}<select disabled={editing} value={item.aboutPersonIds[0] || ""} onChange={(event) => void updateContextTopic(item.id, { aboutPersonIds: [event.target.value] })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label><label>{workflowText.with}<select disabled={editing} value={item.discussWithPersonId} onChange={(event) => void updateContextTopic(item.id, { discussWithPersonId: event.target.value })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label></div>
+            {item.sensitivity === "cross_person" && <small className="route-warning">{workflowText.cross}</small>}{item.sensitivity === "unclear" && <small className="route-warning">{workflowText.unclear}</small>}
+            {!editing && <div className="topic-refine">{item.approved ? <small>{registryText.selectedHint}</small> : <button className="ghost" onClick={() => beginTopicEdit(item)}>{registryText.refine}</button>}</div>}
+          </div>}
         </div>;
       })}{!selectedPersonTopics.length && <div className="empty">{registryText.noFilteredTopics}</div>}</div>
       {!topicSearch.trim() && topicFilter === "all" && selectedPersonTopics.length > 6 && <button className="topic-list-toggle" onClick={() => setShowAllReviewTopics((value) => !value)}>{showAllReviewTopics ? registryText.less : `${registryText.more} · ${selectedPersonTopics.length - 6}`}</button>}

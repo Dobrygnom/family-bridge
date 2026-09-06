@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completionReadiness, conversationOpeningPrompt, findTopicContext, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey } from "../src/core/conversation-quality.js";
+import { completionReadiness, conversationOpeningPrompt, findTopicContext, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief } from "../src/core/conversation-quality.js";
 import type { ContextAnalysis } from "../src/core/context-analysis.js";
 
 const analysis: ContextAnalysis = {
@@ -36,6 +36,16 @@ test("topic briefs accept only bounded plain fields", () => {
   assert.deepEqual(sanitizeTopicBrief({ context: "Планы менялись без предупреждения", goal: "Понять друг друга", openingQuestion: "Что ты думаешь?", ignored: "no" }), { context: "Планы менялись без предупреждения", goal: "Понять друг друга", openingQuestion: "Что ты думаешь?" });
   assert.equal(sanitizeTopicBrief({ goal: "x".repeat(801) }), undefined);
   assert.equal(sanitizeTopicBrief("not an object"), undefined);
+});
+
+test("an edited topic brief keeps the selected application language", () => {
+  const reason = topicReasonFromBrief({ context: "Конкретная ситуация", goal: "Понять позицию", openingQuestion: "Как ты это видишь?" }, "ru");
+  assert.equal(reason, "Наблюдаемая динамика: Конкретная ситуация Психологическая цель: Понять позицию Первый вопрос: Как ты это видишь?");
+  assert.deepEqual(shareableTopicBrief({ id: "topic", title: "Тема", aboutPersonIds: ["person"], discussWithPersonId: "person", sensitivity: "direct", approved: false, reason }), {
+    context: "Конкретная ситуация",
+    goal: "Понять позицию",
+    openingQuestion: "Как ты это видишь?",
+  });
 });
 
 test("the opening is a contextual human message rather than a spoken topic title", () => {

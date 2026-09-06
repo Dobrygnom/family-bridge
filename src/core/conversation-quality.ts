@@ -74,6 +74,20 @@ export function sanitizeTopicBrief(value: unknown): TopicBrief | undefined {
   return context || goal || openingQuestion ? { ...(context ? { context } : {}), ...(goal ? { goal } : {}), ...(openingQuestion ? { openingQuestion } : {}) } : undefined;
 }
 
+export function topicReasonFromBrief(brief: TopicBrief, language: string) {
+  const labels = {
+    ru: ["Наблюдаемая динамика", "Психологическая цель", "Первый вопрос"],
+    en: ["Observed dynamic", "Psychological goal", "First question"],
+    cs: ["Pozorovaná dynamika", "Psychologický cíl", "První otázka"],
+    fr: ["Dynamique observée", "Objectif psychologique", "Première question"],
+  }[language] ?? ["Observed dynamic", "Psychological goal", "First question"];
+  return [
+    brief.context ? `${labels[0]}: ${brief.context.trim()}` : "",
+    brief.goal ? `${labels[1]}: ${brief.goal.trim()}` : "",
+    brief.openingQuestion ? `${labels[2]}: ${brief.openingQuestion.trim()}` : "",
+  ].filter(Boolean).join(" ");
+}
+
 export function completionReadiness(candidate: CompletionCandidate) {
   const reasons: string[] = [];
   if (candidate.sequence < 4) reasons.push("both people have not yet had a chance to answer and react");

@@ -110,7 +110,44 @@ try {
   const overflow = await evaluate<{ pageX: number; mainY: number }>(`({ pageX: document.documentElement.scrollWidth - document.documentElement.clientWidth, mainY: (() => { const main = document.querySelector('main'); return main ? main.scrollHeight - main.clientHeight : 1; })() })`);
   assert.ok(overflow.pageX <= 1, `Packaged app has horizontal overflow: ${overflow.pageX}px`);
   assert.ok(overflow.mainY <= 1, `First-run screen scrolls as a whole: ${overflow.mainY}px`);
-  console.log(JSON.stringify({ verified: true, packagedVersion: "1.2.2", people: tabCount, ownerObservations: initialObservationCount, editPersisted: true, personSwitch: true, horizontalOverflow: overflow.pageX, firstRunOverflow: overflow.mainY }));
+  const originalTopicTitle = await evaluate<string>(`document.querySelector('.topic-approval-copy strong')?.textContent?.trim() ?? ''`);
+  assert.ok(originalTopicTitle, "No topic was visible for editing");
+  const originalTopicId = await evaluate<string>(`window.familyBridge.getState().then((state) => state.contextAnalysis?.topics.find((item) => item.title === ${JSON.stringify(originalTopicTitle)})?.id ?? '')`);
+  assert.ok(originalTopicId, "Visible topic was not found in app state");
+  assert.ok(await evaluate<boolean>(`(() => { const button = document.querySelector('.topic-expand'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`));
+  assert.ok(await waitFor(async () => await evaluate<boolean>(`[...document.querySelectorAll('.topic-refine button')].some((item) => item.textContent?.trim() === 'Уточнить тему')`) || undefined));
+  assert.ok(await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('.topic-refine button')].find((item) => item.textContent?.trim() === 'Уточнить тему'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`));
+  assert.ok(await waitFor(async () => await evaluate<boolean>(`document.querySelector('.topic-edit') instanceof HTMLElement`) || undefined));
+  assert.ok(await evaluate<boolean>(`document.querySelector('.topic-refinement-request textarea') instanceof HTMLTextAreaElement`), "Natural-language refinement field is missing");
+  const refinementInstruction = "Объясни тему понятнее человеку, который не видел исходный чат. Не добавляй новых фактов.";
+  assert.ok(await evaluate<boolean>(`(() => {
+    const textarea = document.querySelector('.topic-refinement-request textarea');
+    if (!(textarea instanceof HTMLTextAreaElement)) return false;
+    const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    textareaSetter?.call(textarea, ${JSON.stringify(refinementInstruction)});
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`));
+  assert.ok(await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('.topic-refinement-actions button')].find((item) => item.textContent?.trim() === 'Уточнить тему'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`));
+  assert.ok(await waitFor(async () => await evaluate<boolean>(`document.querySelector('.topic-preview-card') instanceof HTMLElement`) || undefined, 180_000));
+  assert.equal(await evaluate<string>(`document.querySelector('.topic-preview-heading strong')?.textContent?.trim() ?? ''`), "Теперь тема будет выглядеть так");
+  const editedTopic = await evaluate<{ title: string; context: string; goal: string; openingQuestion: string }>(`(() => { const paragraphs = [...document.querySelectorAll('.topic-preview-card p')].map((item) => item.textContent?.trim() ?? '').map((item) => item.replace(/^«|»$/g, '')); return { title: document.querySelector('.topic-preview-card h5')?.textContent?.trim() ?? '', context: paragraphs[0] ?? '', goal: paragraphs[1] ?? '', openingQuestion: paragraphs[2] ?? '' }; })()`);
+  assert.ok(editedTopic.title && editedTopic.context && editedTopic.goal && editedTopic.openingQuestion, "Refined preview is incomplete");
+  const beforeSave = await evaluate<{ unchanged: boolean; queued: boolean; instructionStored: boolean }>(`window.familyBridge.getState().then((state) => { const topic = state.contextAnalysis?.topics.find((item) => item.id === ${JSON.stringify(originalTopicId)}); return { unchanged: topic?.title === ${JSON.stringify(originalTopicTitle)}, queued: state.pendingTopics.includes(${JSON.stringify(editedTopic.title)}), instructionStored: JSON.stringify(state).includes(${JSON.stringify(refinementInstruction)}) }; })`);
+  assert.deepEqual(beforeSave, { unchanged: true, queued: false, instructionStored: false }, "Preview changed or shared persisted state before confirmation");
+  assert.ok(await waitFor(async () => await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('.topic-edit-actions button')].find((item) => item.textContent?.trim() === 'Сохранить уточнение'); return button instanceof HTMLButtonElement && !button.disabled; })()`) || undefined));
+  assert.ok(await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('.topic-edit-actions button')].find((item) => item.textContent?.trim() === 'Сохранить уточнение'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`));
+  await waitFor(async () => {
+    const saved = await evaluate<boolean>(`window.familyBridge.getState().then((state) => state.contextAnalysis?.topics.find((item) => item.id === ${JSON.stringify(originalTopicId)})?.title === ${JSON.stringify(editedTopic.title)})`);
+    return saved || undefined;
+  });
+  const editedState = await evaluate<{ approved: boolean; queued: boolean; reason: string }>(`window.familyBridge.getState().then((state) => { const topic = state.contextAnalysis?.topics.find((item) => item.id === ${JSON.stringify(originalTopicId)}); return { approved: topic?.approved ?? true, queued: state.pendingTopics.includes(${JSON.stringify(editedTopic.title)}), reason: topic?.reason ?? '' }; })`);
+  assert.equal(editedState.approved, false, "Editing a topic approved it automatically");
+  assert.equal(editedState.queued, false, "Editing a topic shared it automatically");
+  assert.ok(editedState.reason.includes(editedTopic.context), "Saved topic does not contain the exact preview context");
+  const persistedAnalysis = JSON.parse(await readFile(path.join(memory, "context-analysis.json"), "utf8")) as { topics?: Array<{ id?: string; title?: string }> };
+  assert.equal(persistedAnalysis.topics?.find((item) => item.id === originalTopicId)?.title, editedTopic.title, "Refined topic was not persisted to disk");
+  console.log(JSON.stringify({ verified: true, packagedVersion: "1.2.3", people: tabCount, ownerObservations: initialObservationCount, editPersisted: true, topicEditPersisted: true, topicEditShared: false, personSwitch: true, horizontalOverflow: overflow.pageX, firstRunOverflow: overflow.mainY }));
 } finally {
   socket?.close();
   child?.kill();

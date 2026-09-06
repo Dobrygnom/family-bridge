@@ -258,6 +258,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("bridge:create-pair", (_event, counterpartPersonId: unknown) => service.createPair(counterpartPersonId));
   ipcMain.handle("bridge:join-pair", (_event, input: { invite?: unknown; counterpartPersonId?: unknown }) => service.joinPair(String(input?.invite ?? ""), input?.counterpartPersonId));
   ipcMain.handle("bridge:update-context-topic", (_event, input: unknown) => service.updateContextTopic(input));
+  ipcMain.handle("bridge:refine-context-topic", (_event, input: unknown) => service.refineContextTopic(input));
   ipcMain.handle("bridge:update-context-topics", (_event, input: unknown) => service.updateContextTopics(input));
   ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
   ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
