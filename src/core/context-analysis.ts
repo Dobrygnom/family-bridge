@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { preferredModelArgs } from "./codex-model.js";
 import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
 
 export interface ContextPerson {
@@ -19,6 +20,7 @@ export interface RoutedTopic {
   sensitivity: "direct" | "cross_person" | "unclear";
   reason: string;
   approved: boolean;
+  sourceTitles?: string[];
 }
 
 export interface ContextAnalysis {
@@ -76,6 +78,7 @@ export function splitContextMessages(messages: Array<{ text: string }>, maxChara
 }
 
 export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sourceHash: string, previous?: ContextAnalysis, ownerName = "Вы"): ContextAnalysis {
+  if (previous?.sourceId !== sourceId) previous = undefined;
   const normalizeName = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const normalizedOwnerName = normalizeName(ownerName);
   const isOwnerPerson = (person: RawAnalysis["people"][number]) => {
@@ -86,13 +89,18 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
   };
   const ownerKeys = new Set(["owner", ...raw.people.filter(isOwnerPerson).map((person) => person.key)]);
   const rawPeople = raw.people.filter((person) => !isOwnerPerson(person));
-  const used = new Set<string>(["owner"]);
+  const used = new Set<string>(["owner", ...(previous?.people.map((person) => person.id) ?? [])]);
+  const matched = new Set<string>();
   const keyToId = new Map<string, string>();
   const people = rawPeople.map((person, index) => {
     const base = person.key.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "") || `person-${index + 1}`;
-    let id = base;
+    const names = new Set([person.label, ...person.aliases].map(normalizeName).filter(Boolean));
+    const matches = previous?.people.filter((saved) => !matched.has(saved.id) && [saved.label, ...saved.aliases].some((name) => names.has(normalizeName(name)))) ?? [];
+    const existing = matches.length === 1 ? matches[0] : undefined;
+    let id = existing?.id ?? base;
     let suffix = 2;
-    while (used.has(id)) id = `${base}-${suffix++}`;
+    while (!existing && used.has(id)) id = `${base}-${suffix++}`;
+    if (existing) matched.add(existing.id);
     used.add(id);
     keyToId.set(person.key, id);
     return { id, label: person.label.trim() || person.relationship.trim() || `Человек ${index + 1}`, relationship: person.relationship.trim(), aliases: person.aliases.map((item) => item.trim()).filter(Boolean) };
@@ -117,7 +125,20 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
       ...people.map((person, index) => ({ personKey: rawPeople[index]?.key ?? person.id, personId: person.id, label: person.label, relationship: person.relationship, isOwner: false })),
     ],
   });
-  return { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "ready", people, portraits, topics };
+  return preserveContextAnalysis({ analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "ready", people, portraits, topics }, previous);
+}
+
+/** Refresh adds discoveries, but never replaces a person's saved wording or consent. */
+export function preserveContextAnalysis(incoming: ContextAnalysis, saved?: ContextAnalysis): ContextAnalysis {
+  if (!saved || saved.sourceId !== incoming.sourceId) return incoming;
+  const key = (title: string, person: string) => `${title.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase()}\0${person}`;
+  const known = new Set(saved.topics.flatMap((topic) => [topic.title, ...(topic.sourceTitles ?? [])].map((title) => key(title, topic.discussWithPersonId))));
+  const ids = new Set(saved.topics.map((topic) => topic.id));
+  return { ...incoming,
+    people: [...saved.people, ...incoming.people.filter((person) => !saved.people.some((old) => old.id === person.id))],
+    portraits: [...(incoming.portraits ?? []), ...(saved.portraits ?? []).filter((portrait) => !incoming.portraits?.some((item) => item.personId === portrait.personId))],
+    topics: [...saved.topics, ...incoming.topics.filter((topic) => !ids.has(topic.id) && !known.has(key(topic.title, topic.discussWithPersonId)))],
+  };
 }
 
 export function topicsForCounterpart(analysis: ContextAnalysis | undefined, personId: string | undefined): RoutedTopic[] {
@@ -235,8 +256,8 @@ ${serialized}`);
     return result;
   }
 
-  private run(prompt: string): Promise<RawAnalysis> {
-    const args = ["exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
+  private async run(prompt: string): Promise<RawAnalysis> {
+    const args = ["exec", ...await preferredModelArgs(this.command), "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.end(prompt);

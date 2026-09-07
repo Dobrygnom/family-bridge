@@ -92,7 +92,7 @@ export function completionReadiness(candidate: CompletionCandidate) {
   const reasons: string[] = [];
   if (candidate.sequence < 4) reasons.push("both people have not yet had a chance to answer and react");
   if (!candidate.sharedSummary?.trim()) reasons.push("there is no concrete final answer yet");
-  if (/[?？]\s*$/.test(candidate.message.trim())) reasons.push("the latest question is still unanswered");
+  if (/[?？]/.test(candidate.message)) reasons.push("the latest question is still unanswered");
   return { ready: reasons.length === 0, reasons };
 }
 

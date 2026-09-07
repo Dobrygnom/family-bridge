@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { preferredModelArgs } from "./codex-model.js";
 
 export type PortraitObservationKind = "fact" | "view" | "preference" | "pattern" | "uncertainty";
 export type PortraitSourceType = "source_chat" | "conversation";
@@ -203,8 +204,8 @@ ${transcript}
     return result;
   }
 
-  private run(prompt: string): Promise<RawPortraitUpdates> {
-    const args = ["exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
+  private async run(prompt: string): Promise<RawPortraitUpdates> {
+    const args = ["exec", ...await preferredModelArgs(this.command), "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.end(prompt);

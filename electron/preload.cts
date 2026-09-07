@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   createPair: (counterpartPersonId: string) => ipcRenderer.invoke("bridge:create-pair", counterpartPersonId),
   joinPair: (invite: string, counterpartPersonId: string) => ipcRenderer.invoke("bridge:join-pair", { invite, counterpartPersonId }),
   updateContextTopic: (input: { topicId: string; aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }) => ipcRenderer.invoke("bridge:update-context-topic", input),
-  refineContextTopic: (input: { topicId: string; instruction: string }) => ipcRenderer.invoke("bridge:refine-context-topic", input),
+  refineContextTopic: (input: { topicId: string; instruction: string; preview?: { title: string; context: string; goal: string; openingQuestion: string } }) => ipcRenderer.invoke("bridge:refine-context-topic", input),
   updateContextTopics: (input: { topicIds: string[]; approved: boolean }) => ipcRenderer.invoke("bridge:update-context-topics", input),
   runRemote: (topic: string) => ipcRenderer.invoke("bridge:run-remote", topic),
   discussAllTopics: () => ipcRenderer.invoke("bridge:discuss-all-topics"),

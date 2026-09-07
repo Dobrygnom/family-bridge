@@ -47,6 +47,26 @@ export function extractUserMessages(thread: JsonObject): ContextMessage[] {
 export class CodexHistoryClient {
   constructor(private readonly command: string) {}
 
+  async listModels(): Promise<Array<{ model: string; hidden?: boolean }>> {
+    return this.withServer(async (request) => {
+      const models: Array<{ model: string; hidden?: boolean }> = [];
+      let cursor: string | null = null;
+      const seen = new Set<string>();
+      do {
+        const result = await request("model/list", { cursor, limit: 100, includeHidden: false });
+        for (const value of Array.isArray(result.data) ? result.data : []) {
+          if (value && typeof value === "object" && typeof value.model === "string") {
+            models.push({ model: value.model, hidden: value.hidden === true });
+          }
+        }
+        cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
+        if (cursor && seen.has(cursor)) throw new Error("Repeated model-list cursor");
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+      return models;
+    });
+  }
+
   async listThreads(): Promise<ContextThread[]> {
     return this.withServer(async (request) => {
       const threads: ContextThread[] = [];
@@ -99,6 +119,11 @@ export class CodexHistoryClient {
     child.once("error", (error) => {
       processError = error;
       rejectPending(error);
+    });
+    child.stdin.on("error", (error) => { processError = error; rejectPending(error); });
+    child.once("close", () => {
+      processError = new Error("Codex app-server closed");
+      rejectPending(processError);
     });
     lines.on("line", (line) => {
       try {

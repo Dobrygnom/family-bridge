@@ -4,6 +4,7 @@ import { appendDictation } from "../core/dictation.js";
 import { supportsContinuation } from "../core/continuation.js";
 import { DictationControl } from "./DictationControl.js";
 import { PeerVersionControl } from "./PeerVersionControl.js";
+import { PendingStatus } from "./PendingStatus.js";
 import type { Language } from "./i18n.js";
 
 const labels = {
@@ -47,10 +48,10 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
     catch { setError(t.error); }
     finally { setCheckingVersion(false); }
   }
-  return <details className="report-continuation" open={pending || request?.status === "error" || undefined}>
+  return <details className="report-continuation" open={busy || pending || request?.status === "error" || undefined}>
     <summary>{t.title}</summary>
     <p className="muted">{t.hint}</p>
-    {request && <p role="status">{request.status === "starting" ? t.starting : request.status === "waiting" ? t.waiting : request.status === "complete" ? t.complete : t.failed}</p>}
+    {busy || pending ? <PendingStatus language={language}>{request?.status === "waiting" ? t.waiting : t.starting}</PendingStatus> : request && <p role="status">{request.status === "complete" ? t.complete : t.failed}</p>}
     {request?.status === "error" && <button disabled={busy || dictationBusy || !supportsContinuation(state.remote.peerVersion)} onClick={() => void send(true)}>{t.retry}</button>}
     {!pending && <><textarea aria-label={t.title} placeholder={t.placeholder} maxLength={8000} value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} />
       <DictationControl language={language} disabled={busy || dictationBusy && !recording} onText={(text) => setDraft((current) => appendDictation(current, text))} onBusyChange={(value) => { setRecording(value); onDictationBusy(value); }} />

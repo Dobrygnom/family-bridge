@@ -240,3 +240,12 @@ section[id] { scroll-margin-top: 24px; }
 .conversation-updates-heading > strong { color: #80d6b7; }
 .conversation-updates-heading small { color: #a1b5b4; font-size: 11px; }
 .conversation-updates [role="log"] { display: grid; gap: 10px; }
+.pending-status { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 10px 12px; border-left: 2px solid #80d6b7; background: #14292f; border-radius: 6px; color: #dbe9e5; font-size: 12px; line-height: 1.5; }
+.pending-status svg, button .spin { flex-shrink: 0; color: #80d6b7; }
+.pending-status small { display: block; margin-top: 4px; color: #a1b5b4; }
+button[aria-busy="true"] { cursor: progress; }
+.topic-preview-card { animation: result-appear .18s ease-out; }
+@keyframes result-appear { from { opacity: .5; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin, .topic-preview-card { animation: none; }
+}

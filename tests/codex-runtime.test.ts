@@ -57,6 +57,9 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => input += chunk);
 process.stdin.on("end", () => {
   const reviewing = input.includes("обязательно пересмотри необходимость паузы");
+  const args = process.argv.slice(2);
+  const modelAt = reviewing ? 2 : 1;
+  if (args[0] !== "exec" || (reviewing && args[1] !== "resume") || args[modelAt] !== "--model" || args[modelAt + 1] !== "gpt-6-astra") process.exit(3);
   if (!reviewing) console.log(JSON.stringify({ type: "thread.started", thread_id: "autonomy-test-session" }));
   const response = reviewing
     ? { message_to_peer: "Я думаю, нам лучше начать с того, что уже понятно, а детали уточнить потом.", status: "continue", owner_question: "", topics: [], private_report: "", shared_summary: "", comparison_summary: "" }
@@ -74,6 +77,7 @@ process.stdin.on("end", () => {
       workspace: path.join(root, "workspace"),
       schemaPath: path.join(root, "schema.json"),
       codexCommand: command,
+      model: "gpt-6-astra",
     });
 
     const response = await agent.start("Когда мы сможем это обсудить?");
@@ -90,6 +94,7 @@ test("third-person mediator speech is rejected while direct role speech is accep
   assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "Катя и Дмитрий могут выбрать общий ритм. Это содержательный общий результат." }, "Дмитрий", "Катя"), true);
   assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "Агент Катя, предлагаю обсудить правила." }, "Дмитрий", "Катя"), true);
   assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "Мне важно понять, чего ты хочешь до своего возвращения. Скажи прямо?" }, "Дмитрий", "Катя"), false);
+  assert.equal(hasRoleVoiceViolation({ ...base, message_to_peer: "С моей стороны это была ошибка. Хочу понять твою сторону." }, "Дмитрий", "Катя"), false);
 });
 
 test("large agent context is piped through stdin instead of the Windows command line", () => {
@@ -140,6 +145,7 @@ process.stdin.on("end", () => {
       workspace: path.join(root, "workspace"),
       schemaPath: path.join(root, "schema.json"),
       codexCommand: command,
+      model: null,
     });
 
     const response = await agent.start("Обсудить тему");

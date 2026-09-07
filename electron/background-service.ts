@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -9,19 +9,20 @@ import type { UpdateState } from "./mac-updater.js";
 import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
-import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, routeSensitivity, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
+import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
-import { AtomicStore, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
+import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
 import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
 import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
 import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
-import { CodexTopicRefiner, type TopicRefiner } from "../src/core/topic-refinement.js";
+import { CodexTopicRefiner, normalizeTopicRefinement, type TopicRefiner } from "../src/core/topic-refinement.js";
+import { relevantContextExcerpts } from "../src/core/context-excerpts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -238,6 +239,13 @@ export class BackgroundService {
   private health = { installed: false, authenticated: false, version: "" };
   private connected = false;
   private analysisWrites: Promise<void> = Promise.resolve();
+  private topicEdits: Promise<unknown> = Promise.resolve();
+
+  private serializeTopicEdit<T>(action: () => Promise<T>): Promise<T> {
+    const operation = this.topicEdits.then(action);
+    this.topicEdits = operation.catch(() => undefined);
+    return operation;
+  }
   private portraitUpdates: Promise<void> = Promise.resolve();
   private portraitsUpdating = false;
   private syncOperation?: Promise<Awaited<ReturnType<BackgroundService["state"]>>>;
@@ -255,6 +263,8 @@ export class BackgroundService {
   private versionProbe?: { topic: string; pairId: string; state: PeerVersionCheck };
   private versionProbeTimer?: NodeJS.Timeout;
   private remoteBusy = false;
+  private remoteWorkers = new Map<string, Promise<void>>();
+  private incomingRetryAt = new Map<string, number>();
   private readonly remoteAgents = new Map<string, AgentRuntime>();
   private readonly remoteMessages = new Map<string, Array<{ from: "dima" | "katya"; text: string }>>();
   private readonly answeringQuestions = new Set<string>();
@@ -274,7 +284,7 @@ export class BackgroundService {
 
   async state() {
     const stored = await this.store.read();
-    const { pendingOwnerQuestions, continuations, ...saved } = stored;
+    const { pendingOwnerQuestions, continuations, incomingDeliveries: _incomingDeliveries, completedIncoming: _completedIncoming, ...saved } = stored;
     const conversationState = this.conversationSnapshot(stored);
     const publicStored = { ...saved, ...conversationState };
     // Saved user data must never wait for a CLI process or a remote network call.
@@ -401,7 +411,7 @@ export class BackgroundService {
       const samples = path.join(memoryRoot, "style-samples.jsonl");
       const temporary = `${samples}.tmp`;
       await writeFile(temporary, messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
-      await rename(temporary, samples);
+      await replaceStateFile(temporary, samples);
       const completed: ContextSource = { ...selected, ...latestThread, lastSyncedAt: new Date().toISOString(), messageCount: messages.length, status: "ready", error: undefined };
       await this.writeContextSource(completed);
       this.emit({ type: "context", context: completed });
@@ -452,7 +462,7 @@ export class BackgroundService {
     await mkdir(path.dirname(file), { recursive: true });
     const temporary = `${file}.tmp`;
     await writeFile(temporary, JSON.stringify(source, null, 2), "utf8");
-    await rename(temporary, file);
+    await replaceStateFile(temporary, file);
   }
 
   private contextAnalysisPath() {
@@ -483,7 +493,7 @@ export class BackgroundService {
     await mkdir(path.dirname(file), { recursive: true });
     const temporary = `${file}.tmp`;
     await writeFile(temporary, JSON.stringify(entries, null, 2), "utf8");
-    await rename(temporary, file);
+    await replaceStateFile(temporary, file);
   }
 
   private readContextAnalysis(): ContextAnalysis | undefined {
@@ -491,23 +501,28 @@ export class BackgroundService {
     catch { return undefined; }
   }
 
-  private writeContextAnalysis(analysis: ContextAnalysis) {
-    const contents = JSON.stringify(analysis, null, 2);
+  private writeContextAnalysis(analysis: ContextAnalysis, preserve = false, editedIds?: string[]) {
     const operation = this.analysisWrites.then(async () => {
+      const current = this.readContextAnalysis();
+      if (editedIds && current?.sourceId !== analysis.sourceId) throw new Error("Исходный чат изменился. Откройте тему заново.");
+      const saved = editedIds && current ? { ...current, topics: current.topics.map((topic) => editedIds.includes(topic.id) ? analysis.topics.find((item) => item.id === topic.id) ?? topic : topic) }
+        : preserve ? preserveContextAnalysis(analysis, current) : analysis;
+      const contents = JSON.stringify(saved, null, 2);
       const file = this.contextAnalysisPath();
       await mkdir(path.dirname(file), { recursive: true });
       const temporary = `${file}.tmp`;
       await writeFile(temporary, contents, "utf8");
-      await rename(temporary, file);
+      await replaceStateFile(temporary, file);
+      return saved;
     });
-    this.analysisWrites = operation.catch(() => undefined);
+    this.analysisWrites = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
   private async analyzeContext(sourceId: string, sourceHash: string, messages: Array<{ text: string }>, previous?: ContextAnalysis) {
     this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
     const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [] };
-    await this.writeContextAnalysis(analyzing);
+    await this.writeContextAnalysis(analyzing, true);
     this.emit({ type: "context-analysis", analysis: analyzing });
     try {
       const stored = await this.store.read();
@@ -518,31 +533,35 @@ export class BackgroundService {
           this.diagnostics.record("analysis.progress", progress);
           analyzing.progress = progress;
           const progressing: ContextAnalysis = { ...analyzing, progress };
-          await this.writeContextAnalysis(progressing);
-          this.emit({ type: "context-analysis", analysis: progressing });
+          const saved = await this.writeContextAnalysis(progressing, true);
+          this.emit({ type: "context-analysis", analysis: saved });
           if (this.contextSyncing) {
             const ratio = progress.total > 0 ? progress.current / progress.total : 0;
             this.updateContextSync(true, 50 + ratio * 45);
           }
         },
       });
-      await this.writeContextAnalysis(analysis);
+      const saved = await this.writeContextAnalysis(analysis, true);
       this.diagnostics.record("analysis.ready", { people: analysis.people.length, topics: analysis.topics.length });
-      this.emit({ type: "context-analysis", analysis });
-      return analysis;
+      this.emit({ type: "context-analysis", analysis: saved });
+      return saved;
     } catch (error) {
       this.diagnostics.record("analysis.failed");
       const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error) };
-      await this.writeContextAnalysis(failed);
-      this.emit({ type: "context-analysis", analysis: failed });
+      const saved = await this.writeContextAnalysis(failed, true);
+      this.emit({ type: "context-analysis", analysis: saved });
       throw error;
     }
   }
 
   async updateContextTopic(input: unknown) {
+    return this.serializeTopicEdit(() => this.updateContextTopicNow(input));
+  }
+
+  private async updateContextTopicNow(input: unknown) {
     const value = input && typeof input === "object" ? input as { topicId?: unknown; aboutPersonIds?: unknown; discussWithPersonId?: unknown; approved?: unknown; title?: unknown; context?: unknown; goal?: unknown; openingQuestion?: unknown } : {};
     if (typeof value.topicId !== "string") throw new Error("Тема не найдена");
-    const analysis = this.readContextAnalysis();
+    let analysis = this.readContextAnalysis();
     if (!analysis) throw new Error("Сначала проанализируйте базовый чат");
     const topic = analysis.topics.find((item) => item.id === value.topicId);
     if (!topic) throw new Error("Тема не найдена");
@@ -554,6 +573,7 @@ export class BackgroundService {
       const title = value.title.trim().replace(/\s+/g, " ");
       if (analysis.topics.some((item) => item.id !== topic.id && item.discussWithPersonId === topic.discussWithPersonId && topicKey(item.title) === topicKey(title))) throw new Error("Такая тема для этого человека уже есть");
       topic.title = title;
+      topic.sourceTitles = [...new Set([...(topic.sourceTitles ?? []), previousTitle])];
     }
     if (["context", "goal", "openingQuestion"].some((key) => Object.prototype.hasOwnProperty.call(value, key))) {
       const fields = { context: value.context, goal: value.goal, openingQuestion: value.openingQuestion };
@@ -571,14 +591,15 @@ export class BackgroundService {
     }
     if (Array.isArray(value.aboutPersonIds)) {
       const aboutPersonIds = value.aboutPersonIds.filter((item): item is string => typeof item === "string");
-      if (!aboutPersonIds.length || aboutPersonIds.some((personId) => !analysis.people.some((person) => person.id === personId))) {
+      const knownPeople = new Set(analysis.people.map((person) => person.id));
+      if (!aboutPersonIds.length || aboutPersonIds.some((personId) => !knownPeople.has(personId))) {
         throw new Error("Выберите, о ком эта тема");
       }
       topic.aboutPersonIds = [...new Set(aboutPersonIds)];
     }
     topic.sensitivity = routeSensitivity(topic.aboutPersonIds, topic.discussWithPersonId);
     if (typeof value.approved === "boolean") topic.approved = value.approved;
-    await this.writeContextAnalysis(analysis);
+    analysis = await this.writeContextAnalysis(analysis, false, [topic.id]);
     this.emit({ type: "context-analysis", analysis });
     const stored = await this.store.read();
     let pendingTopics = stored.pendingTopics.filter((item) => item !== previousTitle && item !== topic.title);
@@ -603,7 +624,7 @@ export class BackgroundService {
   }
 
   async refineContextTopic(input: unknown) {
-    const value = input && typeof input === "object" ? input as { topicId?: unknown; instruction?: unknown } : {};
+    const value = input && typeof input === "object" ? input as { topicId?: unknown; instruction?: unknown; preview?: unknown } : {};
     if (typeof value.topicId !== "string") throw new Error("Тема не найдена");
     if (typeof value.instruction !== "string" || !value.instruction.trim()) throw new Error("Напишите, что нужно уточнить");
     if (value.instruction.trim().length > 4_000) throw new Error("Уточнение должно быть короче 4000 символов");
@@ -615,6 +636,9 @@ export class BackgroundService {
     const brief = shareableTopicBrief(topic);
     if (!brief) throw new Error("В теме недостаточно контекста для уточнения");
     const stored = await this.store.read();
+    const preview = value.preview === undefined ? undefined : normalizeTopicRefinement(value.preview);
+    const recipient = analysis.people.find((person) => person.id === topic.discussWithPersonId);
+    const privateContext = this.privateSourceExcerpts(`${topic.title} ${topic.reason} ${value.instruction}`);
     const refiner = this.options.topicRefiner ?? new CodexTopicRefiner(
       defaultCodexCommand(),
       path.join(this.userData, "topic-refinement"),
@@ -622,7 +646,8 @@ export class BackgroundService {
     );
     this.diagnostics.record("topic.refinement.start", { topicId: topic.id });
     try {
-      const result = await refiner.refine({ title: topic.title, brief, instruction: value.instruction.trim(), language: stored.language });
+      const result = await refiner.refine({ title: preview?.title ?? topic.title, brief: preview ?? brief, instruction: value.instruction.trim(), language: stored.language,
+        privateContext, ownerName: stored.displayName, recipientName: recipient ? `${recipient.label} (${recipient.relationship})` : undefined });
       this.diagnostics.record("topic.refinement.ready", { topicId: topic.id });
       return result;
     } catch (error) {
@@ -632,14 +657,18 @@ export class BackgroundService {
   }
 
   async updateContextTopics(input: unknown) {
+    return this.serializeTopicEdit(() => this.updateContextTopicsNow(input));
+  }
+
+  private async updateContextTopicsNow(input: unknown) {
     const value = input && typeof input === "object" ? input as { topicIds?: unknown; approved?: unknown } : {};
     if (!Array.isArray(value.topicIds) || typeof value.approved !== "boolean") throw new Error("Не удалось изменить темы");
     const topicIds = new Set(value.topicIds.filter((item): item is string => typeof item === "string"));
-    const analysis = this.readContextAnalysis();
+    let analysis = this.readContextAnalysis();
     if (!analysis) throw new Error("Сначала проанализируйте базовый чат");
     const changed = analysis.topics.filter((topic) => topicIds.has(topic.id));
     for (const topic of changed) topic.approved = value.approved;
-    await this.writeContextAnalysis(analysis);
+    analysis = await this.writeContextAnalysis(analysis, false, [...topicIds]);
     this.emit({ type: "context-analysis", analysis });
     const stored = await this.store.read();
     const changedTitles = new Set(changed.map((topic) => topic.title));
@@ -1240,6 +1269,12 @@ export class BackgroundService {
     return key ? sanitizeTopicBrief(briefs[key]) : undefined;
   }
 
+  private privateSourceExcerpts(query: string) {
+    let source = "";
+    try { source = relevantContextExcerpts(readFileSync(path.join(this.userData, "psychologist-memory", "style-samples.jsonl"), "utf8"), query); } catch { /* no selected chat yet */ }
+    return [source, ...this.readLearnedContext().slice(0, 50).map((entry) => JSON.stringify({ topic: entry.topic, question: entry.question, answer: entry.answer, disposition: entry.disposition }))].join("\n\n");
+  }
+
   private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string, topic?: string, sharedBrief?: TopicBrief, counterpartPersonId?: string) {
     const existing = this.remoteAgents.get(conversationId);
     if (existing) return existing;
@@ -1279,6 +1314,7 @@ export class BackgroundService {
         .join("\n")
         .slice(0, 24_000);
       const currentContext = [
+        `Релевантные фрагменты выбранного личного чата (только фон; не пересылай и не цитируй):\n${this.privateSourceExcerpts(`${topic} ${sharedBrief?.context ?? ""} ${sharedBrief?.goal ?? ""}`)}`,
         `Текущая тема: ${topic}`,
         brief?.context ? `Короткий контекст, разрешённый для этой темы: ${brief.context}` : "",
         localTopic?.reason ? `Локальная гипотеза из выбранного чата владельца: ${localTopic.reason}` : "",
@@ -1323,7 +1359,7 @@ export class BackgroundService {
         }
       }
       const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
-      if (!envelope) return;
+      if (!envelope) return this.drainRemoteInbox();
       await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
       // Service messages must not depend on onboarding, topics, or an LLM.
       if (envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
@@ -1365,29 +1401,79 @@ export class BackgroundService {
         await this.remote.acknowledge(envelope.id);
         return;
       }
-      const dialogue = envelope.payload as DialoguePayload;
+      await this.store.mutate((current) => current.completedIncoming.includes(envelope.id) || current.incomingDeliveries[envelope.id] ? {} : {
+        incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { envelope } },
+      });
+      // Acknowledge only after a durable local copy exists. LLM work is outside
+      // the transport lock, so service messages and other conversations proceed.
+      await this.remote.acknowledge(envelope.id);
+      return this.drainRemoteInbox();
+    } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
+    finally { this.remoteBusy = false; }
+  }
+
+  private async drainRemoteInbox() {
+    const stored = await this.store.read();
+    const work: Promise<void>[] = [];
+    const considered = new Set<string>();
+    for (const { envelope } of Object.values(stored.incomingDeliveries).sort((a, b) => a.envelope.sequence_number - b.envelope.sequence_number)) {
+      if (this.remoteWorkers.size >= 3) break;
+      if (considered.has(envelope.conversation_id)) continue;
+      considered.add(envelope.conversation_id);
+      if (this.remoteWorkers.has(envelope.conversation_id) || (this.incomingRetryAt.get(envelope.id) ?? 0) > Date.now()) continue;
+      const task = Promise.resolve().then(async () => {
+        try {
+          await this.processIncomingDialogue(envelope as RemoteEnvelope<DialoguePayload>);
+          await this.store.mutate((current) => {
+            const incomingDeliveries = { ...current.incomingDeliveries };
+            delete incomingDeliveries[envelope.id];
+            return { incomingDeliveries, completedIncoming: [...current.completedIncoming, envelope.id].slice(-2000) };
+          });
+          this.incomingRetryAt.delete(envelope.id);
+        } catch (error) {
+          this.incomingRetryAt.set(envelope.id, Date.now() + 30_000);
+          this.remoteAgents.delete(envelope.conversation_id);
+          this.diagnostics.record("dialogue.retry_pending");
+          this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+        } finally { this.remoteWorkers.delete(envelope.conversation_id); }
+      });
+      this.remoteWorkers.set(envelope.conversation_id, task);
+      work.push(task);
+    }
+    await Promise.all(work);
+  }
+
+  private async processIncomingDialogue(envelope: RemoteEnvelope<DialoguePayload>) {
+      if (!this.remote) throw new Error("Нет соединения. Разговор сохранён для повторной отправки.");
+      const stored = await this.store.read();
+      if (!stored.remote || envelope.pair_id !== stored.remote.pairId) return;
+      const pair = await this.remote.pairState(stored.remote.pairId);
+      if (!pair.partner_id) throw new Error("Собеседник ещё не подключён");
+      const peerName = envelope.payload.senderName?.trim() || stored.remote.peerName;
+      const dialogue = envelope.payload;
+      if (stored.blockedTopics.some((item) => dialogue.topic.toLowerCase().includes(item.toLowerCase()))) {
+        this.diagnostics.record("dialogue.blocked");
+        return;
+      }
       if (stored.ignoredConversationIds.includes(envelope.conversation_id)) {
-        await this.remote.acknowledge(envelope.id);
         return;
       }
       if (readReportSummaries(stored.reports).some((report) => report.id === envelope.conversation_id)) {
-        await this.remote.acknowledge(envelope.id);
         return;
       }
       if (stored.conversationResetAt) {
         const resetAt = Date.parse(stored.conversationResetAt);
         if (Number.isFinite(resetAt) && envelope.created_at && Date.parse(envelope.created_at) < resetAt && !stored.conversationTranscripts[envelope.conversation_id]) {
-          await this.remote.acknowledge(envelope.id);
           return;
         }
       }
       const currentTopics = await this.store.read();
       const pendingTopics = currentTopics.pendingTopics.filter((item) => item !== dialogue.topic);
-      const activeState = await this.store.update({
-        pendingTopics,
-        pairTopics: mergeTopicCatalog(currentTopics.pairTopics, [dialogue.topic]),
-        activeTopics: mergeTopicCatalog(currentTopics.activeTopics, [dialogue.topic]),
-      });
+      const activeState = await this.store.mutate((current) => ({
+        pendingTopics: current.pendingTopics.filter((item) => item !== dialogue.topic),
+        pairTopics: mergeTopicCatalog(current.pairTopics, [dialogue.topic]),
+        activeTopics: mergeTopicCatalog(current.activeTopics, [dialogue.topic]),
+      }));
       this.emitTopicState(activeState);
       const existingAgent = this.remoteAgents.get(envelope.conversation_id);
       const inherited = dialogue.continuation && envelope.sequence_number === 1
@@ -1399,19 +1485,22 @@ export class BackgroundService {
       const messages = this.remoteMessages.get(envelope.conversation_id)
         ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
         ?? inherited;
-      const previousMessages = messages.map((message) => ({ ...message }));
-      messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text });
+      const delivery = currentTopics.incomingDeliveries[envelope.id];
+      const previousMessages = (delivery?.received ? messages.slice(0, delivery.responseSent ? -2 : -1) : messages).map((message) => ({ ...message }));
+      if (!delivery?.received) messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text });
       this.remoteMessages.set(envelope.conversation_id, messages);
-      await this.persistTranscript(envelope.conversation_id, dialogue.topic, messages);
+      const receivedState = await this.store.mutate((current) => ({
+        conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },
+        incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...current.incomingDeliveries[envelope.id], envelope, received: true } },
+      }));
+      this.publishConversations(receivedState);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
       const incomingCompletion = completionReadiness({ sequence: envelope.sequence_number, message: dialogue.text, sharedSummary: dialogue.sharedSummary });
       if (dialogue.status === "complete" && incomingCompletion.ready) {
-        await this.remote.acknowledge(envelope.id);
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text, messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary });
         return;
       }
       if (envelope.sequence_number >= MAX_REMOTE_MESSAGES) {
-        await this.remote.acknowledge(envelope.id);
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text || "Разговор пока не завершён.", messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary, completionState: "needs_follow_up" });
         return;
       }
@@ -1420,29 +1509,38 @@ export class BackgroundService {
       const guidance = dialogue.status === "complete" && !incomingCompletion.ready
         ? prematureCompletionInstruction(dialogue.topic, incomingCompletion.reasons)
         : "";
-      const initialResponse = existingAgent
+      const initialResponse = delivery?.response ?? (existingAgent
         ? await agent.respond(dialogue.text, guidance)
         : await agent.start(previousMessages.length
           ? `${incomingContinuationPrompt(previousMessages, dialogue.text)}${guidance ? `\n\nВнутренняя инструкция продолжения:\n${guidance}` : ""}`
-          : `${dialogue.text}${guidance ? `\n\nВнутренняя инструкция продолжения (это не слова собеседника):\n${guidance}` : ""}`);
-      const response = await this.ensureConversationContinuesNaturally(agent, initialResponse, dialogue.topic, envelope.sequence_number + 1);
+          : `${dialogue.text}${guidance ? `\n\nВнутренняя инструкция продолжения (это не слова собеседника):\n${guidance}` : ""}`));
+      const response = delivery?.response ?? await this.ensureConversationContinuesNaturally(agent, initialResponse, dialogue.topic, envelope.sequence_number + 1);
+      if (!delivery?.response) {
+        await this.store.mutate((current) => ({
+          conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },
+          incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...current.incomingDeliveries[envelope.id], envelope, received: true, response } },
+        }));
+      }
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({ conversationId: envelope.conversation_id, topic: dialogue.topic, question: response.owner_question, peerName, nextSequence: envelope.sequence_number + 1, transcript: messages });
-        await this.remote.acknowledge(envelope.id);
         return;
       }
-      messages.push({ from: stored.owner, text: response.message_to_peer });
       await this.persistTranscript(envelope.conversation_id, dialogue.topic, messages);
+      const latest = await this.store.read();
+      if (latest.remote?.pairId !== pair.id || latest.blockedTopics.some((item) => dialogue.topic.toLowerCase().includes(item.toLowerCase()))) return;
       const me = await this.remote.identity();
       const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
       const sequence = envelope.sequence_number + 1;
       await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
         payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
-      await this.remote.acknowledge(envelope.id);
+      if (!delivery?.responseSent) messages.push({ from: stored.owner, text: response.message_to_peer });
+      const sentState = await this.store.mutate((current) => ({
+        conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },
+        incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...current.incomingDeliveries[envelope.id], envelope, responseSent: true } },
+      }));
+      this.publishConversations(sentState);
       this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
       if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, response.shared_summary, messages, { answerFrom: stored.displayName, answerFromOwnerId: stored.owner, comparisonSummary: response.comparison_summary });
-    } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
-    finally { this.remoteBusy = false; }
   }
 
   private hasOwnerQuestion(response: AgentResponse) {
@@ -1473,9 +1571,8 @@ export class BackgroundService {
       createdAt: existing?.createdAt ?? new Date().toISOString(),
       transcript: question.transcript.map((message) => ({ ...message })),
     };
-    const pendingOwnerQuestions = [...stored.pendingOwnerQuestions.filter((item) => item.conversationId !== question.conversationId), pending];
-    await this.store.update({ pendingOwnerQuestions });
-    this.emit({ type: "owner-questions", questions: this.publicOwnerQuestions(pendingOwnerQuestions) });
+    const saved = await this.store.mutate((current) => ({ pendingOwnerQuestions: [...current.pendingOwnerQuestions.filter((item) => item.conversationId !== question.conversationId), pending] }));
+    this.emit({ type: "owner-questions", questions: this.publicOwnerQuestions(saved.pendingOwnerQuestions) });
     this.ownerQuestionNotifier();
   }
 
@@ -1560,7 +1657,7 @@ export class BackgroundService {
   private async saveRemoteReport(conversationId: string, topic: string, summary: string, messages: Array<{ from: string; text: string }>, result: { answerFrom?: string; answerFromOwnerId?: OwnerId; comparisonSummary?: string; completionState?: "completed" | "needs_follow_up" } = {}) {
     const reportsDir = path.join(this.userData, "reports");
     await mkdir(reportsDir, { recursive: true });
-    const reportPath = path.join(reportsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-remote.json`);
+    const reportPath = path.join(reportsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}-remote.json`);
     const completedAt = new Date().toISOString();
     const state = await this.store.read();
     await writeFile(reportPath, JSON.stringify({

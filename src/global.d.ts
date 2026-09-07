@@ -73,7 +73,7 @@ declare global {
       createPair(counterpartPersonId: string): Promise<AppState>;
       joinPair(invite: string, counterpartPersonId: string): Promise<AppState>;
       updateContextTopic(input: { topicId: string; aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }): Promise<AppState>;
-      refineContextTopic(input: { topicId: string; instruction: string }): Promise<{ title: string; context: string; goal: string; openingQuestion: string }>;
+      refineContextTopic(input: { topicId: string; instruction: string; preview?: { title: string; context: string; goal: string; openingQuestion: string } }): Promise<{ title: string; context: string; goal: string; openingQuestion: string }>;
       updateContextTopics(input: { topicIds: string[]; approved: boolean }): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
       discussAllTopics(): Promise<AppState>;

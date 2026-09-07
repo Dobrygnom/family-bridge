@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
   Activity,
   Ban,
@@ -31,6 +31,7 @@ import { dictationText } from "./dictation-text.js";
 import { appendDictation } from "../core/dictation.js";
 import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
 import { ReportContinuation } from "./ReportContinuation.js";
+import { PendingStatus } from "./PendingStatus.js";
 import { loadSavedState } from "./load-state.js";
 import { shareableTopicBrief, topicKey } from "../core/conversation-quality.js";
 
@@ -83,6 +84,7 @@ export function App() {
   const [topic, setTopic] = useState("");
   const [blocked, setBlocked] = useState("");
   const [busy, setBusy] = useState(false);
+  const [connectionAction, setConnectionAction] = useState<"create" | "join" | "">("");
   const [error, setError] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -97,6 +99,7 @@ export function App() {
   const [topicSearch, setTopicSearch] = useState("");
   const [expandedTopicIds, setExpandedTopicIds] = useState<Set<string>>(() => new Set());
   const [editingTopicId, setEditingTopicId] = useState("");
+  const topicEditSession = useRef(0);
   const [topicDraft, setTopicDraft] = useState({ title: "", context: "", goal: "", openingQuestion: "" });
   const [topicRefinementInstruction, setTopicRefinementInstruction] = useState("");
   const [refiningTopicId, setRefiningTopicId] = useState("");
@@ -118,6 +121,12 @@ export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
   const t = translations[language];
+  const waitingText = {
+    ru: { create: "Создаём приглашение…", join: "Соединяем приложения…", save: "Сохраняем…", context: "Подготавливаем выбранный чат…" },
+    en: { create: "Creating invitation…", join: "Connecting apps…", save: "Saving…", context: "Preparing the selected chat…" },
+    cs: { create: "Vytváříme pozvánku…", join: "Propojujeme aplikace…", save: "Ukládáme…", context: "Připravujeme vybraný chat…" },
+    fr: { create: "Création de l’invitation…", join: "Connexion des applications…", save: "Enregistrement…", context: "Préparation du chat choisi…" },
+  }[language];
   const deviceText = {
     ru: { identity: "Участники", local: "этот компьютер", partner: "компьютер партнёра", question: "Как вас называть?", hint: "Это имя увидит только партнёрский агент. Его можно изменить в настройках.", placeholder: "Ваше имя", save: "Сохранить", partnerName: "Агент партнёра", agent: "Агент" },
     en: { identity: "Participants", local: "this computer", partner: "partner computer", question: "What should we call you?", hint: "Only your partner's agent will see this name. You can change it in settings.", placeholder: "Your name", save: "Save", partnerName: "Partner's agent", agent: "Agent" },
@@ -300,6 +309,7 @@ export function App() {
       const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; updating?: boolean; progress?: number };
       if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
+      if (event.type === "error" && event.error) setError(event.error);
       if (event.type === "context-analysis" && event.analysis) {
         setState((current) => ({ ...current, contextAnalysis: event.analysis }));
         setCounterpartPersonId((current) => current || event.analysis?.people[0]?.id || "");
@@ -413,7 +423,7 @@ export function App() {
   }
 
   function contextPicker() {
-    if (contextLoading && !contextThreads.length) return <span>{contextText.loading}</span>;
+    if (contextLoading && !contextThreads.length) return <PendingStatus language={language}>{contextText.loading}</PendingStatus>;
     const projects = [...new Set(contextThreads.map((thread) => thread.project))].sort((left, right) => left.localeCompare(right, language));
     const chats = contextThreads.filter((thread) => thread.project === selectedContextProject);
     return <>
@@ -423,7 +433,8 @@ export function App() {
         setSelectedContextId(contextThreads.find((thread) => thread.project === project)?.id ?? "");
       }}><option value="">{contextText.project}</option>{projects.map((project) => <option value={project} key={project}>{project}</option>)}</select>
       <select aria-label={contextText.chat} value={selectedContextId} onChange={(event) => setSelectedContextId(event.target.value)}><option value="">{contextText.chat}</option>{chats.map((thread) => <option value={thread.id} key={thread.id}>{thread.title}</option>)}</select>
-      <button className="primary" disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextText.apply}</button>
+      <button className="primary" aria-busy={contextLoading} disabled={!selectedContextId || contextLoading} onClick={() => void selectContext()}>{contextLoading && <LoaderCircle className="spin" size={16} />}{contextText.apply}</button>
+      {contextLoading && <PendingStatus language={language}>{waitingText.context}</PendingStatus>}
     </>;
   }
 
@@ -454,19 +465,19 @@ export function App() {
   }
 
   async function createInvite() {
-    if (!api || !selectedPairPersonId) return;
-    setBusy(true); setError(""); setInviteCopied(false);
+    if (!api || !selectedPairPersonId || connectionAction) return;
+    setConnectionAction("create"); setBusy(true); setError(""); setInviteCopied(false);
     try { setState(await api.createPair(selectedPairPersonId)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(false); }
+    finally { setConnectionAction(""); setBusy(false); }
   }
 
   async function connectWithInvite() {
-    if (!api || !selectedPairPersonId || !inviteCode.trim()) return;
-    setBusy(true); setError("");
+    if (!api || !selectedPairPersonId || !inviteCode.trim() || connectionAction) return;
+    setConnectionAction("join"); setBusy(true); setError("");
     try { setState(await api.joinPair(inviteCode, selectedPairPersonId)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(false); }
+    finally { setConnectionAction(""); setBusy(false); }
   }
 
   async function copyInvite() {
@@ -492,6 +503,8 @@ export function App() {
   }
 
   function beginTopicEdit(item: NonNullable<AppState["contextAnalysis"]>["topics"][number]) {
+    if (refiningTopicId || savingTopicId) return;
+    topicEditSession.current++;
     const brief = shareableTopicBrief(item);
     setEditingTopicId(item.id);
     setTopicDraft({ title: item.title, context: brief?.context ?? "", goal: brief?.goal ?? "", openingQuestion: brief?.openingQuestion ?? "" });
@@ -500,6 +513,7 @@ export function App() {
   }
 
   function cancelTopicEdit() {
+    topicEditSession.current++;
     setEditingTopicId("");
     setTopicDraft({ title: "", context: "", goal: "", openingQuestion: "" });
     setTopicRefinementInstruction("");
@@ -512,7 +526,10 @@ export function App() {
     setTopicRefinementReady(false);
     setError("");
     try {
-      const result = await api.refineContextTopic({ topicId, instruction: topicRefinementInstruction.trim() });
+      const session = topicEditSession.current;
+      const preview = topicDraft.context && topicDraft.goal && topicDraft.openingQuestion ? topicDraft : undefined;
+      const result = await api.refineContextTopic({ topicId, instruction: topicRefinementInstruction.trim(), preview });
+      if (session !== topicEditSession.current) return;
       setTopicDraft(result);
       setTopicRefinementReady(true);
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
@@ -613,6 +630,8 @@ export function App() {
                 <label>{registryText.instruction}<textarea value={topicRefinementInstruction} maxLength={4000} placeholder={registryText.instructionPlaceholder} disabled={refiningTopicId === item.id} onChange={(event) => { setTopicRefinementInstruction(event.target.value); setTopicRefinementReady(false); }} /></label>
                 {!topicRefinementReady && <div className="topic-refinement-actions"><button className="primary" disabled={refiningTopicId === item.id || !topicRefinementInstruction.trim()} onClick={() => void refineTopicEdit(item.id)}>{refiningTopicId === item.id ? <><LoaderCircle className="spin" size={16} />{registryText.preparing}</> : registryText.prepare}</button><button className="ghost" disabled={refiningTopicId === item.id} onClick={cancelTopicEdit}>{registryText.cancel}</button></div>}
               </div>
+              {refiningTopicId === item.id && <PendingStatus language={language}>{registryText.preparing}</PendingStatus>}
+              {savingTopicId === item.id && <PendingStatus language={language}>{waitingText.save}</PendingStatus>}
               {topicRefinementReady && <>
                 <div className="topic-preview-heading"><strong>{registryText.preview}</strong><span><Check size={15} />{registryText.prepared}</span><small>{registryText.previewHint}</small></div>
                 <div className="topic-preview-card">
@@ -627,7 +646,7 @@ export function App() {
             </div> : <div className="topic-brief-grid">{brief?.context && <div><small>{registryText.context}</small><p>{brief.context}</p></div>}{brief?.goal && <div><small>{registryText.goal}</small><p>{brief.goal}</p></div>}{brief?.openingQuestion && <div className="topic-opening"><small>{registryText.opening}</small><p>«{brief.openingQuestion}»</p></div>}</div>}
             <div className="route-fields"><label>{workflowText.about}<select disabled={editing} value={item.aboutPersonIds[0] || ""} onChange={(event) => void updateContextTopic(item.id, { aboutPersonIds: [event.target.value] })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label><label>{workflowText.with}<select disabled={editing} value={item.discussWithPersonId} onChange={(event) => void updateContextTopic(item.id, { discussWithPersonId: event.target.value })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label></div>
             {item.sensitivity === "cross_person" && <small className="route-warning">{workflowText.cross}</small>}{item.sensitivity === "unclear" && <small className="route-warning">{workflowText.unclear}</small>}
-            {!editing && <div className="topic-refine">{item.approved ? <small>{registryText.selectedHint}</small> : <button className="ghost" onClick={() => beginTopicEdit(item)}>{registryText.refine}</button>}</div>}
+            {!editing && <div className="topic-refine">{item.approved ? <small>{registryText.selectedHint}</small> : <button className="ghost" disabled={Boolean(refiningTopicId || savingTopicId)} title={refiningTopicId ? registryText.preparing : undefined} onClick={() => beginTopicEdit(item)}>{registryText.refine}</button>}</div>}
           </div>}
         </div>;
       })}{!selectedPersonTopics.length && <div className="empty">{registryText.noFilteredTopics}</div>}</div>
@@ -646,7 +665,7 @@ export function App() {
     cs: ["Otevíráme uložená data…", "Stav aplikace nelze načíst. Nejde o první spuštění ani smazání dat.", "Zkusit znovu", "Otevřít diagnostický protokol"],
     fr: ["Ouverture des données enregistrées…", "Impossible de charger l’état. Ce n’est ni un premier démarrage ni une remise à zéro.", "Réessayer", "Ouvrir le journal"],
   }[language];
-  if (!loaded) return <div className="startup-status" role="status"><h1>Family Bridge</h1><p>{loadFailed ? loadingText[1] : loadingText[0]}</p>{loadFailed && <button onClick={() => { setLoadFailed(false); setReload((value) => value + 1); }}>{loadingText[2]}</button>}</div>;
+  if (!loaded) return <div className="startup-status"><h1>Family Bridge</h1>{loadFailed ? <p role="alert">{loadingText[1]}</p> : <PendingStatus language={language}>{loadingText[0]}</PendingStatus>}{loadFailed && <button onClick={() => { setLoadFailed(false); setReload((value) => value + 1); }}>{loadingText[2]}</button>}</div>;
 
   return (
     <div className="shell">
@@ -684,7 +703,7 @@ export function App() {
           <textarea aria-label={`${ownerQuestionText.placeholder}: ${item.topic}`} value={ownerAnswers[item.id] || ""} onChange={(event) => setOwnerAnswers((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={ownerQuestionText.placeholder} disabled={answeringQuestionId === item.id} />
           <DictationControl language={language} disabled={Boolean(answeringQuestionId) || Boolean(activeDictation && activeDictation !== item.id)} onText={(text) => setOwnerAnswers((current) => ({ ...current, [item.id]: appendDictation(current[item.id] || "", text) }))} onBusyChange={(value) => setActiveDictation((current) => value ? item.id : current === item.id ? "" : current)} />
           <div className="owner-question-actions">
-            <button className="primary" disabled={!ownerAnswers[item.id]?.trim() || Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id ? ownerQuestionText.processing : ownerQuestionText.answer}</button>
+            <button className="primary" aria-busy={answeringQuestionId === item.id} disabled={!ownerAnswers[item.id]?.trim() || Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id && <LoaderCircle className="spin" size={16} />}{answeringQuestionId === item.id ? ownerQuestionText.processing : ownerQuestionText.answer}</button>
             <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "unknown")}>{ownerQuestionText.unknown}</button>
             <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "decline")}>{ownerQuestionText.decline}</button>
           </div>
@@ -704,7 +723,7 @@ export function App() {
           <div>
             <span className="hero-icon"><ShieldCheck /></span>
             <p className="eyebrow">{t.state}</p>
-            <h2>{busy ? t.talking : t.waiting}</h2>
+            <h2>{state.running || busy && !connectionAction ? t.talking : t.waiting}</h2>
             <p>{t.privacy}</p>
           </div>
           <div className="hero-metrics">
@@ -720,9 +739,10 @@ export function App() {
           {state.identityConfigured && !state.remote.connected && <>
             {state.contextAnalysis?.people.length ? <>
               <label className="counterpart-select"><span>{workflowText.who}</span><select value={selectedPairPersonId || ""} onChange={(e) => setCounterpartPersonId(e.target.value)}><option value="">{workflowText.choosePerson}</option>{state.contextAnalysis.people.map((person) => <option key={person.id} value={person.id}>{personLabel(person.id)}</option>)}</select></label>
-              <div className="pair-actions"><button className="primary" disabled={!selectedPairPersonId || busy} onClick={() => void createInvite()}>{state.remote.invite ? workflowText.recreate : workflowText.create}</button></div>
+              <div className="pair-actions"><button className="primary" aria-busy={connectionAction === "create"} disabled={!selectedPairPersonId || busy || Boolean(connectionAction)} onClick={() => void createInvite()}>{connectionAction === "create" && <LoaderCircle className="spin" size={16} />}{connectionAction === "create" ? waitingText.create : state.remote.invite ? workflowText.recreate : workflowText.create}</button></div>
               {state.remote.invite && <div className="invite-box"><p>{t.shareCode}</p><textarea readOnly value={state.remote.invite} onFocus={(e) => e.currentTarget.select()} /><button className="ghost" onClick={() => void copyInvite()}>{inviteCopied ? workflowText.copied : workflowText.copy}</button></div>}
-              <div className="join-box"><span>{workflowText.orJoin}</span><div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button disabled={!selectedPairPersonId || !inviteCode.trim() || busy} onClick={() => void connectWithInvite()}>{workflowText.connect}</button></div></div>
+              <div className="join-box"><span>{workflowText.orJoin}</span><div className="input-row"><input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder={t.pasteInvite}/><button aria-busy={connectionAction === "join"} disabled={!selectedPairPersonId || !inviteCode.trim() || busy || Boolean(connectionAction)} onClick={() => void connectWithInvite()}>{connectionAction === "join" && <LoaderCircle className="spin" size={16} />}{connectionAction === "join" ? waitingText.join : workflowText.connect}</button></div></div>
+              {connectionAction && <PendingStatus language={language}>{waitingText[connectionAction]}</PendingStatus>}
             </> : <div className="context-needed"><span>{workflowText.needContext}</span><button className="ghost" onClick={() => goTo("context")}>{workflowText.openContext}</button></div>}
           </>}
           {state.remote.configured && <div className="connected-card">
@@ -745,7 +765,8 @@ export function App() {
               <div><span>{contextText.learned}</span><strong>{state.memory.learnedCount ?? 0}</strong></div>
               <div><span>{contextText.synced}</span><strong>{state.context.lastSyncedAt ? new Date(state.context.lastSyncedAt).toLocaleString(language) : "—"}</strong></div>
             </div> : <><strong className="context-empty">{contextText.none}</strong><p className="muted">{contextText.explanation}</p></>}
-            <div className="actions"><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{state.context ? contextText.change : contextText.choose}</button>{state.context && <button className="ghost" disabled={contextLoading || state.contextSyncing} onClick={() => void refreshContextNow()}>{contextText.refresh}</button>}</div>
+            <div className="actions"><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{state.context ? contextText.change : contextText.choose}</button>{state.context && <button className="ghost" aria-busy={contextLoading || state.contextSyncing} disabled={contextLoading || state.contextSyncing} onClick={() => void refreshContextNow()}>{(contextLoading || state.contextSyncing) && <LoaderCircle className="spin" size={16} />}{contextText.refresh}</button>}</div>
+            {contextLoading && !showContextPicker && !state.contextSyncing && <PendingStatus language={language}>{`${contextText.refresh}…`}</PendingStatus>}
             {showContextPicker && <div className="context-picker">
               {contextPicker()}
             </div>}
@@ -778,7 +799,8 @@ export function App() {
             {displayedPairTopics.length > 6 && <button className="topic-list-toggle" onClick={() => setShowAllPairTopics((value) => !value)}>{showAllPairTopics ? pairListText.less : `${pairListText.more} · ${displayedPairTopics.length - 6}`}</button>}
             <div className="input-row"><input aria-label={workflowText.addTopic} disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim() || Boolean(activeDictation)} onClick={() => void addTopic()}>{t.add}</button></div>
             <DictationControl language={language} disabled={!state.remote.counterpartPersonId || Boolean(activeDictation && activeDictation !== "new-topic")} onText={(text) => setTopic((current) => appendDictation(current, text))} onBusyChange={(value) => setActiveDictation((current) => value ? "new-topic" : current === "new-topic" ? "" : current)} />
-            <div className="actions"><button className="primary" disabled={busy || !state.remote.connected || state.remote.dialogueCompatible === false || !state.pendingTopics.length} onClick={() => void discussAllTopics()}><Sparkles size={17} />{busy ? workflowText.discussing : workflowText.discuss}</button></div>
+            <div className="actions"><button className="primary" aria-busy={state.running || busy && !connectionAction} disabled={busy || state.running || !state.remote.connected || state.remote.dialogueCompatible === false || !state.pendingTopics.length} onClick={() => void discussAllTopics()}>{state.running || busy && !connectionAction ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}{state.running || busy && !connectionAction ? workflowText.discussing : workflowText.discuss}</button></div>
+            {(state.running || busy && !connectionAction) && <PendingStatus language={language}>{workflowText.discussing}</PendingStatus>}
           </section>}
 
           {activeSection === "people" && <section className="panel portraits-panel" id="people">

@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
+import type { RemoteEnvelope } from "../src/core/supabase-transport.js";
+import type { AgentResponse } from "../src/core/types.js";
 
 export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
@@ -54,6 +56,8 @@ export interface StoredState {
   ignoredConversationIds: string[];
   continuations: Record<string, ConversationContinuation>;
   conversationParents: Record<string, string>;
+  incomingDeliveries: Record<string, { envelope: RemoteEnvelope; received?: boolean; response?: AgentResponse; responseSent?: boolean }>;
+  completedIncoming: string[];
   lastConversationAt?: string;
   remote?: {
     pairId: string;
@@ -87,9 +91,11 @@ const defaults: StoredState = {
   ignoredConversationIds: [],
   continuations: {},
   conversationParents: {},
+  incomingDeliveries: {},
+  completedIncoming: [],
 };
 
-async function replaceStateFile(temporary: string, destination: string) {
+export async function replaceStateFile(temporary: string, destination: string) {
   for (let attempt = 0; ; attempt += 1) {
     try { await rename(temporary, destination); return; }
     catch (error) {

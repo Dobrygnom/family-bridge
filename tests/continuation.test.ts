@@ -95,7 +95,7 @@ test("receiving a continuation supplies prior history and does not treat its fir
   try {
     await f.store.update({ owner: "katya" });
     (f.service as any).localRemoteAgent = () => ({ start: async (prompt: string) => { received = prompt; return response("После семи удобно", "complete"); } });
-    f.transport.claimNext = async () => ({ id: "message", conversation_id: "continued-id", sequence_number: 1, sender_agent: "dima", payload: { kind: "dialogue", topic: "Звонки", text: "А вечером?", status: "continue", continuation: { parentReportId: "original-id", history } } });
+    f.transport.claimNext = async () => ({ id: "message", pair_id: "pair", conversation_id: "continued-id", sequence_number: 1, sender_agent: "dima", payload: { kind: "dialogue", topic: "Звонки", text: "А вечером?", status: "continue", continuation: { parentReportId: "original-id", history } } });
     await (f.service as any).pumpRemote();
     assert.match(received, /Давай согласуем время заранее/);
     assert.match(received, /Новая реплика собеседника:\nА вечером/);
@@ -120,7 +120,7 @@ test("received messages are pushed live and a first answer remains open for a re
   f.transport.claimNext = async () => {
     if (delivered) return null;
     delivered = true;
-    return { id: "message-live", conversation_id: "live-child", sequence_number: 1, sender_agent: "katya",
+    return { id: "message-live", pair_id: "pair", conversation_id: "live-child", sequence_number: 1, sender_agent: "katya",
       payload: { kind: "dialogue", topic: "Звонки", text: "Новая реплика прямо сейчас", status: "continue", continuation: { parentReportId: "original-id", history } } };
   };
   const processing = (f.service as any).pumpRemote();
@@ -149,7 +149,7 @@ test("a peer cannot finish a new conversation with its first answer", async () =
   try {
     await f.store.update({ owner: "katya" });
     (f.service as any).localRemoteAgent = () => ({ start: async () => response("Я тебя услышала. А что для тебя здесь самое важное?", "complete") });
-    f.transport.claimNext = async () => ({ id: "early-complete", conversation_id: "early", sequence_number: 2, sender_agent: "dima",
+    f.transport.claimNext = async () => ({ id: "early-complete", pair_id: "pair", conversation_id: "early", sequence_number: 2, sender_agent: "dima",
       payload: { kind: "dialogue", topic: "Границы", text: "Мне нужно больше времени.", status: "complete", sharedSummary: "Мне нужно время." } });
     await (f.service as any).pumpRemote();
     assert.equal((await f.store.read()).reports.length, 1);
@@ -172,7 +172,7 @@ test("a natural fourth message with a concrete result can finish the exchange", 
     f.transport.claimNext = async () => {
       if (delivered) return null;
       delivered = true;
-      return { id: "natural-complete", conversation_id: "natural", sequence_number: 4, sender_agent: "dima",
+      return { id: "natural-complete", pair_id: "pair", conversation_id: "natural", sequence_number: 4, sender_agent: "dima",
         payload: { kind: "dialogue", topic: "Границы", text: "Да, этого мне достаточно.", status: "complete", sharedSummary: "Мне важно иметь время на ответ, и ты готова его дать." } };
     };
     await (f.service as any).pumpRemote();

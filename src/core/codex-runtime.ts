@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentId, AgentResponse, AgentRuntime } from "./types.js";
+import { preferredModelArgs } from "./codex-model.js";
 
 interface CodexJsonEvent {
   type?: string;
@@ -27,6 +28,8 @@ export interface CodexRuntimeOptions {
   codexCommand?: string;
   language?: "ru" | "en" | "cs" | "fr";
   communicationExamples?: string;
+  /** null explicitly keeps the CLI default; omitted prefers available Astra. */
+  model?: string | null;
 }
 
 const languageNames = { ru: "русском", en: "английском", cs: "чешском", fr: "французском" } as const;
@@ -39,7 +42,8 @@ export function hasRoleVoiceViolation(response: AgentResponse, ownerName: string
   const text = `${response.message_to_peer}\n${response.shared_summary}`;
   const pairedNames = new RegExp(`(?:${escapeRegex(ownerName)}\\s+и\\s+${escapeRegex(peerName)}|${escapeRegex(peerName)}\\s+и\\s+${escapeRegex(ownerName)})`, "iu");
   return pairedNames.test(text)
-    || /(?:^|[^а-яё])(агент[а-яё]*|владел[а-яё]*|медиатор[а-яё]*|переговор[а-яё]*|сторон[а-яё]*)(?:$|[^а-яё])/iu.test(text)
+    || /(?:^|[^а-яё])(агент[а-яё]*|владел[а-яё]*|медиатор[а-яё]*)(?:$|[^а-яё])/iu.test(text)
+    || /(?:стороны договорились|позиции сторон|участники переговоров)/iu.test(text)
     || /\b(agent|agents|owner|owners|mediator|participant|participants)\b/iu.test(text)
     || /содержательн[а-яё]* (?:общ[а-яё]* )?результат/iu.test(text)
     || /рабоч[а-яё]* договорённост/iu.test(text);
@@ -61,6 +65,9 @@ const SYSTEM_RULES = `
 - message_to_peer пиши как живую реплику владельца: обычно 1–4 коротких предложения. Сохраняй его обычную прямоту, лексику, длину фраз, пунктуацию, сленг и уместную резкость;
 - не используй канцелярский или терапевтический язык вроде «практические последствия», «наиболее обратимый вариант», «единый протокол», «оценить по шкале», если так не говорит сам владелец;
 - реагируй прежде всего на последнюю реплику собеседника, а не только на абстрактное название темы. Допустимы естественные сомнения, эмоции, несогласие, короткие уточнения и узнаваемая резкость владельца; не превращай каждую реплику в идеально отполированный вывод;
+- если собеседник спрашивает о твоём опыте, используй относящиеся к вопросу сведения из локальной перспективы, а не общие советы. Если опоры нет, честно скажи, чего именно не знаешь: не сочиняй чувства, мотивы, эпизоды или согласие владельца ради естественного звучания;
+- каждая новая реплика должна добавлять смысл: ответ на вопрос, относящийся к нему факт, реакцию, различие позиций или нужное уточнение. Не повторяй собственный вывод другими словами и не превращай беседу в анкету: не обязательно заканчивать каждую реплику вопросом;
+- не соглашайся автоматически ради завершения. «Понял твою позицию» не означает «я согласен»; предложение или предположение не считается принятой договорённостью. Не выдавай выведенную моделью позицию за личное подтверждение человека;
 - если ты начал разговор по поручению владельца, задай второй стороне один понятный вопрос и не отвечай за неё. После её ответа обязательно отреагируй по существу и обозначь свою позицию; инициатор не завершает разговор вместо отвечающей стороны;
 - если первое входящее сообщение уже содержит вопрос от второго агента, ты отвечающая сторона. На первый вопрос дай содержательный ответ, но поставь status="continue": собеседник должен получить возможность отреагировать, уточнить или обозначить свою позицию. Завершить разговор можно только после этой реакции и собственного ответа на неё;
 - shared_summary: максимум 240 символов и 1–2 живых предложения. Никакого нейтрального резюме, рекомендаций «Кате и Дмитрию» или пересказа переговоров;
@@ -130,6 +137,7 @@ export function buildOwnerQuestionReviewPrompt(ownerName: string, peerName: stri
 export class CodexCliAgent implements AgentRuntime {
   readonly id: AgentId;
   private sessionId?: string;
+  private modelArgs?: Promise<string[]>;
 
   constructor(private readonly options: CodexRuntimeOptions) {
     this.id = options.id;
@@ -191,10 +199,14 @@ export class CodexCliAgent implements AgentRuntime {
     return response;
   }
 
-  private run(args: string[], stdin: string): Promise<{ threadId?: string; response: AgentResponse }> {
+  private async run(args: string[], stdin: string): Promise<{ threadId?: string; response: AgentResponse }> {
     const command = this.options.codexCommand ?? "codex";
+    this.modelArgs ??= this.options.model === undefined ? preferredModelArgs(command)
+      : Promise.resolve(this.options.model ? ["--model", this.options.model] : []);
+    const selectedArgs = await this.modelArgs;
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
+      const commandEnd = args[1] === "resume" ? 2 : 1;
+      const child = spawn(command, [...args.slice(0, commandEnd), ...selectedArgs, ...args.slice(commandEnd)], {
         cwd: this.options.workspace,
         windowsHide: true,
         shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),
