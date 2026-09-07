@@ -43,17 +43,17 @@ export function shareableTopicBrief(topic: RoutedTopic | undefined): TopicBrief 
   if (!topic?.reason.trim()) return undefined;
   const context = section(
     topic.reason,
-    /(?:Наблюдаемая динамика|Observed dynamic|Pozorovan(?:a|á) dynamika|Dynamique observée)\s*:\s*/iu,
-    /(?:Психологическая цель|Psychological goal|Psychologick(?:y|ý) cíl|Objectif psychologique)\s*:\s*/iu,
+    /(?:Контекст|Наблюдаемая динамика|Observed dynamic|Pozorovan(?:a|á) dynamika|Dynamique observée)\s*:\s*/iu,
+    /(?:Что хотим понять|Психологическая цель|Psychological goal|Psychologick(?:y|ý) cíl|Objectif psychologique)\s*:\s*/iu,
   );
   const goal = section(
     topic.reason,
-    /(?:Психологическая цель|Psychological goal|Psychologick(?:y|ý) cíl|Objectif psychologique)\s*:\s*/iu,
-    /(?:Первый вопрос|First question|První otázka|Première question)\s*:\s*/iu,
+    /(?:Что хотим понять|Психологическая цель|Psychological goal|Psychologick(?:y|ý) cíl|Objectif psychologique)\s*:\s*/iu,
+    /(?:Начало разговора|Первый вопрос|First question|První otázka|Première question)\s*:\s*/iu,
   );
   const openingQuestion = section(
     topic.reason,
-    /(?:Первый вопрос|First question|První otázka|Première question)\s*:\s*/iu,
+    /(?:Начало разговора|Первый вопрос|First question|První otázka|Première question)\s*:\s*/iu,
     /$(?![\s\S])/u,
   );
   const brief = {

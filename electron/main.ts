@@ -207,7 +207,8 @@ app.whenReady().then(async () => {
     void checkForUpdates();
   });
   const state = await store.read();
-  app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
+  // A local verification build must not replace the installed app's login entry.
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
   ipcMain.handle("bridge:get-state", () => service.state());
   ipcMain.handle("bridge:diagnose-ui", async (_event, input: unknown) => {

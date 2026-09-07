@@ -4,6 +4,14 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { preferredModelArgs } from "./codex-model.js";
 import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
+import { buildDiscoveryPrompt, buildTopicSelectionPrompt } from "./topic-discovery-prompts.js";
+
+export interface AnalysisMessage { text: string; created_at?: string }
+
+export function sourceThroughDate(messages: AnalysisMessage[]): string | undefined {
+  const dates = messages.flatMap((message) => message.created_at && Number.isFinite(Date.parse(message.created_at)) ? [new Date(message.created_at).toISOString()] : []);
+  return dates.sort().at(-1);
+}
 
 export interface ContextPerson {
   id: string;
@@ -34,6 +42,8 @@ export interface ContextAnalysis {
   topics: RoutedTopic[];
   progress?: { stage: "analyzing" | "consolidating"; current: number; total: number };
   error?: string;
+  model?: string;
+  sourceThrough?: string;
 }
 
 interface RawAnalysis {
@@ -42,10 +52,10 @@ interface RawAnalysis {
   topics: Array<{ title: string; about_people: string[]; discuss_with: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string }>;
 }
 
-export const CONTEXT_ANALYSIS_VERSION = 4;
+export const CONTEXT_ANALYSIS_VERSION = 5;
 
-export function contextSourceHash(messages: Array<{ text: string }>): string {
-  return createHash("sha256").update(messages.map((message) => message.text).join("\n\u0000\n"), "utf8").digest("hex");
+export function contextSourceHash(messages: AnalysisMessage[]): string {
+  return createHash("sha256").update(JSON.stringify(messages.map((message) => [message.created_at ?? null, message.text])), "utf8").digest("hex");
 }
 
 export function contextAnalysisNeedsRefresh(analysis: ContextAnalysis | undefined, sourceId: string, sourceHash: string): boolean {
@@ -56,12 +66,16 @@ export function contextAnalysisNeedsRefresh(analysis: ContextAnalysis | undefine
     || analysis.status !== "ready";
 }
 
-export function splitContextMessages(messages: Array<{ text: string }>, maxCharacters = 50_000): string[] {
+export function splitContextMessages(messages: AnalysisMessage[], maxCharacters = 50_000): string[] {
+  if (maxCharacters < 20) throw new Error("Context chunk size is too small");
   const chunks: string[] = [];
   let current = "";
   for (const [index, message] of messages.entries()) {
-    const numbered = `[${index + 1}] ${message.text.trim()}`;
-    if (!numbered.trim()) continue;
+    const text = message.text.trim();
+    if (!text) continue;
+    const date = message.created_at && Number.isFinite(Date.parse(message.created_at)) ? new Date(message.created_at).toISOString() : "unknown";
+    const header = `[${index + 1}; written_at=${date}] `;
+    const numbered = header + text;
     if (current && current.length + numbered.length + 2 > maxCharacters) {
       chunks.push(current);
       current = "";
@@ -71,7 +85,10 @@ export function splitContextMessages(messages: Array<{ text: string }>, maxChara
       continue;
     }
     if (current) { chunks.push(current); current = ""; }
-    for (let offset = 0; offset < numbered.length; offset += maxCharacters) chunks.push(numbered.slice(offset, offset + maxCharacters));
+    // Repeat provenance on fragments of a long pasted conversation.
+    const fragmentHeader = header.length < maxCharacters - 4 ? header : `[${index + 1}] `;
+    const size = maxCharacters - fragmentHeader.length;
+    for (let offset = 0; offset < text.length; offset += size) chunks.push(fragmentHeader + text.slice(offset, offset + size));
   }
   if (current) chunks.push(current);
   return chunks;
@@ -141,6 +158,13 @@ export function preserveContextAnalysis(incoming: ContextAnalysis, saved?: Conte
   };
 }
 
+/** Explicit rediscovery only. Ordinary sync still preserves every saved topic. */
+export function replaceUnreviewedSuggestions(incoming: ContextAnalysis, saved: ContextAnalysis): ContextAnalysis {
+  if (incoming.sourceId !== saved.sourceId) throw new Error("The selected source changed during rediscovery");
+  const protectedTopics = saved.topics.filter((topic) => topic.approved || Boolean(topic.sourceTitles?.length));
+  return preserveContextAnalysis({ ...incoming, topics: incoming.topics.map((topic) => ({ ...topic, approved: false })) }, { ...saved, topics: protectedTopics });
+}
+
 export function topicsForCounterpart(analysis: ContextAnalysis | undefined, personId: string | undefined): RoutedTopic[] {
   if (!analysis || !personId) return [];
   return analysis.topics.filter((topic) => topic.approved && topic.discussWithPersonId === personId);
@@ -154,89 +178,61 @@ export function routeSensitivity(aboutPersonIds: string[], discussWithPersonId: 
 export class CodexContextAnalyzer {
   constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string) {}
 
-  async analyze(input: { sourceId: string; sourceHash: string; ownerName: string; language: string; messages: Array<{ text: string }>; previous?: ContextAnalysis; onProgress?: (progress: NonNullable<ContextAnalysis["progress"]>) => void | Promise<void> }): Promise<ContextAnalysis> {
+  async analyze(input: { sourceId: string; sourceHash: string; ownerName: string; language: string; messages: AnalysisMessage[]; previous?: ContextAnalysis; onProgress?: (progress: NonNullable<ContextAnalysis["progress"]>) => void | Promise<void> }): Promise<ContextAnalysis> {
     await mkdir(this.workspace, { recursive: true });
     const chunks = splitContextMessages(input.messages);
     if (!chunks.length) throw new Error("В выбранном чате нет текстовых реплик пользователя");
+    const modelArgs = await preferredModelArgs(this.command);
+    const sourceThrough = sourceThroughDate(input.messages);
     const total = chunks.length + 1;
     let completed = 0;
     const rawParts = await this.mapConcurrent(chunks, 2, async (transcript) => {
-      const raw = await this.runCached(this.analysisPrompt(input.ownerName, input.language, transcript));
+      // Historical extraction depends on the fragment, not the newest message in
+      // another fragment. Only final selection decides what is current today.
+      const prompt = buildDiscoveryPrompt(input.ownerName, input.language, transcript);
+      const legacyPrompts = input.previous?.sourceThrough
+        ? [buildDiscoveryPrompt(input.ownerName, input.language, transcript, input.previous.sourceThrough)] : [];
+      const raw = await this.runCached(prompt, modelArgs, legacyPrompts);
       completed += 1;
       await input.onProgress?.({ stage: "analyzing", current: completed, total });
       return raw;
     });
     await input.onProgress?.({ stage: "consolidating", current: total, total });
-    const raw = await this.consolidate(rawParts, input.ownerName, input.language);
-    return normalizeContextAnalysis(raw, input.sourceId, input.sourceHash, input.previous, input.ownerName);
+    const raw = await this.consolidate(rawParts, input.ownerName, input.language, sourceThrough, modelArgs);
+    return { ...normalizeContextAnalysis(raw, input.sourceId, input.sourceHash, input.previous, input.ownerName), model: modelArgs[1], sourceThrough };
   }
 
-  private analysisPrompt(ownerName: string, language: string, transcript: string) {
-    return `Ты выполняешь первый, исследовательский этап семейно-психологического анализа личного чата владельца ${ownerName || "приложения"}. Это не итоговый список тем и не суммаризация сообщений. Твоя задача — сохранить материал, из которого следующий этап сможет рекомендовать содержательные разговоры.
-
-Найди упоминаемых близких людей, кроме самого владельца. Для каждого дай короткий стабильный key латиницей, отображаемое имя или нейтральную роль, тип отношений и встречающиеся формы имени.
-
-В portraits составь компактный портрет самого владельца и найденных людей. Для владельца всегда используй person_key="owner", для остальных — тот же key, что в people. Добавляй только отдельные короткие наблюдения о конкретном человеке:
-- fact — явно сообщённый факт;
-- view — его позиция или объяснение;
-- preference — желание, потребность или граница;
-- pattern — устойчивый способ реагирования, только если он действительно повторяется или прямо описан;
-- uncertainty — важная неопределённость самого человека.
-Не создавай портрет пары или отношений как отдельной сущности. Не ставь диагнозов, не превращай единичную эмоцию в черту характера и не выдавай взгляд владельца на другого человека за подтверждённую истину. Сохрани формулировку как осторожное наблюдение о конкретном человеке.
-
-В topics запиши не названия сообщений, а предварительные психологические гипотезы о динамике отношений: повторяющиеся эпизоды, неудовлетворённые потребности, болезненные циклы, противоречивые ожидания, нерешённые решения, попытки сближения или защиты и то, что уже пробовали делать. Одиночную бытовую реплику не превращай в тему без признака напряжения, повторения, важного выбора или потребности в восстановлении отношений.
-
-Для каждой предварительной гипотезы обязательно раздели:
-- about_people: о ком эта тема;
-- discuss_with: с кем её следует обсуждать.
-
-В title кратко назови предполагаемую динамику. В reason зафиксируй наблюдаемую основу гипотезы, но не копируй сообщения дословно. Не объявляй одностороннюю версию владельца объективной истиной. Если тема о третьем человеке предназначена партнёру, это cross_person. Не ставь диагнозов и не выдумывай людей. Если адресат неясен, используй sensitivity=unclear, но discuss_with всё равно должен ссылаться на наиболее вероятного человека. Язык названий и объяснений: ${language}.
-
-Верни только JSON по схеме. Исходные реплики владельца:
-${transcript}`;
-  }
-
-  private async consolidate(parts: RawAnalysis[], ownerName: string, language: string): Promise<RawAnalysis> {
+  private async consolidate(parts: RawAnalysis[], ownerName: string, language: string, sourceThrough: string | undefined, modelArgs: string[]): Promise<RawAnalysis> {
     const serialized = JSON.stringify(parts);
     if (serialized.length > 120_000 && parts.length > 2) {
+      // Intermediate compaction must keep evidence, including resolved questions;
+      // selecting topics here would discard later corrections before the final pass.
       const middle = Math.ceil(parts.length / 2);
-      return this.consolidate([
-        await this.consolidate(parts.slice(0, middle), ownerName, language),
-        await this.consolidate(parts.slice(middle), ownerName, language),
-      ], ownerName, language);
+      const compact = async (group: RawAnalysis[]) => this.runCached(
+        buildDiscoveryPrompt(ownerName, language, "Research notes, retain dates, source references, corrections and unresolved questions: " + JSON.stringify(group), sourceThrough),
+        modelArgs,
+      );
+      const compacted = await Promise.all([compact(parts.slice(0, middle)), compact(parts.slice(middle))]);
+      return this.consolidate(compacted, ownerName, language, sourceThrough, modelArgs);
     }
-    return this.runCached(`Выступи как опытный семейный психолог и преврати исследовательские заметки по личному чату ${ownerName || "владельца"} в портреты конкретных людей и рекомендуемую повестку разговоров между двумя семейными агентами.
-
-Это не суммаризация сообщений и не каталог слов, которые встречались в чате. Сначала мысленно восстанови происходившую динамику отношений: что повторяется, где стороны застряли, какая потребность не услышана, какое решение откладывается, что требует прояснения, восстановления доверия или практической договорённости. Затем выбери именно те разговоры, которые ты как семейный психолог действительно посоветовал бы провести.
-
-Каждая итоговая тема должна одновременно иметь:
-- конкретное напряжение, паттерн, нерешённый выбор или потребность;
-- понятного адресата discuss_with;
-- конструктивную цель, которой агенты могут достичь в разговоре;
-- достаточную опору в заметках, без выдуманных фактов и диагнозов.
-
-Не создавай тему из каждого сообщения. Объединяй разные эпизоды одного повторяющегося цикла, но не склеивай разные решения, травмы или договорённости. Исключи простые новости, уже завершённые вопросы, общий эмоциональный выплеск без запроса к другому человеку и сугубо индивидуальные темы, для которых разговор с указанным человеком ничего не может изменить.
-
-Title — это узнаваемая конкретная задача разговора, а не рубрика и не абстрактное существительное. Формулируй его как действие и желаемый результат. Плохо: «Доверие», «Границы в браке», «Общение после расставания», «Отношения с мужем». Хорошо: «Согласовать, какие контакты после расставания допустимы и как сообщать о них», «Обсудить, что каждый считает изменой и какие границы нужны дальше», «Договориться, как сообщать болезненные факты без давления и допроса».
-
-Reason должен помогать понять рекомендацию обоим людям, включая того, кто не видел исходный чат, и состоять из трёх коротких частей: «Наблюдаемая динамика: … Психологическая цель: … Первый вопрос: …». В наблюдаемой динамике дай 1–2 конкретных предложения: какая ситуация или повторяющийся эпизод имеется в виду, что в нём задевает или остаётся непонятным. Не используй без опоры слова «это», «ситуация», «проблема» и другие ссылки, понятные только автору исходного сообщения. Описывай динамику как обоснованную гипотезу, а не установленную истину. Не цитируй интимные признания дословно, но и не обезличивай формулировку настолько, что владелец или адресат не узнают, о чём речь. Весь reason должен оставаться компактным, а не превращаться в эссе.
-
-Одинаковых людей объедини, сохранив известные имена, роли и aliases. Удали только настоящие дубликаты тем. Не склеивай разные конфликты, потребности и договорённости в одну общую формулировку. Сохрани все различимые темы из всех частей. about_people и discuss_with должны ссылаться только на итоговые key людей. Пересчитай sensitivity: cross_person, если тема хотя бы об одном человеке, отличном от discuss_with; direct, если она только об адресате; unclear, если уверенности недостаточно. Не добавляй новых фактов. Язык: ${language}.
-
-Собери portraits для person_key="owner" и каждого итогового человека. Удали дубликаты наблюдений, сохрани различимые факты, позиции, предпочтения, устойчивые паттерны и существенные неопределённости. Обычно достаточно 5–15 наиболее содержательных наблюдений на человека. Каждое наблюдение должно описывать только одного человека. Взгляд владельца на другого человека формулируй осторожно, не превращая его в объективный факт. Не создавай сущность для пары или отношений.
-
-Расположи темы в порядке ожидаемой пользы: сначала разговоры, которые сильнее всего влияют на безопасность, доверие, повторяющиеся конфликты и важные решения, затем менее срочные.
-
-Верни только JSON по схеме. Частичные результаты:
-${serialized}`);
+    return this.runCached(buildTopicSelectionPrompt(parts, ownerName, language, sourceThrough), modelArgs);
   }
 
-  private async runCached(prompt: string): Promise<RawAnalysis> {
-    const key = createHash("sha256").update(prompt).digest("hex");
+  private async runCached(prompt: string, modelArgs: string[], legacyPrompts: string[] = []): Promise<RawAnalysis> {
+    const key = createHash("sha256").update(JSON.stringify({ prompt, modelArgs })).digest("hex");
     const file = path.join(this.workspace, `analysis-${key}.json`);
     try { return JSON.parse(await readFile(file, "utf8")) as RawAnalysis; }
     catch { /* a missing or invalid partial result is recalculated */ }
-    const result = await this.run(prompt);
+    // A one-time migration of v5 extraction notes with the same source fragment,
+    // model and instructions, but the previous snapshot's date hint. Those notes
+    // are evidence, not final topics; selection always rechecks the current date.
+    let reusable: RawAnalysis | undefined;
+    for (const legacyPrompt of legacyPrompts) {
+      const legacyKey = createHash("sha256").update(JSON.stringify({ prompt: legacyPrompt, modelArgs })).digest("hex");
+      try { reusable = JSON.parse(await readFile(path.join(this.workspace, `analysis-${legacyKey}.json`), "utf8")) as RawAnalysis; break; }
+      catch { /* not the same historical fragment */ }
+    }
+    const result = reusable ?? await this.run(prompt, modelArgs);
     const temporary = `${file}.${process.pid}.tmp`;
     await writeFile(temporary, JSON.stringify(result), "utf8");
     await rename(temporary, file);
@@ -256,10 +252,11 @@ ${serialized}`);
     return result;
   }
 
-  private async run(prompt: string): Promise<RawAnalysis> {
-    const args = ["exec", ...await preferredModelArgs(this.command), "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
+  private async run(prompt: string, modelArgs: string[]): Promise<RawAnalysis> {
+    const args = ["exec", ...modelArgs, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
       child.stdin.end(prompt);
       const timeout = setTimeout(() => {
         child.kill();

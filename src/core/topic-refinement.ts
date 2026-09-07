@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import type { TopicBrief } from "./conversation-quality.js";
 import { preferredModelArgs } from "./codex-model.js";
+import { naturalTopicRules } from "./topic-discovery-prompts.js";
 
 export interface TopicRefinement extends TopicBrief {
   title: string;
@@ -56,9 +57,11 @@ export function buildTopicRefinementPrompt(input: TopicRefinementInput) {
 - сохрани осторожность там, где исходная тема говорит лишь о гипотезе;
 - title — короткое конкретное название разговора;
 - context — 1–3 коротких предложения: что произошло или повторяется и почему вопрос возник; текст должен быть понятен человеку, который не видел исходный чат;
-- goal — один конкретный результат, к которому должен прийти разговор;
-- openingQuestion — естественная первая реплика от первого лица владельца к собеседнику, а не заголовок, отчёт или совет психолога;
+- goal — что владелец хочет понять или услышать, а не заранее назначенная договорённость;
+- openingQuestion — 2–4 естественных предложения от первого лица владельца к собеседнику: конкретная ситуация, своя реакция и один открытый вопрос, а не заголовок, отчёт или совет психолога;
 - не цитируй исходные личные сообщения и не включай в результат само поручение пользователя.
+
+${naturalTopicRules}
 
 Текущий точный предпросмотр:
 ${JSON.stringify({ title: input.title, ...input.brief }, null, 2)}

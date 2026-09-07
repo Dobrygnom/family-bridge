@@ -9,7 +9,7 @@ import type { UpdateState } from "./mac-updater.js";
 import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
-import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis } from "../src/core/context-analysis.js";
+import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
@@ -519,7 +519,7 @@ export class BackgroundService {
     return operation;
   }
 
-  private async analyzeContext(sourceId: string, sourceHash: string, messages: Array<{ text: string }>, previous?: ContextAnalysis) {
+  private async analyzeContext(sourceId: string, sourceHash: string, messages: AnalysisMessage[], previous?: ContextAnalysis) {
     this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
     const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [] };
     await this.writeContextAnalysis(analyzing, true);
