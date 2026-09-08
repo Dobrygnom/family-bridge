@@ -61,7 +61,7 @@ export function shareableTopicBrief(topic: RoutedTopic | undefined): TopicBrief 
     /$(?![\s\S])/u,
   );
   const brief = {
-    ...(context ? { context: context.slice(0, 500) } : {}),
+    ...(context ? { context: context.slice(0, 800) } : {}),
     ...(goal ? { goal: goal.slice(0, 800) } : {}),
     ...(openingQuestion ? { openingQuestion: openingQuestion.slice(0, 800) } : {}),
   };

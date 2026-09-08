@@ -5,6 +5,7 @@ import path from "node:path";
 import { preferredModelArgs } from "./codex-model.js";
 import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
 import { buildDiscoveryPrompt, buildTopicSelectionPrompt } from "./topic-discovery-prompts.js";
+import { coveragePrompt, coverageSchema, dialogueGroupingPrompt, selectionEvidence, validateCoverage, type CoverageAnalysis } from "./topic-coverage.js";
 
 export interface AnalysisMessage { text: string; created_at?: string }
 
@@ -29,6 +30,7 @@ export interface RoutedTopic {
   reason: string;
   approved: boolean;
   sourceTitles?: string[];
+  relevance?: "current" | "check_relevance";
 }
 
 export interface ContextAnalysis {
@@ -46,10 +48,10 @@ export interface ContextAnalysis {
   sourceThrough?: string;
 }
 
-interface RawAnalysis {
+export interface RawAnalysis {
   people: Array<{ key: string; label: string; relationship: string; aliases: string[] }>;
   portraits?: RawPortrait[];
-  topics: Array<{ title: string; about_people: string[]; discuss_with: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string }>;
+  topics: Array<{ title: string; about_people: string[]; discuss_with: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string; relevance?: "current" | "check_relevance" }>;
 }
 
 export const CONTEXT_ANALYSIS_VERSION = 5;
@@ -128,7 +130,7 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
     if (!discussWithPersonId || !topic.title.trim()) return [];
     const aboutPersonIds = topic.about_people.map((key) => keyToId.get(key)).filter((value): value is string => Boolean(value));
     const id = `topic-${createHash("sha256").update(`${topic.title}\u0000${discussWithPersonId}`).digest("hex").slice(0, 12)}-${index + 1}`;
-    return [{ id, title: topic.title.trim(), aboutPersonIds, discussWithPersonId, sensitivity: topic.sensitivity, reason: topic.reason.trim(), approved: previousApproval.get(`${topic.title.trim()}\u0000${discussWithPersonId}`) ?? false }];
+    return [{ id, title: topic.title.trim(), aboutPersonIds, discussWithPersonId, sensitivity: topic.sensitivity, reason: topic.reason.trim(), ...(topic.relevance ? { relevance: topic.relevance } : {}), approved: previousApproval.get(`${topic.title.trim()}\u0000${discussWithPersonId}`) ?? false }];
   });
   const portraits = buildInitialPortraits({
     raw: [
@@ -198,28 +200,39 @@ export class CodexContextAnalyzer {
       return raw;
     });
     await input.onProgress?.({ stage: "consolidating", current: total, total });
-    const raw = await this.consolidate(rawParts, input.ownerName, input.language, sourceThrough, modelArgs);
+    const raw = await this.consolidate(rawParts, input.ownerName, input.language, sourceThrough, modelArgs, input.messages, input.previous?.sourceId === input.sourceId ? input.previous.topics : []);
     return { ...normalizeContextAnalysis(raw, input.sourceId, input.sourceHash, input.previous, input.ownerName), model: modelArgs[1], sourceThrough };
   }
 
-  private async consolidate(parts: RawAnalysis[], ownerName: string, language: string, sourceThrough: string | undefined, modelArgs: string[]): Promise<RawAnalysis> {
-    const serialized = JSON.stringify(parts);
-    if (serialized.length > 120_000 && parts.length > 2) {
-      // Intermediate compaction must keep evidence, including resolved questions;
-      // selecting topics here would discard later corrections before the final pass.
-      const middle = Math.ceil(parts.length / 2);
-      const compact = async (group: RawAnalysis[]) => this.runCached(
-        buildDiscoveryPrompt(ownerName, language, "Research notes, retain dates, source references, corrections and unresolved questions: " + JSON.stringify(group), sourceThrough),
-        modelArgs,
-      );
-      const compacted = await Promise.all([compact(parts.slice(0, middle)), compact(parts.slice(middle))]);
-      return this.consolidate(compacted, ownerName, language, sourceThrough, modelArgs);
-    }
-    return this.runCached(buildTopicSelectionPrompt(parts, ownerName, language, sourceThrough), modelArgs);
+  private async consolidate(parts: RawAnalysis[], ownerName: string, language: string, sourceThrough: string | undefined, modelArgs: string[], messages: AnalysisMessage[] = [], savedTopics: RoutedTopic[] = []): Promise<RawAnalysis> {
+    // Keep every original candidate through selection; no lossy intermediate
+    // model summary that can silently discard an older but unresolved question.
+    let sequence = 0;
+    const candidates = parts.flatMap(part => part.topics.map(topic => ({ ...topic, id: `C${++sequence}` })));
+    const evidence = selectionEvidence(messages, candidates);
+    const schema = path.join(this.workspace, "topic-coverage.schema.json");
+    await writeFile(schema, JSON.stringify(coverageSchema(JSON.parse(await readFile(this.schemaPath, "utf8")))));
+    // Candidate text occurs once. People/portraits retain cross-fragment evidence.
+    const saved = savedTopics.length ? `\nУ владельца уже сохранены следующие предложения (данные): ${JSON.stringify(savedTopics.map(t => ({ title: t.title, reason: t.reason, discussWithPersonId: t.discussWithPersonId })))}\nНе создавай их перефразированные дубли: если тот же содержательный разговор уже представлен, укажи excluded с причиной «уже есть сохранённая тема» и её названием. Новое свидетельство само по себе не делает тот же разговор новым. Сохранённые формулировки и разрешения сохраняет код, не меняй их. Новый самостоятельный вопрос можно добавить.` : "";
+    const base = buildTopicSelectionPrompt(parts.map(part => ({ ...part, topics: [] })), ownerName, language, sourceThrough) + saved;
+    const selection = await this.coverageStage(coveragePrompt(base, candidates, evidence), modelArgs, schema, candidates);
+    const grouped = await this.coverageStage(dialogueGroupingPrompt(selection, ownerName, language, evidence), modelArgs, schema, selection.topics, true);
+    return { ...grouped, people: selection.people, portraits: selection.portraits };
   }
 
-  private async runCached(prompt: string, modelArgs: string[], legacyPrompts: string[] = []): Promise<RawAnalysis> {
-    const key = createHash("sha256").update(JSON.stringify({ prompt, modelArgs })).digest("hex");
+  private async coverageStage(prompt: string, modelArgs: string[], schema: string, inputs: Array<{ id: string; discuss_with: string }>, samePeople = false): Promise<CoverageAnalysis> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const instruction = attempt ? `${prompt}\nИсправь структурные ссылки: каждому входному id нужно ровно одно решение, каждая выходная тема должна иметь ссылку из decisions; при объединении не меняй адресата. Верни весь исправленный результат.` : prompt;
+      const raw = await this.runCached(instruction, modelArgs, [], schema) as CoverageAnalysis;
+      try { validateCoverage(raw, inputs, samePeople); return raw; }
+      catch (error) { if (attempt) throw error; }
+    }
+    throw new Error("Topic coverage validation failed");
+  }
+
+  private async runCached(prompt: string, modelArgs: string[], legacyPrompts: string[] = [], schemaPath = this.schemaPath): Promise<RawAnalysis> {
+    const schemaHash = schemaPath === this.schemaPath ? undefined : createHash("sha256").update(await readFile(schemaPath)).digest("hex");
+    const key = createHash("sha256").update(JSON.stringify({ prompt, modelArgs, ...(schemaHash ? { schemaHash } : {}) })).digest("hex");
     const file = path.join(this.workspace, `analysis-${key}.json`);
     try { return JSON.parse(await readFile(file, "utf8")) as RawAnalysis; }
     catch { /* a missing or invalid partial result is recalculated */ }
@@ -232,7 +245,7 @@ export class CodexContextAnalyzer {
       try { reusable = JSON.parse(await readFile(path.join(this.workspace, `analysis-${legacyKey}.json`), "utf8")) as RawAnalysis; break; }
       catch { /* not the same historical fragment */ }
     }
-    const result = reusable ?? await this.run(prompt, modelArgs);
+    const result = reusable ?? await this.run(prompt, modelArgs, schemaPath);
     const temporary = `${file}.${process.pid}.tmp`;
     await writeFile(temporary, JSON.stringify(result), "utf8");
     await rename(temporary, file);
@@ -252,8 +265,8 @@ export class CodexContextAnalyzer {
     return result;
   }
 
-  private async run(prompt: string, modelArgs: string[]): Promise<RawAnalysis> {
-    const args = ["exec", ...modelArgs, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
+  private async run(prompt: string, modelArgs: string[], schemaPath = this.schemaPath): Promise<RawAnalysis> {
+    const args = ["exec", ...modelArgs, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });

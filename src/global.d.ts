@@ -4,6 +4,7 @@ import type { PeerVersionCheck } from "./core/peer-version.js";
 import type { LiveConversation } from "./core/conversation-updates.js";
 import type { TopicBrief } from "./core/conversation-quality.js";
 import type { PersonPortrait } from "./core/person-portraits.js";
+import type { RoutedTopic } from "./core/context-analysis.js";
 
 export interface AppState {
   owner: "dima" | "katya";
@@ -45,7 +46,7 @@ export interface AppState {
     progress?: { stage: "analyzing" | "consolidating"; current: number; total: number };
     people: Array<{ id: string; label: string; relationship: string; aliases: string[] }>;
     portraits?: PersonPortrait[];
-    topics: Array<{ id: string; title: string; aboutPersonIds: string[]; discussWithPersonId: string; sensitivity: "direct" | "cross_person" | "unclear"; reason: string; approved: boolean }>;
+    topics: RoutedTopic[];
   };
   update: { available: boolean; version?: string; checking?: boolean; downloading: boolean; progress?: number; ready?: boolean; error?: string };
 }

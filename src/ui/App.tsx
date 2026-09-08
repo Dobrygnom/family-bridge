@@ -33,6 +33,7 @@ import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
 import { ReportContinuation } from "./ReportContinuation.js";
 import { PendingStatus } from "./PendingStatus.js";
 import { loadSavedState } from "./load-state.js";
+import { topicNeedsReview, topicRelevanceLabel } from "../core/topic-review.js";
 import { shareableTopicBrief, topicKey } from "../core/conversation-quality.js";
 
 const fallback: AppState = {
@@ -574,7 +575,7 @@ export function App() {
 
   async function approveSafeTopics(personId: string) {
     if (!api || !state.contextAnalysis) return;
-    const topicIds = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === personId && item.sensitivity === "direct").map((item) => item.id);
+    const topicIds = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === personId && !topicNeedsReview(item)).map((item) => item.id);
     if (!topicIds.length) return;
     setError("");
     try { setState(await api.updateContextTopics({ topicIds, approved: true })); }
@@ -604,11 +605,11 @@ export function App() {
       ?? topicPeople[0];
     const allForPerson = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === selectedPerson.id);
     const selectedPersonTopics = allForPerson
-      .filter((item) => topicFilter === "all" || topicFilter === "approved" && item.approved || topicFilter === "review" && item.sensitivity !== "direct")
-      .filter((item) => !topicSearch.trim() || `${item.title} ${item.reason}`.toLocaleLowerCase(language).includes(topicSearch.trim().toLocaleLowerCase(language)))
-      .sort((left, right) => Number(left.sensitivity === "direct") - Number(right.sensitivity === "direct") || left.title.localeCompare(right.title, language));
+      .filter((item) => topicFilter === "all" || topicFilter === "approved" && item.approved || topicFilter === "review" && topicNeedsReview(item))
+      // Preserve the model's importance order; do not alphabetize the agenda.
+      .filter((item) => !topicSearch.trim() || `${item.title} ${item.reason}`.toLocaleLowerCase(language).includes(topicSearch.trim().toLocaleLowerCase(language)));
     const visibleTopics = showAllReviewTopics || topicSearch.trim() || topicFilter !== "all" ? selectedPersonTopics : selectedPersonTopics.slice(0, 6);
-    const reviewCount = allForPerson.filter((item) => item.sensitivity !== "direct").length;
+    const reviewCount = allForPerson.filter(topicNeedsReview).length;
     const approvedCount = allForPerson.filter((item) => item.approved).length;
     return <div className="topic-registry">
       <div className="person-tabs" role="tablist">{topicPeople.map((person) => {
@@ -623,7 +624,7 @@ export function App() {
         const about = item.aboutPersonIds.map(personLabel).join(", ") || "—";
         const brief = shareableTopicBrief(item);
         return <div className={`topic-row ${item.sensitivity} ${expanded ? "expanded" : ""}`} key={item.id}>
-          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} disabled={editing || savingTopicId === item.id} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
+          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} disabled={editing || savingTopicId === item.id} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}{item.relevance === "check_relevance" ? ` · ${topicRelevanceLabel(language)}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
           {expanded && <div className="topic-row-detail">
             {editing ? <div className="topic-edit">
               <div className="topic-refinement-request">
