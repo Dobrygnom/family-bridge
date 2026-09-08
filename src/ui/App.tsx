@@ -32,6 +32,7 @@ import { appendDictation } from "../core/dictation.js";
 import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
 import { ReportContinuation } from "./ReportContinuation.js";
 import { PendingStatus } from "./PendingStatus.js";
+import { TopicRefinementRequest } from "./TopicRefinementRequest.js";
 import { loadSavedState } from "./load-state.js";
 import { topicNeedsReview, topicRelevanceLabel } from "../core/topic-review.js";
 import { shareableTopicBrief, topicKey } from "../core/conversation-quality.js";
@@ -627,11 +628,7 @@ export function App() {
           <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} disabled={editing || savingTopicId === item.id} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}{item.relevance === "check_relevance" ? ` · ${topicRelevanceLabel(language)}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
           {expanded && <div className="topic-row-detail">
             {editing ? <div className="topic-edit">
-              <div className="topic-refinement-request">
-                <label>{registryText.instruction}<textarea value={topicRefinementInstruction} maxLength={4000} placeholder={registryText.instructionPlaceholder} disabled={refiningTopicId === item.id} onChange={(event) => { setTopicRefinementInstruction(event.target.value); setTopicRefinementReady(false); }} /></label>
-                {!topicRefinementReady && <div className="topic-refinement-actions"><button className="primary" disabled={refiningTopicId === item.id || !topicRefinementInstruction.trim()} onClick={() => void refineTopicEdit(item.id)}>{refiningTopicId === item.id ? <><LoaderCircle className="spin" size={16} />{registryText.preparing}</> : registryText.prepare}</button><button className="ghost" disabled={refiningTopicId === item.id} onClick={cancelTopicEdit}>{registryText.cancel}</button></div>}
-              </div>
-              {refiningTopicId === item.id && <PendingStatus language={language}>{registryText.preparing}</PendingStatus>}
+              <TopicRefinementRequest language={language} text={registryText} instruction={topicRefinementInstruction} pending={refiningTopicId === item.id} ready={topicRefinementReady} onChange={(value) => { setTopicRefinementInstruction(value); setTopicRefinementReady(false); }} onRefine={() => void refineTopicEdit(item.id)} onCancel={cancelTopicEdit} />
               {savingTopicId === item.id && <PendingStatus language={language}>{waitingText.save}</PendingStatus>}
               {topicRefinementReady && <>
                 <div className="topic-preview-heading"><strong>{registryText.preview}</strong><span><Check size={15} />{registryText.prepared}</span><small>{registryText.previewHint}</small></div>
@@ -642,7 +639,7 @@ export function App() {
                   <div className="topic-preview-opening"><small>{registryText.opening}</small><p>«{topicDraft.openingQuestion}»</p></div>
                 </div>
                 <small>{registryText.editHint}</small>
-                <div className="topic-edit-actions"><button className="primary" disabled={savingTopicId === item.id} onClick={() => void saveTopicEdit(item.id)}>{registryText.save}</button><button className="ghost" disabled={savingTopicId === item.id} onClick={() => setTopicRefinementReady(false)}>{registryText.retry}</button><button className="ghost" disabled={savingTopicId === item.id} onClick={cancelTopicEdit}>{registryText.cancel}</button></div>
+                <div className="actions topic-edit-actions"><button className="primary" disabled={savingTopicId === item.id} onClick={() => void saveTopicEdit(item.id)}>{registryText.save}</button><button className="ghost" disabled={savingTopicId === item.id} onClick={() => setTopicRefinementReady(false)}>{registryText.retry}</button><button className="ghost" disabled={savingTopicId === item.id} onClick={cancelTopicEdit}>{registryText.cancel}</button></div>
               </>}
             </div> : <div className="topic-brief-grid">{brief?.context && <div><small>{registryText.context}</small><p>{brief.context}</p></div>}{brief?.goal && <div><small>{registryText.goal}</small><p>{brief.goal}</p></div>}{brief?.openingQuestion && <div className="topic-opening"><small>{registryText.opening}</small><p>«{brief.openingQuestion}»</p></div>}</div>}
             <div className="route-fields"><label>{workflowText.about}<select disabled={editing} value={item.aboutPersonIds[0] || ""} onChange={(event) => void updateContextTopic(item.id, { aboutPersonIds: [event.target.value] })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label><label>{workflowText.with}<select disabled={editing} value={item.discussWithPersonId} onChange={(event) => void updateContextTopic(item.id, { discussWithPersonId: event.target.value })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label></div>

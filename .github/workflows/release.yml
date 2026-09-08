@@ -29,6 +29,8 @@ jobs:
         run: npm run package -- --x64 --arm64
       - name: Verify packaged state (no UI or personal data)
         run: node scripts/verify-packaged-state.mjs
+      - name: Record complete build artifact checksums
+        run: node scripts/checksum-build-artifacts.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: family-bridge-${{ matrix.os }}
@@ -38,6 +40,7 @@ jobs:
             release/*.zip
             release/*.blockmap
             release/latest*.yml
+            release/build-SHA256SUMS.txt
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -47,6 +50,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Verify downloaded artifacts against original builds
+        run: |
+          for platform in windows-latest macos-latest; do
+            (cd "artifacts/family-bridge-$platform" && sha256sum --check --strict build-SHA256SUMS.txt) || exit 1
+          done
       - name: Generate checksums
         run: |
           find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -print0 \

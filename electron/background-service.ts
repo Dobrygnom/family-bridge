@@ -23,6 +23,7 @@ import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_R
 import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
 import { CodexTopicRefiner, normalizeTopicRefinement, type TopicRefiner } from "../src/core/topic-refinement.js";
 import { relevantContextExcerpts } from "../src/core/context-excerpts.js";
+import { TOPIC_BRIEF_LIMIT } from "../src/core/topic-limits.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -577,9 +578,9 @@ export class BackgroundService {
     }
     if (["context", "goal", "openingQuestion"].some((key) => Object.prototype.hasOwnProperty.call(value, key))) {
       const fields = { context: value.context, goal: value.goal, openingQuestion: value.openingQuestion };
-      if (typeof fields.context !== "string" || !fields.context.trim() || fields.context.trim().length > 500) throw new Error("Опишите ситуацию текстом до 500 символов");
-      if (typeof fields.goal !== "string" || !fields.goal.trim() || fields.goal.trim().length > 800) throw new Error("Опишите цель разговора текстом до 800 символов");
-      if (typeof fields.openingQuestion !== "string" || !fields.openingQuestion.trim() || fields.openingQuestion.trim().length > 800) throw new Error("Добавьте первый вопрос текстом до 800 символов");
+      if (typeof fields.context !== "string" || !fields.context.trim() || fields.context.trim().length > TOPIC_BRIEF_LIMIT) throw new Error(`Опишите ситуацию текстом до ${TOPIC_BRIEF_LIMIT} символов`);
+      if (typeof fields.goal !== "string" || !fields.goal.trim() || fields.goal.trim().length > TOPIC_BRIEF_LIMIT) throw new Error(`Опишите цель разговора текстом до ${TOPIC_BRIEF_LIMIT} символов`);
+      if (typeof fields.openingQuestion !== "string" || !fields.openingQuestion.trim() || fields.openingQuestion.trim().length > TOPIC_BRIEF_LIMIT) throw new Error(`Добавьте первый вопрос текстом до ${TOPIC_BRIEF_LIMIT} символов`);
       const brief = sanitizeTopicBrief(fields);
       if (!brief) throw new Error("Заполните уточнение темы");
       const stored = await this.store.read();

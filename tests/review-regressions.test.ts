@@ -129,6 +129,33 @@ test("refinement gets private source context, correct recipient and the last pre
   } finally { await f.cleanup(); }
 });
 
+test("long existing topic can be refined, previewed again and saved without sending or truncation", async () => {
+  const f = await fixture();
+  try {
+    const topicId = original().topics[0].id;
+    const context = "Я".repeat(800);
+    const preview = { title: "Long context", context, goal: "Understand", openingQuestion: "How do you see it?" };
+    const before = await readFile(f.file, "utf8");
+    let calls = 0;
+    (f.service as any).options.topicRefiner = { refine: async (input: any) => {
+      calls++;
+      assert.equal(input.brief.context, context);
+      return preview;
+    } };
+    const refined = await f.service.refineContextTopic({ topicId, instruction: "Make this less categorical", preview });
+    await f.service.refineContextTopic({ topicId, instruction: "Clarify again", preview: refined });
+    assert.equal(calls, 2);
+    assert.equal(await readFile(f.file, "utf8"), before, "Preview does not save");
+    await f.service.updateContextTopic({ topicId, ...refined });
+    const saved = JSON.parse(await readFile(f.file, "utf8")).topics[0];
+    assert.ok(saved.reason.includes(context));
+    assert.equal(saved.approved, false);
+    assert.deepEqual((await f.store.read()).pendingTopics, []);
+    assert.equal(f.sent.length, 0);
+    await assert.rejects(f.service.updateContextTopic({ topicId, ...refined, context: context + "я" }), /800/);
+  } finally { await f.cleanup(); }
+});
+
 test("relevant old messages and neighbours remain available; an embedded unanswered question cannot finish", () => {
   const messages = [{ text: "Before the house discussion" }, { text: "Mortgage and house budget worry me" }, { text: "This happened last winter" }, ...Array.from({ length: 100 }, () => ({ text: "Unrelated news" }))];
   const selected = relevantContextExcerpts(messages.map((message) => JSON.stringify(message)).join("\n"), "house mortgage budget");

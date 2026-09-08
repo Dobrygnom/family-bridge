@@ -1,5 +1,6 @@
 import type { ContextAnalysis, RoutedTopic } from "./context-analysis.js";
 import { agentTopicRules } from "./agent-context-rules.js";
+import { TOPIC_BRIEF_LIMIT } from "./topic-limits.js";
 
 export interface TopicBrief {
   context?: string;
@@ -61,9 +62,9 @@ export function shareableTopicBrief(topic: RoutedTopic | undefined): TopicBrief 
     /$(?![\s\S])/u,
   );
   const brief = {
-    ...(context ? { context: context.slice(0, 800) } : {}),
-    ...(goal ? { goal: goal.slice(0, 800) } : {}),
-    ...(openingQuestion ? { openingQuestion: openingQuestion.slice(0, 800) } : {}),
+    ...(context ? { context: context.slice(0, TOPIC_BRIEF_LIMIT) } : {}),
+    ...(goal ? { goal: goal.slice(0, TOPIC_BRIEF_LIMIT) } : {}),
+    ...(openingQuestion ? { openingQuestion: openingQuestion.slice(0, TOPIC_BRIEF_LIMIT) } : {}),
   };
   return Object.keys(brief).length ? brief : undefined;
 }
@@ -71,7 +72,7 @@ export function shareableTopicBrief(topic: RoutedTopic | undefined): TopicBrief 
 export function sanitizeTopicBrief(value: unknown): TopicBrief | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const input = value as Record<string, unknown>;
-  const clean = (candidate: unknown) => typeof candidate === "string" && candidate.trim() && candidate.length <= 800 ? candidate.trim() : undefined;
+  const clean = (candidate: unknown) => typeof candidate === "string" && candidate.trim() && candidate.length <= TOPIC_BRIEF_LIMIT ? candidate.trim() : undefined;
   const context = clean(input.context);
   const goal = clean(input.goal);
   const openingQuestion = clean(input.openingQuestion);
