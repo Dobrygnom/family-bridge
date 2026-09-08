@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",
@@ -8,6 +8,7 @@
     "demo": "tsx scripts/run-local-demo.ts",
     "demo:mock": "tsx scripts/run-local-demo.ts --mock",
     "test": "node --import tsx --test --test-concurrency=1 tests/**/*.test.ts",
+    "eval:agent-context": "tsx scripts/evaluate-agent-context.ts",
     "typecheck": "tsc --noEmit",
     "dev": "concurrently -k \"vite\" \"npm:dev:electron\"",
     "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
