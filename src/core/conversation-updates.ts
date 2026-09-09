@@ -3,12 +3,13 @@ import type { AppState } from "../global.js";
 export interface LiveConversation {
   id: string;
   parentReportId?: string;
+  restarted?: boolean;
   topic: string;
   inheritedMessageCount: number;
   messages: Array<{ speaker: string; text: string; local: boolean }>;
 }
 
-export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates"> & {
+export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates" | "repairPendingIds"> & {
   conversationRevision: number;
   liveConversations: LiveConversation[];
 };
@@ -24,7 +25,7 @@ export function applyConversationUpdate(state: AppState, event: ConversationUpda
 // A focus/IPC snapshot started before a push must not roll back newer messages.
 export function keepNewerConversations(current: AppState, incoming: AppState): AppState {
   if ((incoming.conversationRevision ?? 0) >= (current.conversationRevision ?? 0)) return incoming;
-  return { ...incoming, conversationRevision: current.conversationRevision, liveConversations: current.liveConversations,
+  return { ...incoming, repairPendingIds: current.repairPendingIds, conversationRevision: current.conversationRevision, liveConversations: current.liveConversations,
     reports: current.reports, reportSummaries: current.reportSummaries, continuationStates: current.continuationStates };
 }
 

@@ -6,6 +6,7 @@ type Message = Report["messages"][number];
 export interface ConversationStage {
   id: string;
   parentReportId?: string;
+  restarted?: boolean;
   topic: string;
   messages: Message[];
   newMessages: Message[];
@@ -53,14 +54,26 @@ export function conversationThreads(state: Pick<AppState, "reportSummaries" | "l
       // Remove only an exact inherited prefix. If histories disagree, keep the
       // unmatched messages rather than cutting by a guessed message count.
       let inherited = 0;
-      while (parent && stages.some(stage => stage.id === parent.id) && inherited < parent.messages.length && inherited < node.messages.length
+      while (!node.restarted && parent && stages.some(stage => stage.id === parent.id) && inherited < parent.messages.length && inherited < node.messages.length
         && parent.messages[inherited].text === node.messages[inherited].text
         && parent.messages[inherited].local === node.messages[inherited].local) inherited++;
       stages.push({ ...node, newMessages: node.messages.slice(inherited) });
     };
     members.sort((a, b) => (a.report?.completedAt ?? "\uffff").localeCompare(b.report?.completedAt ?? "\uffff")).forEach(append);
-    const latest = stages.filter(stage => stage.report).at(-1)?.report;
-    return { id, topic: stages[0].topic, stages, latest, live: stages.some(stage => stage.live),
-      updatedAt: latest?.completedAt ?? "", messageCount: stages.reduce((sum, stage) => sum + stage.newMessages.length, 0) };
+    const restart = stages.filter(stage => stage.restarted).at(-1);
+    const attemptOf = (stage: ConversationStage): string | undefined => {
+      const visited = new Set<string>();
+      let node: ConversationStage | undefined = stage;
+      while (node && !visited.has(node.id)) {
+        visited.add(node.id);
+        if (node.restarted) return node.id;
+        node = node.parentReportId ? nodes.get(node.parentReportId) : undefined;
+      }
+    };
+    const currentStages = restart ? stages.filter(stage => attemptOf(stage) === restart.id) : stages;
+    const archivedStages = stages.filter(stage => !currentStages.includes(stage));
+    const latest = currentStages.filter(stage => stage.report).at(-1)?.report;
+    return { id, topic: stages[0].topic, stages, currentStages, archivedStages, latest, live: currentStages.some(stage => stage.live),
+      updatedAt: latest?.completedAt ?? "", messageCount: currentStages.reduce((sum, stage) => sum + stage.newMessages.length, 0) };
   }).sort((a, b) => Number(b.live) - Number(a.live) || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }

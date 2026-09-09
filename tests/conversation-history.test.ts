@@ -9,3 +9,11 @@ test("even an old button resolves the latest continuation with the full history"
 test("matching titles do not merge independent conversations",()=>{
   assert.equal(resolveHistory([report('1'),report('2')],'1').latest.id,'1');
 });
+
+test("restart boundaries exclude old attempts even when an old branch completes late", () => {
+  const reports = [report('1', undefined, ['BAD']), { ...report('2','1',['NEW']), restarted:true }, report('3','2',['NEW','FOLLOW']), report('9','1',['BAD','LATE'])];
+  const resolved = resolveHistory(reports,'1');
+  assert.equal(resolved.latest.id,'3');
+  assert.deepEqual(resolved.history.map(m=>m.text), ['NEW','FOLLOW']);
+  assert.equal(resolved.ids.size,4);
+});

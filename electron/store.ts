@@ -10,6 +10,7 @@ export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
 export type TopicSource = "local" | "peer" | "unknown";
 export interface ConversationContinuation {
+  mode?: "restart" | "clean-continuation";
   originReportId?: string;
   attempts?: number;
   retryAt?: number;
@@ -60,6 +61,8 @@ export interface StoredState {
   ignoredConversationIds: string[];
   continuations: Record<string, ConversationContinuation>;
   conversationParents: Record<string, string>;
+  conversationModes: Record<string, "restart" | "clean-continuation">;
+  roleRepairCutoffAt?: string;
   incomingDeliveries: Record<string, { envelope: RemoteEnvelope; received?: boolean; response?: AgentResponse; responseSent?: boolean }>;
   completedIncoming: string[];
   lastConversationAt?: string;
@@ -96,6 +99,7 @@ const defaults: StoredState = {
   ignoredConversationIds: [],
   continuations: {},
   conversationParents: {},
+  conversationModes: {},
   incomingDeliveries: {},
   completedIncoming: [],
 };

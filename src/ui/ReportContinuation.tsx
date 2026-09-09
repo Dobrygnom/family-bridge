@@ -27,8 +27,9 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
   const [error, setError] = useState("");
   const [checkingVersion, setCheckingVersion] = useState(false);
   const t = labels[language];
-  const request = state.continuationStates?.filter((item) => relatedReportIds.includes(item.parentReportId)).at(-1);
-  const pending = request?.status === "starting" || request?.status === "waiting";
+  const latestRequest = state.continuationStates?.filter((item) => relatedReportIds.includes(item.parentReportId)).at(-1);
+  const request = latestRequest?.mode === "restart" ? undefined : latestRequest;
+  const pending = latestRequest?.status === "starting" || latestRequest?.status === "waiting";
   useEffect(() => { try { localStorage.setItem(key, draft); } catch { setError(t.saveError); } }, [key, draft, t.saveError]);
   async function send(retry = false) {
     const api = window.familyBridge;
@@ -38,7 +39,7 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
       const next = retry && request ? await api.retryContinuation(request.id) : await api.continueReport({ reportId, requestId: crypto.randomUUID(), prompt: draft.trim() });
       onState(next);
       if (!retry) setDraft("");
-    } catch { setError(t.error); }
+    } catch (err) { setError(err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : t.error); }
     finally { setBusy(false); }
   }
   async function checkVersion() {
@@ -51,7 +52,7 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
   return <StableDetails className="report-continuation" storageKey={`family-bridge-continuation-open:${threadId ?? reportId}`}>
     <summary>{t.title}</summary>
     <p className="muted">{t.hint}</p>
-    {busy || pending ? <PendingStatus language={language}>{request?.status === "waiting" ? t.waiting : t.starting}</PendingStatus> : request && <p role="status">{request.status === "complete" ? t.complete : t.failed}</p>}
+    {busy || pending && latestRequest?.mode !== "restart" ? <PendingStatus language={language}>{request?.status === "waiting" ? t.waiting : t.starting}</PendingStatus> : request && <p role="status">{request.status === "complete" ? t.complete : t.failed}</p>}
     {request?.status === "error" && <button disabled={busy || conversationBusy || dictationBusy || !supportsContinuation(state.remote.peerVersion)} onClick={() => void send(true)}>{t.retry}</button>}
     {!pending && <><textarea aria-label={t.title} placeholder={t.placeholder} maxLength={8000} value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} />
       <DictationControl language={language} disabled={busy || dictationBusy && !recording} onText={(text) => setDraft((current) => appendDictation(current, text))} onBusyChange={(value) => { setRecording(value); onDictationBusy(value); }} />

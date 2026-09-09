@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { BrowserWindow } from "electron";
 import type { UpdateState } from "./mac-updater.js";
-import { CodexCliAgent, defaultCodexCommand } from "../src/core/codex-runtime.js";
+import { CodexCliAgent, defaultCodexCommand, hasRoleVoiceViolation } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
 import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage } from "../src/core/context-analysis.js";
@@ -17,7 +17,7 @@ import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
 import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
-import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
+import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
 import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
 import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
@@ -27,6 +27,7 @@ import { relevantContextExcerpts } from "../src/core/context-excerpts.js";
 import { TOPIC_BRIEF_LIMIT } from "../src/core/topic-limits.js";
 import { reconcileTopicQueue } from "../src/core/topic-queue.js";
 import { resolveHistory, type HistoryReport } from "../src/core/conversation-history.js";
+import { repairCandidates } from "../src/core/conversation-repair.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -59,7 +60,7 @@ interface DialoguePayload {
   senderName?: string;
   senderVersion?: string;
   experienceVersion?: string;
-  continuation?: { parentReportId: string; history: Array<{ from: OwnerId; text: string }> };
+  continuation?: { parentReportId: string; history: Array<{ from: OwnerId; text: string }>; mode?: "restart" | "clean-continuation" };
 }
 
 interface OwnerQuestionView {
@@ -82,6 +83,7 @@ export interface LearnedContextEntry {
 export interface ReportSummaryView {
   id: string;
   parentReportId?: string;
+  restarted?: boolean;
   topic: string;
   summary: string;
   answerFrom: string;
@@ -185,6 +187,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
       const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
         conversationId?: string;
         parentReportId?: string;
+        restarted?: boolean;
         topic?: string;
         topics?: string[];
         sharedSummary?: string;
@@ -221,6 +224,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
       return [{
         id: report.conversationId || reportPath,
         ...(report.parentReportId ? { parentReportId: report.parentReportId } : {}),
+        ...(report.restarted ? { restarted: true } : {}),
         topic,
         summary,
         answerFrom: report.answerFrom?.trim() || names.peerName || "Второй участник",
@@ -299,10 +303,12 @@ export class BackgroundService {
       try { await this.recoverLegacyReplies(); } catch { this.diagnostics.record("dialogue.recovery-deferred"); }
       for (const [id, continuation] of Object.entries(state.continuations)) {
         if (continuation.pairId !== state.remote.pairId) continue;
+        if (readReportSummaries(state.reports).some(report => report.id === id)) continue;
         if (!(continuation.status === "starting" || continuation.status === "error" && (continuation.attempts ?? 0) < 3 && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
-        try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction }); }
+        try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }); }
         catch { this.diagnostics.record("continuation.resume-deferred"); }
       }
+      await this.repairLegacyConversations();
       const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && job.attempts < 3 && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
       const pending = state.pendingTopics.filter(topic=>state.topicSources[topic]?.includes("local") && !state.activeTopics.includes(topic) && !state.blockedTopics.some(blocked=>topic.toLowerCase().includes(blocked.toLowerCase())) && !Object.values(state.topicLaunches).some(job=>job.pairId===state.remote!.pairId && topicKey(job.topic)===topicKey(topic)));
       for (const topic of mergeTopicCatalog(retry, pending)) {
@@ -313,6 +319,55 @@ export class BackgroundService {
     } finally { this.automaticBusy = false; }
   }
   private conversationRevision = 0;
+  private async repairLegacyConversations() {
+    if (!supportsRestart(this.options.appVersion) || this.continuing.size >= 3) return;
+    let state = await this.store.read();
+    if (!state.remote) return;
+    if (!state.roleRepairCutoffAt) state = await this.store.mutate(current => current.roleRepairCutoffAt ? {} : { roleRepairCutoffAt: new Date().toISOString() });
+    if (!state.remote) return;
+    const reports = this.historyReports(state), completed = new Set(reports.map(report => report.id));
+    const candidates = repairCandidates(reports, state.roleRepairCutoffAt).filter(candidate =>
+      candidate.initiator === state.owner && !state.continuations[`repair-1211-${candidate.rootId}`]
+      && !Object.entries(state.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(state.conversationParents[id])));
+    if (!candidates.length) return;
+    const probe = this.versionProbe;
+    const age = probe ? Date.now() - Date.parse(probe.state.requestedAt) : Infinity;
+    if (probe?.pairId !== state.remote.pairId || probe.state.status !== "received" || age > 300_000 || !supportsRestart(state.remote.peerVersion)) {
+      if (age > 60_000) this.beginPeerVersionCheck(state);
+      return;
+    }
+    for (const candidate of candidates) {
+      if (Object.keys(state.conversationTranscripts).some(id => !completed.has(id) && (candidate.ids.has(id) || candidate.ids.has(state.conversationParents[id])))
+        || state.pendingOwnerQuestions.some(question => !completed.has(question.conversationId) && candidate.ids.has(question.conversationId))) continue;
+      try {
+        await this.restartReport({ reportId: candidate.reportId, requestId: `repair-1211-${candidate.rootId}` });
+        this.diagnostics.record("conversation.repair-started");
+        break; // Bounded work; the next tick can start another eligible topic.
+      } catch { this.diagnostics.record("conversation.repair-deferred"); }
+    }
+  }
+
+  private historyReports(state: Awaited<ReturnType<AtomicStore["read"]>>): HistoryReport[] {
+    const reports: HistoryReport[] = state.reports.flatMap(file => {
+      try {
+        const raw = JSON.parse(readFileSync(file, "utf8"));
+        if (raw.pairId && raw.pairId !== state.remote?.pairId || !raw.conversationId || !Array.isArray(raw.messages)) return [];
+        return [{ id: raw.conversationId, parentReportId: raw.parentReportId, restarted: raw.restarted, cleanContext: raw.cleanContext,
+          topic: raw.topic || raw.topics?.[0], completedAt: raw.completedAt || "", messages: sharedHistory(raw.messages.map((m: { from: string; text?: string; payload?: string }) => ({ from: m.from, text: m.text ?? m.payload }))) }];
+      } catch { return []; }
+    });
+    const nodes = new Map(reports.map(report => [report.id, report]));
+    for (const report of reports) {
+      if (report.parentReportId) continue;
+      const candidate = state.conversationParents[report.id];
+      if (!candidate || !nodes.has(candidate) || nodes.get(candidate)!.topic !== report.topic) continue;
+      const seen = new Set([report.id]);
+      let id: string | undefined = candidate;
+      while (id && !seen.has(id)) { seen.add(id); id = nodes.get(id)?.parentReportId ?? state.conversationParents[id]; }
+      if (!id) report.parentReportId = candidate;
+    }
+    return reports;
+  }
   readonly diagnostics: Diagnostics;
   private healthCheck?: Promise<void>;
   private healthCheckedAt = 0;
@@ -396,17 +451,22 @@ export class BackgroundService {
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
-    const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр", topicSources: stored.topicSources });
-    const liveConversations: LiveConversation[] = Object.entries(stored.conversationTranscripts).filter(([, transcript]) => !transcript.topic.startsWith(VERSION_PROBE_PREFIX)).map(([id, transcript]) => {
+    const history = new Map(this.historyReports(stored).map(report => [report.id, report]));
+    const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр", topicSources: stored.topicSources }).map(report => ({ ...report, parentReportId: report.parentReportId ?? history.get(report.id)?.parentReportId }));
+    const completed = new Set(reportSummaries.map(report => report.id));
+    const liveConversations: LiveConversation[] = Object.entries(stored.conversationTranscripts).filter(([id, transcript]) => !completed.has(id) && !transcript.topic.startsWith(VERSION_PROBE_PREFIX)).map(([id, transcript]) => {
       const parentReportId = stored.conversationParents[id];
-      return { id, parentReportId, topic: transcript.topic,
+      return { id, parentReportId, restarted: stored.conversationModes[id] === "restart", topic: transcript.topic,
         inheritedMessageCount: stored.continuations[id]?.history.length ?? reportSummaries.find((report) => report.id === parentReportId)?.messageCount ?? 0,
         messages: transcript.messages.map((message) => ({ text: message.text, local: message.from === stored.owner,
           speaker: message.from === stored.owner ? stored.displayName || "Вы" : stored.remote?.peerName || "Партнёр" })),
       };
     });
     return { conversationRevision: this.conversationRevision, reports: stored.reports, reportSummaries, liveConversations,
-      continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, status: value.status })) };
+      repairPendingIds: supportsRestart(this.options.appVersion) ? repairCandidates([...history.values()], stored.roleRepairCutoffAt)
+        .filter(candidate => !Object.entries(stored.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(stored.conversationParents[id]) && (stored.conversationTranscripts[id] || completed.has(id))))
+        .map(candidate => candidate.rootId) : [],
+      continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, mode: value.mode, status: completed.has(id) ? "complete" as const : value.status })) };
   }
 
   private publishConversations(stored: Awaited<ReturnType<AtomicStore["read"]>>) {
@@ -1082,26 +1142,28 @@ export class BackgroundService {
     this.emitTopicState(next);
   }
 
+  async restartReport(input: unknown) {
+    const value = input as { reportId?: unknown; requestId?: unknown } | null;
+    return this.continueReport({ reportId: value?.reportId, requestId: value?.requestId, prompt: "Обсуди исходную тему заново.", restart: true });
+  }
+
   async continueReport(input: unknown) {
     if (this.updating) throw new Error("Устанавливаем обновление. Черновик сохранён; попробуйте через несколько секунд.");
-    const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown } | null;
+    const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown; restart?: unknown } | null;
     if (typeof value?.reportId !== "string" || typeof value.requestId !== "string" || !/^[a-z0-9-]{8,80}$/i.test(value.requestId) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 8_000) throw new Error("Введите уточнение до 8000 символов");
     let reportId = value.reportId;
     const { requestId } = value;
     if (this.continuing.has(requestId)) return this.state();
     const state = await this.store.read();
     const existing = state.continuations[requestId];
+    const restart = value.restart === true;
+    if (existing && (existing.mode === "restart") !== restart) throw new Error("Идентификатор уже использован для другого действия");
     if (existing && ((existing.originReportId ?? existing.parentReportId) !== reportId || existing.instruction !== value.prompt.trim())) throw new Error("Это поручение уже сохранено. Отправьте новое уточнение.");
     if (existing && ["waiting", "complete"].includes(existing.status)) return this.state();
     if (!state.remote || !this.remote) throw new Error("Сначала соедините два приложения");
+    if (restart && !supportsRestart(state.remote.peerVersion)) throw new Error("Для обсуждения заново обновите оба приложения до 1.2.11 или новее и проверьте версию собеседника.");
     if (!supportsContinuation(state.remote.peerVersion)) throw new Error("Для продолжения разговора обновите оба приложения до версии 0.3.30 или новее и проверьте версию собеседника.");
-    const historyReports: HistoryReport[] = state.reports.flatMap(file => {
-      try {
-        const raw = JSON.parse(readFileSync(file, "utf8"));
-        if (raw.pairId && raw.pairId !== state.remote!.pairId || !raw.conversationId || !Array.isArray(raw.messages)) return [];
-        return [{ id:raw.conversationId, parentReportId:raw.parentReportId, topic:raw.topic || raw.topics?.[0], completedAt:raw.completedAt || "", messages:sharedHistory(raw.messages.map((m: {from:string;text?:string;payload?:string})=>({from:m.from,text:m.text??m.payload}))) }];
-      } catch { return []; }
-    });
+    const historyReports = this.historyReports(state);
     const thread = resolveHistory(historyReports, reportId);
     reportId = existing?.parentReportId ?? thread.latest.id;
     const reportPath = state.reports.find((file) => readReportSummaries([file])[0]?.id === reportId);
@@ -1110,17 +1172,23 @@ export class BackgroundService {
     if (report.pairId && report.pairId !== state.remote.pairId) throw new Error("Этот разговор относится к другому подключению");
     const topic = report.topic || report.topics?.[0] || "Разговор агентов";
     if (state.blockedTopics.some((blocked) => topic.toLowerCase().includes(blocked.toLowerCase()))) throw new Error("Тема заблокирована локальной политикой");
-    const inProgress = (current: typeof state) => Object.entries(current.continuations).some(([id,item])=>id!==requestId && thread.ids.has(item.parentReportId) && ["starting","waiting"].includes(item.status)) || Object.keys(current.conversationTranscripts).some(id=>id!==requestId && (thread.ids.has(id) || thread.ids.has(current.conversationParents[id])));
+    const completed = new Set(historyReports.map(report => report.id));
+    // Same projection as the UI: a persisted report completes this exact ID.
+    // Divergent legacy transcripts remain untouched on disk, not falsely active.
+    const inProgress = (current: typeof state) => Object.entries(current.continuations).some(([id,item])=>id!==requestId && !completed.has(id) && thread.ids.has(item.parentReportId) && ["starting","waiting"].includes(item.status)) || Object.keys(current.conversationTranscripts).some(id=>id!==requestId && !completed.has(id) && (thread.ids.has(id) || thread.ids.has(current.conversationParents[id])));
     if (inProgress(state)) throw new Error("Этот разговор уже продолжается. Дождитесь ответа; черновик сохранён.");
-    const history = existing?.history ?? sharedHistory(thread.history);
+    const history = existing?.history ?? (restart ? [] : sharedHistory(thread.history));
+    const mode = existing?.mode ?? (restart ? "restart" : thread.latest.cleanContext || thread.latest.restarted ? "clean-continuation" : undefined);
+    if (mode && !supportsRestart(state.remote.peerVersion)) throw new Error("Обновите приложение собеседника до 1.2.11 или новее перед новой попыткой.");
     if (this.continuing.has(requestId)) return this.state();
     this.continuing.add(requestId);
     try {
       const started = await this.store.mutate((current) => {
         if (inProgress(current)) throw new Error("Этот разговор уже продолжается");
         return {
-        continuations: { ...current.continuations, [requestId]: { ...existing, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
+        continuations: { ...current.continuations, [requestId]: { ...existing, mode, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
         conversationParents: { ...current.conversationParents, [requestId]: reportId },
+        conversationModes: mode ? { ...current.conversationModes, [requestId]: mode } : current.conversationModes,
       }; });
       this.publishConversations(started);
       this.diagnostics.record("continuation.start");
@@ -1141,6 +1209,7 @@ export class BackgroundService {
       return;
     }
     if (!state.remote || !this.remote || state.remote.pairId !== request.pairId) throw new Error("Pair changed");
+    if (request.mode && !supportsRestart(state.remote.peerVersion)) throw new Error("Peer does not support restarting conversations");
     const transport = this.remote;
     const pair = await transport.pairState(request.pairId);
     const me = await transport.identity();
@@ -1148,8 +1217,11 @@ export class BackgroundService {
     if (!recipientId) throw new Error("Peer has not joined");
     let text = request.preparedMessage;
     if (!text) {
-      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName, request.topic, this.savedTopicBrief(state.topicBriefs, request.topic), state.remote.counterpartPersonId);
-      const response = await agent.start(continuationPrompt(request.topic, request.history, request.instruction));
+      const brief = this.savedTopicBrief(state.topicBriefs, request.topic);
+      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName, request.topic, brief, state.remote.counterpartPersonId, Boolean(request.mode));
+      const response = await agent.start(request.mode === "restart"
+        ? conversationOpeningPrompt(state.displayName, request.topic, brief)
+        : continuationPrompt(request.topic, request.history, request.instruction));
       if (response.status === "unsafe") {
         await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],attempts:3}}}));
         throw new Error("Unsafe continuation");
@@ -1169,7 +1241,7 @@ export class BackgroundService {
     this.remoteMessages.set(id, messages);
     await this.persistTranscript(id, request.topic, messages);
     await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
-      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
+      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history, mode: request.mode } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
     const next = await this.store.mutate((latest) => ({
       continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
       activeTopics: latest.continuations[id].status === "complete" ? latest.activeTopics : mergeTopicCatalog(latest.activeTopics, [request.topic]),
@@ -1182,7 +1254,7 @@ export class BackgroundService {
     if (typeof id !== "string") throw new Error("Уточнение не найдено");
     const request = (await this.store.read()).continuations[id];
     if (!request) throw new Error("Уточнение не найдено");
-    return this.continueReport({ requestId: id, reportId: request.originReportId ?? request.parentReportId, prompt: request.instruction });
+    return this.continueReport({ requestId: id, reportId: request.originReportId ?? request.parentReportId, prompt: request.instruction, restart: request.mode === "restart" });
   }
 
   async discussAllTopics() {
@@ -1419,7 +1491,7 @@ export class BackgroundService {
     return [source, ...this.readLearnedContext().slice(0, 50).map((entry) => JSON.stringify({ topic: entry.topic, question: entry.question, answer: entry.answer, disposition: entry.disposition }))].join("\n\n");
   }
 
-  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string, topic?: string, sharedBrief?: TopicBrief, counterpartPersonId?: string) {
+  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string, topic?: string, sharedBrief?: TopicBrief, counterpartPersonId?: string, cleanContext = false) {
     const existing = this.remoteAgents.get(conversationId);
     if (existing) return existing;
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
@@ -1465,7 +1537,7 @@ export class BackgroundService {
         brief?.goal ? `Цель разговора: ${brief.goal}` : "",
         brief?.openingQuestion ? `Предлагаемый первый вопрос: ${brief.openingQuestion}` : "",
         approvedRelatedContext ? `Другие разрешённые владельцем темы с этим же человеком, которые можно использовать только как фоновый контекст:\n${approvedRelatedContext}` : "",
-        analysis?.portraits?.length ? `Локальные портреты людей, собранные из исходного чата и уже завершённых разговоров. Суждения о собеседнике остаются рабочей картиной владельца, а не объективной истиной:\n${analysis.portraits
+        !cleanContext && analysis?.portraits?.length ? `Локальные портреты людей, собранные из исходного чата и уже завершённых разговоров. Суждения о собеседнике остаются рабочей картиной владельца, а не объективной истиной:\n${analysis.portraits
           .filter((portrait) => portrait.isOwner || portrait.personId === counterpartPersonId)
           .map((portrait) => `${portrait.label}:\n${portrait.observations.map((observation) => `- [${observation.kind}] ${observation.text}`).join("\n")}`)
           .join("\n\n")
@@ -1624,11 +1696,19 @@ export class BackgroundService {
       }));
       this.emitTopicState(activeState);
       const existingAgent = this.remoteAgents.get(envelope.conversation_id);
+      const mode = dialogue.continuation?.mode ?? stored.conversationModes[envelope.conversation_id];
+      if (mode && !["restart", "clean-continuation"].includes(mode)) throw new Error("Invalid conversation mode");
+      if (mode && (!supportsRestart(dialogue.senderVersion) || hasRoleVoiceViolation({ message_to_peer: dialogue.text, shared_summary: dialogue.sharedSummary ?? "" } as AgentResponse, peerName || "Партнёр", stored.displayName))) {
+        this.diagnostics.record("conversation.restart-reply-rejected");
+        throw new Error("Ответ собеседника не подходит для новой попытки: старая версия или сбой роли. Проверьте, что у собеседника закрыта старая копия приложения.");
+      }
+      if (dialogue.continuation?.mode === "restart" && envelope.sequence_number === 1 && dialogue.continuation.history.length) throw new Error("A restarted conversation must not inherit messages");
       const inherited = dialogue.continuation && envelope.sequence_number === 1
         ? sharedHistory(dialogue.continuation.history) : [];
       if (dialogue.continuation && envelope.sequence_number === 1) {
         if (typeof dialogue.continuation.parentReportId !== "string" || dialogue.continuation.parentReportId.length > 500) throw new Error("Invalid parent conversation");
-        await this.store.mutate((current) => ({ conversationParents: { ...current.conversationParents, [envelope.conversation_id]: dialogue.continuation!.parentReportId } }));
+        await this.store.mutate((current) => ({ conversationParents: { ...current.conversationParents, [envelope.conversation_id]: dialogue.continuation!.parentReportId },
+          conversationModes: mode ? { ...current.conversationModes, [envelope.conversation_id]: mode } : current.conversationModes }));
       }
       const messages = this.remoteMessages.get(envelope.conversation_id)
         ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
@@ -1653,7 +1733,7 @@ export class BackgroundService {
         return;
       }
       const brief = this.savedTopicBrief(currentTopics.topicBriefs, dialogue.topic);
-      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName, dialogue.topic, brief, stored.remote.counterpartPersonId);
+      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName, dialogue.topic, brief, stored.remote.counterpartPersonId, Boolean(mode));
       const guidance = dialogue.status === "complete" && !incomingCompletion.ready
         ? prematureCompletionInstruction(dialogue.topic, incomingCompletion.reasons)
         : "";
@@ -1753,7 +1833,7 @@ export class BackgroundService {
           : "Владелец не хочет отвечать на этот вопрос. Уважай границу, не задавай его снова и продолжи без этого факта.";
       const privacyInstruction = "Используй ответ только для собственного рассуждения. Второму агенту передай лишь минимально необходимый вывод своими словами: не цитируй сырой ответ и не сообщай лишние личные детали. owner_question оставь пустым, если нового действительно необходимого вопроса нет.";
       const existingAgent = this.remoteAgents.get(pending.conversationId);
-      const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId);
+      const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]));
       const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
       const initialResponse = existingAgent
         ? await (agent.respondToOwner?.(`${reply}\n\n${privacyInstruction}`) ?? agent.respond(`${reply}\n\n${privacyInstruction}`))
@@ -1779,7 +1859,7 @@ export class BackgroundService {
         recipientId,
         senderAgent: stored.owner,
         payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion,
-          ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history } } : {}),
+          ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history, mode: stored.continuations[pending.conversationId].mode } } : {}),
         } satisfies DialoguePayload,
         idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,
       });
@@ -1812,6 +1892,8 @@ export class BackgroundService {
     await writeFile(reportPath, JSON.stringify({
       conversationId,
       parentReportId: state.conversationParents[conversationId],
+      restarted: state.conversationModes[conversationId] === "restart",
+      cleanContext: Boolean(state.conversationModes[conversationId]),
       pairId: state.remote?.pairId,
       topic,
       sharedSummary: conciseAnswer(summary),

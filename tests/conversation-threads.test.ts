@@ -68,3 +68,25 @@ test("completion keeps the same thread id and does not duplicate a stale live sn
   assert.equal(after[0].live, false);
   assert.equal(after[0].messageCount, 2);
 });
+
+test("new attempts stay in one card with old attempts archived, not counted or used as latest result", () => {
+  const input = state([report('1',undefined,['BAD'])], [{ id:'2', parentReportId:'1', restarted:true, topic:'Same title', inheritedMessageCount:0, messages:[msg('NEW')] }]);
+  const [thread] = conversationThreads(input);
+  assert.equal(thread.id,'1'); assert.equal(thread.latest,undefined);
+  assert.equal(thread.messageCount,1);
+  assert.deepEqual(thread.archivedStages.flatMap(s=>s.newMessages.map(m=>m.text)),['BAD']);
+  assert.deepEqual(thread.currentStages.flatMap(s=>s.newMessages.map(m=>m.text)),['NEW']);
+});
+
+test("automatic repair hides the broken attempt without restart controls or an archive menu", t => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { value: {}, configurable: true });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, "window", previous); else Reflect.deleteProperty(globalThis, "window"); });
+  const input=state([report('1',undefined,['BROKEN OLD REPLY'])]);
+  input.repairPendingIds=['1'];
+  const html=renderToStaticMarkup(createElement(ConversationThreads,{state:input,language:'ru',selectedReportId:'',onState:()=>{},activeDictation:'',onDictationBusy:()=>{}}));
+  assert.match(html,/Ожидает повторного обсуждения/);
+  assert.doesNotMatch(html,/Продолжить этот разговор/);
+  assert.doesNotMatch(html,/BROKEN OLD REPLY|Действия с разговором|Обсудить заново|Начать заново|Предыдущая попытка/);
+  assert.doesNotMatch(html,/<details[^>]*open/);
+});

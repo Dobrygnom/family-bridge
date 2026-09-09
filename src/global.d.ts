@@ -22,10 +22,11 @@ export interface AppState {
   activeTopics: string[];
   blockedTopics: string[];
   reports: string[];
-  reportSummaries: Array<{ id: string; parentReportId?: string; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completionState?: "completed" | "needs_follow_up"; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
+  reportSummaries: Array<{ id: string; parentReportId?: string; restarted?: boolean; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completionState?: "completed" | "needs_follow_up"; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
-  continuationStates?: Array<{ id: string; parentReportId: string; status: "starting" | "waiting" | "complete" | "error" }>;
+  continuationStates?: Array<{ id: string; parentReportId: string; mode?: "restart" | "clean-continuation"; status: "starting" | "waiting" | "complete" | "error" }>;
   conversationRevision?: number;
+  repairPendingIds?: string[];
   liveConversations?: LiveConversation[];
   lastConversationAt?: string;
   running: boolean;

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { BackgroundService, readReportSummaries } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
-import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation } from "../src/core/continuation.js";
+import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
 import type { AgentResponse } from "../src/core/types.js";
 import { applyConversationUpdate, latestContinuation } from "../src/core/conversation-updates.js";
 import type { AppState } from "../src/global.js";
@@ -31,6 +31,131 @@ async function fixture() {
   (service as any).versionProbePair = "pair:two"; // These tests exercise dialogue, not the initial service handshake.
   return { dir, report, store, service, sent, transport };
 }
+
+test("restart sends a clean new attempt, preserves files, and survives an idempotent retry", async () => {
+  const f = await fixture();
+  try {
+    await f.store.mutate(s=>({remote:{...s.remote!,peerVersion:'1.2.11'}}));
+    const before = await readFile(f.report,'utf8');
+    let calls=0;
+    (f.service as any).localRemoteAgent = (...args:any[])=>({start:async(prompt:string)=>{
+      calls++; assert.equal(args.at(-1),true); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      return response('Давай начнём с того, как нам удобно созваниваться.');
+    }});
+    const input={reportId:'original-id',requestId:'restart-request'};
+    const send=f.transport.send; f.transport.send=async()=>{throw Error('offline');};
+    await f.service.restartReport(input);
+    await until(async()=> (await f.store.read()).continuations[input.requestId]?.status==='error');
+    f.transport.send=send;
+    await f.service.retryContinuation(input.requestId);
+    await until(async()=> (await f.store.read()).continuations[input.requestId]?.status==='waiting');
+    await f.service.restartReport(input);
+    assert.equal(calls,1); assert.equal(f.sent.length,1);
+    assert.deepEqual(f.sent[0].payload.continuation,{parentReportId:'original-id',history:[],mode:'restart'});
+    assert.equal(await readFile(f.report,'utf8'),before);
+    await (f.service as any).saveRemoteReport(input.requestId,'Звонки','New result',[{from:'dima',text:'NEW'}]);
+    const stored=await f.store.read();
+    assert.equal(readReportSummaries(stored.reports)[0].restarted,true);
+    assert.equal(stored.reports.length,2);
+    (f.service as any).localRemoteAgent = (...args:any[])=>({start:async(prompt:string)=>{
+      assert.equal(args.at(-1),true); assert.match(prompt,/NEW/); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      return response('Продолжим новый разговор.');
+    }});
+    await f.service.continueReport({reportId:'original-id',requestId:'after-restart',prompt:'Уточни'});
+    await until(async()=> (await f.store.read()).continuations['after-restart']?.status==='waiting');
+    assert.equal(f.sent.at(-1).payload.continuation.mode,'clean-continuation');
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
+test("restart is blocked for old peers and active conversations without changing data", async () => {
+  const f=await fixture();
+  try {
+    assert.equal(supportsRestart('1.2.10'),false); assert.equal(supportsRestart('1.2.11'),true);
+    assert.equal(supportsRestart('1.3.0'),true); assert.equal(supportsRestart(undefined),false);
+    await assert.rejects(f.service.restartReport({reportId:'original-id',requestId:'restart-blocked'}),/1.2.11/);
+    await f.store.mutate(s=>({remote:{...s.remote!,peerVersion:'1.2.11'},conversationParents:{active:'original-id'},conversationTranscripts:{active:{topic:'Звонки',messages:history}}}));
+    await assert.rejects(f.service.restartReport({reportId:'original-id',requestId:'restart-blocked'}),/уже продолжается/);
+    assert.equal(Object.keys((await f.store.read()).continuations).length,0); assert.equal(f.sent.length,0);
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
+test("the other computer receives restart isolation and preserves its old report", async () => {
+  const f=await fixture();
+  try {
+    const before=await readFile(f.report,'utf8');
+    let clean=false;
+    (f.service as any).localRemoteAgent=(...args:any[])=>({start:async(prompt:string)=>{
+      clean=args.at(-1)===true; assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      return response('Давай попробуем иначе.');
+    }});
+    await (f.service as any).processIncomingDialogue({id:'new-envelope',pair_id:'pair',conversation_id:'peer-restart',sequence_number:1,sender_agent:'katya',created_at:new Date().toISOString(),payload:{kind:'dialogue',topic:'Звонки',text:'Хочу обсудить удобное время.',status:'continue',senderVersion:'1.2.11',continuation:{parentReportId:'original-id',history:[],mode:'restart'}}});
+    assert.equal(clean,true);
+    const state=await f.store.read();
+    assert.equal(state.conversationModes['peer-restart'],'restart');
+    assert.equal(state.conversationTranscripts['peer-restart'].messages.length,2);
+    assert.equal(await readFile(f.report,'utf8'),before);
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
+test("automatic repair waits for a fresh compatible peer and runs only on the original initiator", async () => {
+  const f=await fixture();
+  try {
+    const raw=JSON.parse(await readFile(f.report,'utf8'));
+    raw.messages[1].text='Мы говорим как агенты; согласие людей ещё нужно получить.';
+    await writeFile(f.report,JSON.stringify(raw));
+    (f.service as any).options.appVersion='1.2.11';
+    await f.store.mutate(s=>({remote:{...s.remote!,peerVersion:'1.2.10'}}));
+    let generated=0;
+    (f.service as any).localRemoteAgent=()=>({start:async()=>{generated++;return response('Начнём с исходного вопроса.');}});
+    (f.service as any).beginPeerVersionCheck=()=>{};
+    await (f.service as any).repairLegacyConversations();
+    assert.equal(generated,0);
+    await f.store.mutate(s=>({remote:{...s.remote!,peerVersion:'1.2.11'}}));
+    await (f.service as any).repairLegacyConversations(); assert.equal(generated,0);
+    (f.service as any).versionProbe={pairId:'pair',state:{status:'received',requestedAt:new Date().toISOString()}};
+    await f.store.update({owner:'katya'});
+    await (f.service as any).repairLegacyConversations(); assert.equal(generated,0);
+    await f.store.update({owner:'dima'});
+    await (f.service as any).repairLegacyConversations();
+    await until(async()=> (await f.store.read()).continuations['repair-1211-original-id']?.status==='waiting');
+    await (f.service as any).repairLegacyConversations();
+    assert.equal(generated,1); assert.equal(f.sent.length,1);
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
+test("mixed 0.3.7 reports and divergent active histories do not block finished conversations or erase either history", async () => {
+  const f=await fixture();
+  try {
+    const child=path.join(f.dir,'reports','legacy-child.json');
+    await writeFile(child,JSON.stringify({conversationId:'legacy-child',topic:'Звонки',messages:[...history,{from:'dima',text:'Legacy report ending'}],completedAt:'2026-09-02T00:00:00Z'}));
+    const divergent={topic:'Звонки',messages:[{from:'katya' as const,text:'Different active history must survive'}]};
+    await f.store.update({reports:[f.report,child],conversationParents:{'legacy-child':'original-id'},conversationTranscripts:{'legacy-child':divergent},continuations:{'legacy-child':{parentReportId:'original-id',pairId:'pair',topic:'Звонки',history,instruction:'Keep this instruction',status:'waiting'}}});
+    const before=await readFile(child,'utf8');
+    const visible=(f.service as any).conversationSnapshot(await f.store.read());
+    assert.equal(visible.liveConversations.length,0);
+    assert.equal(visible.continuationStates[0].status,'complete');
+    assert.equal(visible.reportSummaries.find((r:any)=>r.id==='legacy-child').parentReportId,'original-id');
+    (f.service as any).localRemoteAgent=()=>({start:async(prompt:string)=>{assert.match(prompt,/Legacy report ending/);return response('Новое уточнение.');}});
+    await f.service.continueReport({reportId:'original-id',requestId:'mixed-followup',prompt:'Уточни'});
+    await until(async()=> (await f.store.read()).continuations['mixed-followup']?.status==='waiting');
+    assert.equal(f.sent.length,1);
+    assert.equal(await readFile(child,'utf8'),before);
+    assert.deepEqual((await f.store.read()).conversationTranscripts['legacy-child'],divergent);
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
+test("a fresh attempt rejects replies from an old worker before they enter history", async () => {
+  const f=await fixture();
+  try {
+    await f.store.update({conversationModes:{fresh:'restart'}});
+    (f.service as any).localRemoteAgent=()=>assert.fail('Rejected replies must not reach the model');
+    for (const payload of [{senderVersion:undefined,text:'Old worker reply'}, {senderVersion:'1.2.11',text:'Мы говорим как агенты.'}]) {
+      await assert.rejects((f.service as any).processIncomingDialogue({id:'old-worker',pair_id:'pair',conversation_id:'fresh',sequence_number:2,sender_agent:'katya',payload:{kind:'dialogue',topic:'Звонки',status:'continue',...payload}}),/старая версия или сбой роли/);
+    }
+    assert.equal((await f.store.read()).conversationTranscripts.fresh,undefined);
+    assert.equal(f.sent.length,0);
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
 
 test("continuation prompt distinguishes old history, new instruction and the responding side", () => {
   assert.match(continuationPrompt("Звонки", history, "Попроси пример"), /Новое поручение владельца:\nПопроси пример/);

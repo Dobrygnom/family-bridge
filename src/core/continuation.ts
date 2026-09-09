@@ -2,6 +2,13 @@ import { agentKnowledgeRules } from "./agent-context-rules.js";
 
 export type SharedMessage = { from: "dima" | "katya"; text: string };
 
+export function supportsRestart(version: string | undefined) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
+  if (!match) return false;
+  const [, major, minor, patch] = match.map(Number);
+  return major > 1 || major === 1 && (minor > 2 || minor === 2 && patch >= 11);
+}
+
 export function continuationPrompt(topic: string, history: SharedMessage[], instruction: string) {
   return `Ты продолжаешь ЗАВЕРШЁННЫЙ разговор по новому поручению своего владельца. Не повторяй прежний вывод как окончательный: владелец просит вернуться к вопросу.
 Прочитай предыдущие реплики. Учти, что уже обсуждалось, и новое уточнение владельца. Подготовь содержательную реплику собеседнику от первого лица в стиле владельца: конкретный вопрос, добавление или просьбу объяснить суть. Если просят пояснить, задай именно уточняющий вопрос по старому результату, а не общий вопрос по исходной теме.

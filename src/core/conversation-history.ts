@@ -1,6 +1,6 @@
 import type { SharedMessage } from "./continuation.js";
 
-export interface HistoryReport { id: string; parentReportId?: string; topic: string; completedAt: string; messages: SharedMessage[] }
+export interface HistoryReport { id: string; parentReportId?: string; restarted?: boolean; cleanContext?: boolean; topic: string; completedAt: string; messages: SharedMessage[] }
 export function resolveHistory(reports: HistoryReport[], requestedId: string) {
   const nodes = new Map(reports.map(report => [report.id, report]));
   if (!nodes.has(requestedId)) throw new Error("Исходный разговор не найден");
@@ -23,12 +23,25 @@ export function resolveHistory(reports: HistoryReport[], requestedId: string) {
     ordered.push(r);
   };
   members.forEach(add);
+  const restart = ordered.filter(report => report.restarted).at(-1);
+  const attemptOf = (report: HistoryReport): string | undefined => {
+    const seen = new Set<string>();
+    let node: HistoryReport | undefined = report;
+    while (node && !seen.has(node.id)) {
+      seen.add(node.id);
+      if (node.restarted) return node.id;
+      node = node.parentReportId ? nodes.get(node.parentReportId) : undefined;
+    }
+  };
+  const current = restart ? ordered.filter(report => attemptOf(report) === restart.id) : ordered;
   const history: SharedMessage[] = [];
-  for (const report of ordered) {
+  for (const report of current) {
+    // A restart is an explicit context boundary, while its parent remains a UI link.
+    if (report.restarted) history.length = 0;
     const parent = report.parentReportId ? nodes.get(report.parentReportId) : undefined;
     let prefix = 0;
-    while (parent && prefix < parent.messages.length && prefix < report.messages.length && parent.messages[prefix].from === report.messages[prefix].from && parent.messages[prefix].text === report.messages[prefix].text) prefix++;
+    while (!report.restarted && parent && prefix < parent.messages.length && prefix < report.messages.length && parent.messages[prefix].from === report.messages[prefix].from && parent.messages[prefix].text === report.messages[prefix].text) prefix++;
     history.push(...report.messages.slice(prefix));
   }
-  return { rootId, ids: new Set(ordered.map(report=>report.id)), latest: ordered.at(-1)!, history };
+  return { rootId, ids: new Set(ordered.map(report=>report.id)), latest: current.at(-1)!, history };
 }
