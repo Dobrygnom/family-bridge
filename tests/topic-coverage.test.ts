@@ -1,18 +1,66 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CodexContextAnalyzer, normalizeContextAnalysis } from "../src/core/context-analysis.js";
 import { coverageSchema, validateCoverage, selectionEvidence, topicCoverageRules, dialogueGroupingPrompt, type CoverageAnalysis } from "../src/core/topic-coverage.js";
 import { shareableTopicBrief } from "../src/core/conversation-quality.js";
 import { topicNeedsReview, topicRelevanceLabel } from "../src/core/topic-review.js";
+import { createHash } from "node:crypto";
 
 const raw = (): CoverageAnalysis => ({ people: [{ key: "peer", label: "Нина", relationship: "партнёр", aliases: [] }], portraits: [],
   topics: [{ id: "T1", title: "Незакрытый вопрос", about_people: ["peer"], discuss_with: "peer", sensitivity: "direct", relevance: "check_relevance", reason: `Контекст: ${"а".repeat(650)} Что хотим понять: Понять. Начало разговора: Я хотел понять нашу разницу. Как ты смотришь на это?` }],
   decisions: [{ candidateId: "C1", disposition: "included", topicIds: ["T1"], reason: "Нерешённый вопрос" }, { candidateId: "C2", disposition: "merged", topicIds: ["T1"], reason: "Другой эпизод того же вопроса" }],
 });
 const inputs = [{ id: "C1", discuss_with: "peer" }, { id: "C2", discuss_with: "peer" }];
+
+test("all candidates already saved is success, not an empty grouping request", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "fb-empty-coverage-"));
+  try {
+    const analyzer = new CodexContextAnalyzer("unused", workspace, path.resolve("schemas/context-analysis.schema.json")) as any;
+    let calls = 0;
+    analyzer.run = async () => { calls++; return { ...raw(), topics: [], decisions: [{ candidateId: "C1", disposition: "excluded", topicIds: [], reason: "Уже есть сохранённая тема" }] }; };
+    const previous = normalizeContextAnalysis(raw(), "source", "hash");
+    previous.topics[0].approved = true;
+    previous.topics[0].title = "Моя уточнённая тема";
+    const selected = await analyzer.consolidate([raw()], "Олег", "ru", undefined, [], [], previous.topics);
+    assert.equal(calls, 1);
+    assert.deepEqual(selected.topics, []);
+    const result = normalizeContextAnalysis(selected, "source", "hash", previous);
+    assert.deepEqual(result.topics, previous.topics);
+    const empty = await analyzer.consolidate([{ ...raw(), topics: [] }], "Олег", "ru", undefined, [], []);
+    assert.equal(calls, 1);
+    assert.deepEqual(empty.people, raw().people);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("grouping receives selected topics without excluded candidate decisions", () => {
+  const input = raw(); input.decisions.push({ candidateId: "EXCLUDED_PRIVATE_ID", disposition: "excluded", topicIds: [], reason: "OLD_DECISION_ONLY" });
+  const prompt = dialogueGroupingPrompt(input, "Олег", "ru", []);
+  assert.doesNotMatch(prompt, /EXCLUDED_PRIVATE_ID|OLD_DECISION_ONLY/);
+  assert.match(prompt, /Незакрытый вопрос/);
+});
+
+test("invalid historical coverage cache is regenerated and new invalid results are not cached", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "fb-invalid-coverage-"));
+  try {
+    const schema = path.resolve("schemas/context-analysis.schema.json");
+    const analyzer = new CodexContextAnalyzer("unused", workspace, schema) as any;
+    const key = createHash("sha256").update(JSON.stringify({ prompt: "prompt", modelArgs: [] })).digest("hex");
+    const file = path.join(workspace, `analysis-${key}.json`);
+    const invalid = { ...raw(), decisions: [] };
+    await writeFile(file, JSON.stringify(invalid));
+    let calls = 0;
+    analyzer.run = async () => { calls++; return raw(); };
+    await analyzer.runCached("prompt", [], [], schema, (result: CoverageAnalysis) => validateCoverage(result, inputs));
+    assert.equal(calls, 1);
+    validateCoverage(JSON.parse(await readFile(file, "utf8")), inputs);
+    analyzer.run = async () => invalid;
+    await assert.rejects(analyzer.coverageStage("bad", [], schema, inputs), /Сохранённые темы не изменены/);
+    assert.equal((await readdir(workspace)).filter(name => name.startsWith("analysis-")).length, 1);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
 
 test("coverage catches silently lost candidates, invented topics and broken mappings", () => {
   validateCoverage(raw(), inputs);

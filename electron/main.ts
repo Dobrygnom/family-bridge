@@ -30,6 +30,7 @@ let currentUpdate: UpdateState = { available: false, downloading: false };
 function publishUpdate(update: UpdateState) {
   currentUpdate = update;
   service.setUpdateState(update);
+  service.diagnostics.record('updater.state', { version: update.version, ready: update.ready, downloading: update.downloading, installing: update.installing, waitingFor: update.waitingFor, current: update.progress });
 }
 let activeIpc = 0;
 let preparingUpdate = false;
@@ -198,7 +199,10 @@ app.whenReady().then(async () => {
       requestUpdateCheck: () => setTimeout(() => void checkForUpdates(), 0),
     },
   );
+  service.diagnostics.record('process.runtime', { version: app.getVersion(), executable: process.execPath, userData: app.getPath('userData'), cwd: process.cwd(), updatedLaunch: process.argv.includes('--updated'), agentLaunched: Boolean(process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID) });
+  service.diagnostics.snapshotProfile(app.getPath('userData'), 'before-start');
   await service.start();
+  service.diagnostics.snapshotProfile(app.getPath('userData'), 'after-start');
   updateGate = new AutomaticUpdate({
     canInstall: () => app.isPackaged && activeIpc === 0 && (!mainWindow || !rendererUpdateBlocked),
     prepare: async () => {
@@ -231,6 +235,9 @@ app.whenReady().then(async () => {
   handle("bridge:diagnose-ui", async (_event, input: unknown) => {
     const shown = input as { onboardingComplete?: unknown; analysisStatus?: unknown } | null;
     service.diagnostics.record("renderer.snapshot", { onboarding: shown?.onboardingComplete === true, analysisStatus: ["ready", "analyzing", "error"].includes(String(shown?.analysisStatus)) ? String(shown?.analysisStatus) : "none" });
+    service.diagnostics.snapshotProfile(app.getPath('userData'), 'renderer-snapshot');
+    const actual = await service.state();
+    service.diagnostics.record('renderer.backend-state', { onboarding: actual.onboardingComplete, analysisStatus: actual.contextAnalysis?.status, topics: actual.contextAnalysis?.topics.length, reports: actual.reports.length });
   });
   handle("bridge:open-diagnostics", async () => {
     service.diagnostics.record("diagnostics.open");

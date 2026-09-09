@@ -256,3 +256,6 @@ button[aria-busy="true"] { cursor: progress; }
 @media (prefers-reduced-motion: reduce) {
   .spin, .topic-preview-card { animation: none; }
 }
+.peer-presence { display: block; margin: 6px 0; }
+.peer-presence.online { color: var(--accent, #83d5bd); }
+.peer-presence.offline { opacity: .7; }

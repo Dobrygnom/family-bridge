@@ -37,6 +37,7 @@ test("agent prompt carries the selected language and lets the app infer style fr
   assert.match(prompt, /оба высказались и отреагировали на позицию другого/);
   assert.match(prompt, /На первый вопрос дай содержательный ответ, но поставь status="continue"/);
   assert.match(prompt, /не растягивай беседу пустыми/);
+  assert.match(prompt, /Не используй «Слушай» как автоматическое начало/);
 });
 
 test("owner question gets a strict autonomy review before the conversation is paused", () => {
@@ -116,7 +117,8 @@ test("large agent context is piped through stdin instead of the Windows command 
 
   const resume = buildResumeInvocation(options, "session-id", longContext);
   assert.equal(resume.args.at(-1), "-");
-  assert.equal(resume.stdin, longContext);
+  assert.ok(resume.stdin.startsWith(longContext));
+  assert.match(resume.stdin, /не повторяй одинаковые вводные/);
   assert.ok(resume.args.join(" ").length < 1_000);
 });
 

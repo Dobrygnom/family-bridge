@@ -1,4 +1,6 @@
 import { RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { peerIsOnline } from "../core/peer-version.js";
 import type { AppState } from "../global.js";
 import { supportsContinuation } from "../core/continuation.js";
 import type { Language } from "./i18n.js";
@@ -15,6 +17,15 @@ export function PeerVersionControl({ state, language, onCheck, busy = false, con
 }) {
   const t = labels[language];
   const remote = state.remote;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 5_000); return () => clearInterval(timer); }, []);
+  const online = remote.configured && peerIsOnline(remote.peerPresenceAt, now);
+  const presence = {
+    ru: { online: "Приложение в сети", offline: "Нет свежего ответа", hint: "Проверяем связь автоматически, без обращения к модели. Статус приложения не означает, что человек сейчас смотрит в экран." },
+    en: { online: "App is online", offline: "No recent reply", hint: "Connection is checked automatically, without using the model. App presence does not mean the person is looking at the screen." },
+    cs: { online: "Aplikace je online", offline: "Bez nedávné odpovědi", hint: "Spojení ověřujeme automaticky bez modelu. Online aplikace neznamená, že člověk sleduje obrazovku." },
+    fr: { online: "Application en ligne", offline: "Pas de réponse récente", hint: "Connexion vérifiée automatiquement, sans modèle. Une application en ligne ne signifie pas que la personne regarde l’écran." },
+  }[language];
   const checking = busy || remote.peerVersionCheck?.status === "checking";
   const status = remote.peerVersionCheck?.status;
   const known = Boolean(remote.peerVersion);
@@ -23,6 +34,7 @@ export function PeerVersionControl({ state, language, onCheck, busy = false, con
     ? new Date(remote.peerLastSeenAt).toLocaleString(language) : undefined;
   return <div className="peer-version-control">
     <div className="peer-version-heading"><strong>{remote.peerName || t.peer}</strong><span>{known ? `v${remote.peerVersion}` : t.unknown}</span></div>
+    {remote.configured && <small className={`peer-presence ${online ? "online" : "offline"}`} title={presence.hint} role="status"><span aria-hidden="true">●</span> {online ? presence.online : presence.offline}</small>}
     {lastReply && <small>{t.last}: {lastReply}</small>}
     {blocked && <p className="peer-version-warning">{known ? t.old : t.blocked}</p>}
     {!remote.configured && <p>{t.unpaired}</p>}

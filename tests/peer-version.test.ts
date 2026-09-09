@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BackgroundService } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
-import { PEER_VERSION_TIMEOUT_MS, validPeerVersion, VERSION_PROBE_PREFIX } from "../src/core/peer-version.js";
+import { PEER_VERSION_TIMEOUT_MS, validPeerVersion, VERSION_PROBE_PREFIX, PEER_HEARTBEAT_MS, PEER_ONLINE_TTL_MS, peerIsOnline, supportsSilentVersionProbe } from "../src/core/peer-version.js";
 import { PeerVersionControl } from "../src/ui/PeerVersionControl.js";
 import { ReportContinuation } from "../src/ui/ReportContinuation.js";
 import type { AppState } from "../src/global.js";
@@ -176,9 +176,59 @@ test("old probe replies cannot complete a new request; malformed versions are no
     await until(() => f.sent.length === 1);
     await (f.service as any).receivePeerVersion({ kind: "topic", topic: "old-probe", versionOnly: true, senderVersion: "0.3.29" }, "pair");
     assert.equal((await f.service.state()).remote.peerVersionCheck?.status, "checking");
+    assert.equal((await f.service.state()).remote.peerPresenceAt, undefined);
     assert.equal(validPeerVersion("0.3.29"), "0.3.29");
     assert.equal(validPeerVersion("1.0.0"), "1.0.0");
     assert.equal(validPeerVersion("secret-text"), undefined);
+  } finally { await f.cleanup(); }
+});
+
+test("presence requires a fresh matching response, expires, and is not restored from an old saved version", async () => {
+  const f = await fixture();
+  try {
+    await f.service.requestPeerVersionCheck();
+    await until(() => f.sent.length === 1);
+    const probe = (f.service as any).versionProbe;
+    const reply = { kind: "topic", topic: probe.topic, versionOnly: true, senderVersion: "1.2.13" };
+    probe.state.requestedAt = new Date(Date.now() - PEER_VERSION_TIMEOUT_MS - 1_000).toISOString();
+    await (f.service as any).receivePeerVersion(reply, "pair");
+    assert.equal((await f.service.state()).remote.peerPresenceAt, undefined);
+    probe.state.requestedAt = new Date().toISOString();
+    await (f.service as any).receivePeerVersion(reply, "pair");
+    const snapshot = await f.service.state();
+    assert.equal(peerIsOnline(snapshot.remote.peerPresenceAt), true);
+    assert.equal(peerIsOnline(snapshot.remote.peerPresenceAt, Date.now() + PEER_ONLINE_TTL_MS + 1), false);
+    assert.equal(peerIsOnline(undefined), false);
+    assert.equal(peerIsOnline("invalid"), false);
+    const reopened = new BackgroundService(f.dir, process.cwd(), f.store, () => null, undefined, { backgroundTasks: false });
+    assert.equal((await reopened.state()).remote.peerPresenceAt, undefined);
+    const html = renderToStaticMarkup(createElement(PeerVersionControl, { state: snapshot as AppState, language: "ru", onCheck: () => {} }));
+    assert.match(html, /Приложение в сети/);
+  } finally { await f.cleanup(); }
+});
+
+test("automatic heartbeats use metadata only, do not check partner updates or flash version controls", async () => {
+  const f = await fixture();
+  try {
+    await f.service.requestPeerVersionCheck();
+    await until(() => f.sent.length === 1);
+    await (f.service as any).receivePeerVersion({ kind: "topic", topic: f.sent[0].payload.topic, versionOnly: true, senderVersion: "1.2.13" }, "pair");
+    (f.service as any).versionProbe.state.requestedAt = new Date(Date.now() - PEER_HEARTBEAT_MS - 1000).toISOString();
+    f.events.length = 0;
+    await (f.service as any).pumpRemote();
+    await until(() => f.sent.length === 2);
+    assert.equal(f.sent[1].payload.requestUpdateCheck, false);
+    assert.equal(f.sent[1].payload.requestVersion, true);
+    assert.equal(f.sent[1].payload.versionOnly, true);
+    assert.equal(f.events.some(event => event.type === "peer-version-check"), false);
+    assert.equal((await f.service.state()).remote.peerVersionCheck, undefined);
+    await f.service.requestPeerVersionCheck();
+    assert.equal((await f.service.state()).remote.peerVersionCheck?.status, "checking");
+    assert.equal(f.sent.length, 2, "Manual check shares the pending heartbeat");
+    assert.deepEqual((await f.store.read()).pairTopics, []);
+    assert.equal(supportsSilentVersionProbe("0.3.29"), false);
+    assert.equal(supportsSilentVersionProbe("0.3.31"), true);
+    assert.equal(supportsSilentVersionProbe("1.2.13"), true);
   } finally { await f.cleanup(); }
 });
 

@@ -34,7 +34,7 @@ export interface AppState {
   contextSyncProgress: number;
   portraitsUpdating: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
-  remote: { configured: boolean; connected: boolean; dialogueCompatible?: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerExperienceVersion?: string; peerLastSeenAt?: string; peerVersionCheck?: PeerVersionCheck; counterpartPersonId?: string; counterpartLabel?: string };
+  remote: { configured: boolean; connected: boolean; dialogueCompatible?: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerExperienceVersion?: string; peerLastSeenAt?: string; peerPresenceAt?: string; peerVersionCheck?: PeerVersionCheck; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; learnedCount: number; lastCheckedAt?: string; status?: string };
   context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error" | "confirmation"; error?: string };
   contextAnalysis?: {

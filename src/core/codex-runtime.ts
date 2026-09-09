@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentId, AgentResponse, AgentRuntime } from "./types.js";
 import { preferredModelArgs } from "./codex-model.js";
-import { agentKnowledgeRules } from "./agent-context-rules.js";
+import { agentKnowledgeRules, naturalDialogueStyleRules } from "./agent-context-rules.js";
 
 interface CodexJsonEvent {
   type?: string;
@@ -55,6 +55,8 @@ const SYSTEM_RULES = `
 Твоя цель — не написать психологический отчёт и не изобрести регламент для пары, а провести живой разговор, в котором два близких человека действительно услышали друг друга. Они могут прийти к согласию, ясному несогласию, новому пониманию или честно оставить вопрос открытым.
 
 ${agentKnowledgeRules}
+
+${naturalDialogueStyleRules}
 
 Правила:
 - внутри разговора полностью возьми на себя роль владельца: всегда говори о нём от первого лица «я/мне/мы», а ко второму человеку обращайся напрямую «ты/тебе»;
@@ -125,7 +127,7 @@ export function buildResumeInvocation(options: CodexRuntimeOptions, sessionId: s
       sessionId,
       "-",
     ],
-    stdin: prompt,
+    stdin: `${prompt}\n\n${naturalDialogueStyleRules}`,
   };
 }
 

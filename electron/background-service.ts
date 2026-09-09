@@ -18,7 +18,7 @@ import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/cor
 import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
-import { PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
+import { PEER_HEARTBEAT_MS, PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, supportsSilentVersionProbe, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
 import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
 import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
@@ -395,7 +395,8 @@ export class BackgroundService {
   private lastContextCheckAt = 0;
   private syncedTopicsForPair?: string;
   private versionProbePair?: string;
-  private versionProbe?: { topic: string; pairId: string; state: PeerVersionCheck };
+  private versionProbe?: { topic: string; pairId: string; automatic?: boolean; state: PeerVersionCheck };
+  private peerPresence?: { pairId: string; at: string };
   private versionProbeTimer?: NodeJS.Timeout;
   private remoteBusy = false;
   private remoteWorkers = new Map<string, Promise<void>>();
@@ -447,7 +448,7 @@ export class BackgroundService {
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
     const reportSummaries = conversationState.reportSummaries;
     const dialogueCompatible = !this.options.experienceResetVersion || stored.remote?.peerExperienceVersion === this.options.experienceResetVersion;
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerVersionCheck: this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt: this.peerPresence?.pairId === stored.remote?.pairId ? this.peerPresence?.at : undefined, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
@@ -664,7 +665,7 @@ export class BackgroundService {
 
   private async analyzeContext(sourceId: string, sourceHash: string, messages: AnalysisMessage[], previous?: ContextAnalysis) {
     this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
-    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [] };
+    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [], coverageRecoveryAttempted: previous?.coverageRecoveryAttempted };
     await this.writeContextAnalysis(analyzing, true);
     this.emit({ type: "context-analysis", analysis: analyzing });
     try {
@@ -690,7 +691,7 @@ export class BackgroundService {
       return saved;
     } catch (error) {
       this.diagnostics.record("analysis.failed");
-      const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error) };
+      const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error), errorCode: (error as {code?: string})?.code === 'TOPIC_COVERAGE_INVALID' ? 'TOPIC_COVERAGE_INVALID' : undefined };
       const saved = await this.writeContextAnalysis(failed, true);
       this.emit({ type: "context-analysis", analysis: saved });
       throw error;
@@ -1008,6 +1009,25 @@ export class BackgroundService {
     this.contextCheckBusy = true;
     this.lastContextCheckAt = Date.now();
     try {
+      const failed = this.readContextAnalysis();
+      const coverageFailure = failed?.status === 'error' && (failed.errorCode === 'TOPIC_COVERAGE_INVALID' || failed.error?.includes('Every candidate needs exactly one disposition'));
+      // A failed automatic repair must not turn into repeated exports/LLM work.
+      // Explicit refresh remains available to retry after the underlying issue changes.
+      if (!force && coverageFailure && failed.coverageRecoveryAttempted) return;
+      if (!force && coverageFailure && !failed.coverageRecoveryAttempted && failed.sourceId === selected.id) {
+        const text = readFileSync(path.join(this.userData,'psychologist-memory/style-samples.jsonl'),'utf8');
+        const messages = text.split(/\r?\n/).filter(line=>line.trim()).map(line=>JSON.parse(line)) as AnalysisMessage[];
+        if (!messages.length || messages.some(message=>typeof message.text!=='string') || contextSourceHash(messages)!==failed.sourceHash) throw new Error('Сохранённые реплики изменились. Проверьте исходный чат перед повторной подготовкой тем.');
+        const marked = await this.writeContextAnalysis({ ...failed, coverageRecoveryAttempted: true });
+        this.diagnostics.record('analysis.coverage-recovery');
+        this.updateContextSync(true,50);
+        try {
+          await this.analyzeContext(selected.id,failed.sourceHash,messages,marked);
+          const restored = { ...selected, status: 'ready' as const, messageCount: messages.length, error: undefined };
+          await this.writeContextSource(restored);this.emit({ type:'context',context:restored });
+        } finally { this.updateContextSync(false,0); }
+        return;
+      }
       const threads = await this.listContextThreads();
       const latest = threads.find((thread) => thread.id === selected.id);
       const analysis = this.readContextAnalysis();
@@ -1396,16 +1416,19 @@ export class BackgroundService {
     if (!this.versionProbe) return;
     this.versionProbe.state = { ...this.versionProbe.state, status };
     if (status !== "checking") clearTimeout(this.versionProbeTimer);
-    this.windowProvider()?.webContents.send("bridge:event", { type: "peer-version-check", peerVersionCheck: this.versionProbe.state });
+    if (!this.versionProbe.automatic) this.windowProvider()?.webContents.send("bridge:event", { type: "peer-version-check", peerVersionCheck: this.versionProbe.state });
     this.diagnostics.record(`peer-version.${status}`);
   }
 
-  private beginPeerVersionCheck(stored: Awaited<ReturnType<AtomicStore["read"]>>) {
+  private beginPeerVersionCheck(stored: Awaited<ReturnType<AtomicStore["read"]>>, automatic = false) {
     if (!stored.remote || !this.remote) return;
-    if (this.versionProbe?.pairId === stored.remote.pairId && this.versionProbe.state.status === "checking") return;
+    if (this.versionProbe?.pairId === stored.remote.pairId && this.versionProbe.state.status === "checking") {
+      if (!automatic) { this.versionProbe.automatic = false; this.publishPeerVersionCheck("checking"); }
+      return;
+    }
     clearTimeout(this.versionProbeTimer);
     const transport = this.remote;
-    const probe = { pairId: stored.remote.pairId, topic: `${VERSION_PROBE_PREFIX}${randomUUID()}`, state: { status: "checking" as const, requestedAt: new Date().toISOString() } };
+    const probe = { pairId: stored.remote.pairId, automatic, topic: `${VERSION_PROBE_PREFIX}${randomUUID()}`, state: { status: "checking" as const, requestedAt: new Date().toISOString() } };
     this.versionProbe = probe;
     this.publishPeerVersionCheck("checking");
     this.versionProbeTimer = setTimeout(() => {
@@ -1421,7 +1444,7 @@ export class BackgroundService {
       this.versionProbePair = `${pair.id}:${pair.partner_id}`;
       // 0.3.29/30 reply only to requestUpdateCheck. They also check their own
       // updates; newer builds recognize requestVersion and only reply.
-      await this.shareTopicToPair(probe.topic, stored, pair, true, true, true);
+      await this.shareTopicToPair(probe.topic, stored, pair, true, !automatic, true);
       this.diagnostics.record("peer-version.sent");
     })().catch(() => {
       if (this.versionProbe === probe) this.publishPeerVersionCheck("error");
@@ -1446,6 +1469,13 @@ export class BackgroundService {
     if (becameCompatible) this.syncedTopicsForPair = undefined;
     if (payload.kind === "topic" && payload.versionOnly && !payload.requestVersion && !payload.requestUpdateCheck
       && this.versionProbe?.pairId === pairId && this.versionProbe.topic === payload.topic) {
+      const age = Date.now() - Date.parse(this.versionProbe.state.requestedAt);
+      // Old queued messages prove delivery, not current presence. Only a timely
+      // response to our current challenge can turn the online indicator green.
+      if (age >= 0 && age <= PEER_VERSION_TIMEOUT_MS) {
+        this.peerPresence = { pairId, at: peerLastSeenAt };
+        this.windowProvider()?.webContents.send("bridge:event", { type: "peer-presence", peerPresenceAt: peerLastSeenAt });
+      }
       this.publishPeerVersionCheck("received");
     }
   }
@@ -1567,6 +1597,9 @@ export class BackgroundService {
       if (this.versionProbePair !== topicSyncKey) {
         this.versionProbePair = topicSyncKey;
         this.beginPeerVersionCheck(stored);
+      } else if (supportsSilentVersionProbe(stored.remote.peerVersion)
+        && this.versionProbe && Date.now() - Date.parse(this.versionProbe.state.requestedAt) >= PEER_HEARTBEAT_MS) {
+        this.beginPeerVersionCheck(stored, true);
       }
       if (this.syncedTopicsForPair !== topicSyncKey) {
         for (const topic of stored.pendingTopics.filter((item) => stored.topicSources[item]?.includes("local"))) {

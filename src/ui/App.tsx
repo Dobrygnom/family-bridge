@@ -311,6 +311,8 @@ export function App() {
         return;
       }
       const versionEvent = raw as { type?: string; peerVersionCheck?: AppState["remote"]["peerVersionCheck"] };
+      const presenceEvent = raw as { type?: string; peerPresenceAt?: string };
+      if (presenceEvent.type === "peer-presence") setState((current) => ({ ...current, remote: { ...current.remote, peerPresenceAt: presenceEvent.peerPresenceAt } }));
       if (versionEvent.type === "peer-version-check") setState((current) => ({ ...current, remote: { ...current.remote, peerVersionCheck: versionEvent.peerVersionCheck } }));
       const healthEvent = raw as { type?: string; codex?: AppState["codex"]; connected?: boolean };
       if (healthEvent.type === "continuation-updated") refreshState();

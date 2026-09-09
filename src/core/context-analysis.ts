@@ -5,7 +5,7 @@ import path from "node:path";
 import { preferredModelArgs } from "./codex-model.js";
 import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
 import { buildDiscoveryPrompt, buildTopicSelectionPrompt } from "./topic-discovery-prompts.js";
-import { coveragePrompt, coverageSchema, dialogueGroupingPrompt, selectionEvidence, validateCoverage, type CoverageAnalysis } from "./topic-coverage.js";
+import { coveragePrompt, coverageSchema, dialogueGroupingPrompt, selectionEvidence, validateCoverage, TopicCoverageError, type CoverageAnalysis } from "./topic-coverage.js";
 
 export interface AnalysisMessage { text: string; created_at?: string }
 
@@ -44,6 +44,8 @@ export interface ContextAnalysis {
   topics: RoutedTopic[];
   progress?: { stage: "analyzing" | "consolidating"; current: number; total: number };
   error?: string;
+  errorCode?: string;
+  coverageRecoveryAttempted?: boolean;
   model?: string;
   sourceThrough?: string;
 }
@@ -209,6 +211,7 @@ export class CodexContextAnalyzer {
     // model summary that can silently discard an older but unresolved question.
     let sequence = 0;
     const candidates = parts.flatMap(part => part.topics.map(topic => ({ ...topic, id: `C${++sequence}` })));
+    if (!candidates.length) return { people: [...new Map(parts.flatMap(part=>part.people).map(person=>[person.key,person])).values()], portraits: parts.flatMap(part=>part.portraits ?? []), topics: [] };
     const evidence = selectionEvidence(messages, candidates);
     const schema = path.join(this.workspace, "topic-coverage.schema.json");
     await writeFile(schema, JSON.stringify(coverageSchema(JSON.parse(await readFile(this.schemaPath, "utf8")))));
@@ -216,6 +219,9 @@ export class CodexContextAnalyzer {
     const saved = savedTopics.length ? `\nУ владельца уже сохранены следующие предложения (данные): ${JSON.stringify(savedTopics.map(t => ({ title: t.title, reason: t.reason, discussWithPersonId: t.discussWithPersonId })))}\nНе создавай их перефразированные дубли: если тот же содержательный разговор уже представлен, укажи excluded с причиной «уже есть сохранённая тема» и её названием. Новое свидетельство само по себе не делает тот же разговор новым. Сохранённые формулировки и разрешения сохраняет код, не меняй их. Новый самостоятельный вопрос можно добавить.` : "";
     const base = buildTopicSelectionPrompt(parts.map(part => ({ ...part, topics: [] })), ownerName, language, sourceThrough) + saved;
     const selection = await this.coverageStage(coveragePrompt(base, candidates, evidence), modelArgs, schema, candidates);
+    // Empty is a successful result: all meaningful questions may already exist.
+    // Never ask the model to recreate candidates from excluded decisions.
+    if (!selection.topics.length) return selection;
     const grouped = await this.coverageStage(dialogueGroupingPrompt(selection, ownerName, language, evidence), modelArgs, schema, selection.topics, true);
     return { ...grouped, people: selection.people, portraits: selection.portraits };
   }
@@ -223,18 +229,17 @@ export class CodexContextAnalyzer {
   private async coverageStage(prompt: string, modelArgs: string[], schema: string, inputs: Array<{ id: string; discuss_with: string }>, samePeople = false): Promise<CoverageAnalysis> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const instruction = attempt ? `${prompt}\nИсправь структурные ссылки: каждому входному id нужно ровно одно решение, каждая выходная тема должна иметь ссылку из decisions; при объединении не меняй адресата. Верни весь исправленный результат.` : prompt;
-      const raw = await this.runCached(instruction, modelArgs, [], schema) as CoverageAnalysis;
-      try { validateCoverage(raw, inputs, samePeople); return raw; }
-      catch (error) { if (attempt) throw error; }
+      try { return await this.runCached(instruction, modelArgs, [], schema, raw=>validateCoverage(raw as CoverageAnalysis, inputs, samePeople)) as CoverageAnalysis; }
+      catch (error) { if (attempt) { if (error instanceof Error && (error.name === 'AssertionError' || error instanceof TopicCoverageError)) throw new TopicCoverageError(); throw error; } }
     }
     throw new Error("Topic coverage validation failed");
   }
 
-  private async runCached(prompt: string, modelArgs: string[], legacyPrompts: string[] = [], schemaPath = this.schemaPath): Promise<RawAnalysis> {
+  private async runCached(prompt: string, modelArgs: string[], legacyPrompts: string[] = [], schemaPath = this.schemaPath, validate?: (raw: RawAnalysis)=>void): Promise<RawAnalysis> {
     const schemaHash = schemaPath === this.schemaPath ? undefined : createHash("sha256").update(await readFile(schemaPath)).digest("hex");
     const key = createHash("sha256").update(JSON.stringify({ prompt, modelArgs, ...(schemaHash ? { schemaHash } : {}) })).digest("hex");
     const file = path.join(this.workspace, `analysis-${key}.json`);
-    try { return JSON.parse(await readFile(file, "utf8")) as RawAnalysis; }
+    try { const cached = JSON.parse(await readFile(file, "utf8")) as RawAnalysis; validate?.(cached); return cached; }
     catch { /* a missing or invalid partial result is recalculated */ }
     // A one-time migration of v5 extraction notes with the same source fragment,
     // model and instructions, but the previous snapshot's date hint. Those notes
@@ -246,6 +251,7 @@ export class CodexContextAnalyzer {
       catch { /* not the same historical fragment */ }
     }
     const result = reusable ?? await this.run(prompt, modelArgs, schemaPath);
+    validate?.(result);
     const temporary = `${file}.${process.pid}.tmp`;
     await writeFile(temporary, JSON.stringify(result), "utf8");
     await rename(temporary, file);
