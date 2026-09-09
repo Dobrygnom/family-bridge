@@ -36,6 +36,37 @@ async function fixture() {
     cleanup: async () => { clearTimeout((service as any).versionProbeTimer); await rm(dir, { recursive: true, force: true }); } };
 }
 
+test("version probes cannot become topics or dialogues when metadata flags are lost", async () => {
+  const f = await fixture();
+  try {
+    await f.store.update({ identityConfigured: true });
+    (f.service as any).versionProbePair = "pair:two";
+    for (const kind of ["topic", "dialogue", undefined]) {
+      f.incoming.push({ id: `bad-${kind}`, pair_id: "pair", conversation_id: `bad-${kind}`, payload: { kind, topic: `${VERSION_PROBE_PREFIX}bad`, text: "not a conversation", senderVersion: "1.2.8" } });
+      await (f.service as any).pumpRemote();
+    }
+    const saved = await f.store.read();
+    assert.deepEqual(saved.pendingTopics, []);
+    assert.deepEqual(saved.reports, []);
+    assert.deepEqual(saved.incomingDeliveries, {});
+    assert.equal(f.sent.length, 0);
+  } finally { await f.cleanup(); }
+});
+
+test("already queued service dialogues are consumed without touching genuine conversations", async () => {
+  const f = await fixture();
+  try {
+    const envelope = { id: "bad", conversation_id: "bad", sequence_number: 1, payload: { topic: `${VERSION_PROBE_PREFIX}old`, text: "old probe" } };
+    await f.store.update({ incomingDeliveries: { bad: { envelope } } as any, conversationTranscripts: { real: { topic: "Real topic", messages: [{ from: "dima", text: "Keep me" }] } } });
+    await (f.service as any).drainRemoteInbox();
+    const saved = await f.store.read();
+    assert.deepEqual(saved.incomingDeliveries, {});
+    assert.deepEqual(saved.completedIncoming, ["bad"]);
+    assert.equal(saved.conversationTranscripts.real.messages[0].text, "Keep me");
+    assert.equal(f.sent.length, 0);
+  } finally { await f.cleanup(); }
+});
+
 test("unknown version and empty topic list still send a dedicated metadata-only probe", async () => {
   const f = await fixture();
   try {

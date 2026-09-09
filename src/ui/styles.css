@@ -52,6 +52,13 @@ h1, h2, h3, p { margin-top: 0; } h1 { font-family: 'Playfair Display', serif; fo
 .summary { color: #c8d6d3; line-height: 1.65; font-size: 13px; }.report-meta { display: flex; gap: 8px; }.report-meta span { background: #172831; padding: 6px 9px; border-radius: 8px; font-size: 10px; color: #89a09f; }.link-button { margin-top: 17px; color: #80d6b7; border: 0; background: transparent; padding: 0; font-size: 12px; }
 .report-cards { display: grid; gap: 12px; margin-top: 14px; }
 .report-card { padding: 19px; border: 1px solid #29414a; border-radius: 14px; background: #101e27; }
+.conversation-thread > summary { cursor: pointer; list-style: none; align-items: center; }
+.conversation-thread > summary::before { content: "›"; color: #80d6b7; font-size: 22px; }
+.conversation-thread[open] > summary::before { transform: rotate(90deg); }
+.conversation-thread > summary > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.conversation-thread > summary:focus-visible { outline: 2px solid #80d6b7; outline-offset: 5px; }
+.conversation-stage { margin-top: 18px; scroll-margin-top: 16px; }
+.conversation-stage + .conversation-stage { padding-top: 16px; border-top: 1px solid #29414a; }
 .report-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }.report-heading > div:first-child { min-width: 0; }.report-heading > div:first-child > strong { display: block; font-size: 16px; line-height: 1.35; }.report-heading > div:first-child > p { max-width: 780px; margin: 6px 0 0; color: #8fa5a5; font-size: 11px; line-height: 1.5; }
 .report-status { flex: 0 0 auto; display: grid; justify-items: end; gap: 5px; }.report-status span { padding: 4px 8px; border-radius: 999px; background: #18352f; color: #8de0c2; font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }.report-status.unfinished span { background: #3a3022; color: #e5bd82; }
 .report-source { margin-top: 8px; color: #789391; font-size: 11px; }

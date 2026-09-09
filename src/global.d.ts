@@ -85,6 +85,7 @@ declare global {
       transcribeAudio(input: { id: string; audio: Uint8Array }): Promise<DictationResult>;
       cancelDictation(id: string): Promise<void>;
       checkForUpdates(): Promise<void>;
+      setUpdateBlocked(blocked: boolean): Promise<void>;
       checkPairVersions(): Promise<AppState>;
       installUpdate(): Promise<void>;
       onEvent(listener: (event: unknown) => void): () => void;

@@ -25,12 +25,11 @@ import type { AppState } from "../global.js";
 import { languageNames, translations, type Language } from "./i18n.js";
 import { DictationControl } from "./DictationControl.js";
 import { PeerVersionControl } from "./PeerVersionControl.js";
-import { ConversationUpdates } from "./ConversationUpdates.js";
+import { ConversationThreads } from "./ConversationThreads.js";
 import { applyConversationUpdate, keepNewerConversations, type ConversationUpdateEvent } from "../core/conversation-updates.js";
 import { dictationText } from "./dictation-text.js";
 import { appendDictation } from "../core/dictation.js";
 import { OWNER_DRAFTS_KEY, parseOwnerDrafts } from "./drafts.js";
-import { ReportContinuation } from "./ReportContinuation.js";
 import { PendingStatus } from "./PendingStatus.js";
 import { TopicRefinementRequest } from "./TopicRefinementRequest.js";
 import { loadSavedState } from "./load-state.js";
@@ -83,7 +82,7 @@ export function App() {
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [reload, setReload] = useState(0);
-  const [topic, setTopic] = useState("");
+  const [topic, setTopic] = useState(() => { try { return localStorage.getItem("family-bridge-new-topic-draft") || ""; } catch { return ""; } });
   const [blocked, setBlocked] = useState("");
   const [busy, setBusy] = useState(false);
   const [connectionAction, setConnectionAction] = useState<"create" | "join" | "">("");
@@ -202,10 +201,10 @@ export function App() {
     fr: { title: "Votre contexte est toujours là", body: "Nous vérifions les nouveaux messages du chat sélectionné. Les personnes et sujets déjà trouvés ne sont pas réinitialisés." },
   }[language];
   const topicStatusText = {
-    ru: { selected: "Выбрана", pending: "Ждёт запуска", active: "Ждём ответ второго агента", complete: "Итог готов" },
-    en: { selected: "Selected", pending: "Waiting to start", active: "Waiting for the other agent", complete: "Result ready" },
-    cs: { selected: "Vybráno", pending: "Čeká na spuštění", active: "Čeká se na druhého agenta", complete: "Výsledek je připraven" },
-    fr: { selected: "Sélectionné", pending: "En attente", active: "En attente de l’autre agent", complete: "Bilan prêt" },
+    ru: { selected: "Не в очереди", pending: "Ждёт запуска", active: "Обсуждается", complete: "Итог готов", question: "Нужен ваш ответ" },
+    en: { selected: "Not queued", pending: "Waiting to start", active: "In discussion", complete: "Result ready", question: "Your answer is needed" },
+    cs: { selected: "Není ve frontě", pending: "Čeká na spuštění", active: "Probíhá rozhovor", complete: "Výsledek je připraven", question: "Potřebujeme vaši odpověď" },
+    fr: { selected: "Pas en file d’attente", pending: "En attente de lancement", active: "Discussion en cours", complete: "Bilan prêt", question: "Votre réponse est nécessaire" },
   }[language];
   const reportsText = {
     ru: { empty: "Готовые ответы появятся здесь автоматически.", files: "Показать файлы в папке", messages: "реплик", answer: "Предполагаемая реплика —", conversation: "Прочитать весь разговор", proposed: "Источник темы", comparison: "Что стало понятно", unfinished: "Разговор остановился без естественного завершения. Его можно продолжить своим уточнением." },
@@ -275,6 +274,13 @@ export function App() {
     try { localStorage.setItem(OWNER_DRAFTS_KEY, JSON.stringify(ownerAnswers)); }
     catch { setError(attentionText.draftError); }
   }, [ownerAnswers, attentionText.draftError]);
+  useEffect(() => {
+    try { localStorage.setItem("family-bridge-new-topic-draft", topic); }
+    catch { void api?.setUpdateBlocked?.(true); }
+  }, [topic]);
+  useEffect(() => {
+    void api?.setUpdateBlocked?.(Boolean(activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim())).catch(() => undefined);
+  }, [activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode]);
   useEffect(() => {
     if (activeSection === "reports" && selectedReportId) document.getElementById(`report-${selectedReportId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [activeSection, selectedReportId]);
@@ -791,7 +797,7 @@ export function App() {
               const active = state.activeTopics.includes(item);
               const pending = state.pendingTopics.includes(item);
               const brief = topicBrief(item);
-              const status = active ? topicStatusText.active : report ? topicStatusText.complete : pending ? topicStatusText.pending : topicStatusText.selected;
+              const status = state.ownerQuestions.some(question => question.topic === item) ? topicStatusText.question : active ? topicStatusText.active : report ? topicStatusText.complete : pending ? topicStatusText.pending : topicStatusText.selected;
               return <div className="topic pair-topic" key={item}><div className="topic-copy"><span>{item}</span>{(brief?.context || brief?.goal) && <p className="topic-context">{brief.context || brief.goal}</p>}<small>{topicSourceLabel(item)}</small></div><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => { if (report) { setSelectedReportId(report.id); goTo("reports"); } }}>{status}</button></div>;
             })}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
             {displayedPairTopics.length > 6 && <button className="topic-list-toggle" onClick={() => setShowAllPairTopics((value) => !value)}>{showAllPairTopics ? pairListText.less : `${pairListText.more} · ${displayedPairTopics.length - 6}`}</button>}
@@ -819,18 +825,8 @@ export function App() {
 
           {activeSection === "reports" && <section className="panel report-panel" id="reports">
             <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><ScrollText size={20} /></div>
-            {!state.reportSummaries.length && <div className="empty tall"><ScrollText size={28} /><span>{reportsText.empty}</span></div>}
-            <div className="report-cards">{state.reportSummaries.map((report) => <article className={`report-card ${selectedReportId === report.id ? "selected-report" : ""}`} id={`report-${report.id}`} key={report.id}>
-              <div className="report-heading"><div><strong>{report.topic}</strong>{topicBrief(report.topic)?.context && <p>{topicBrief(report.topic)?.context}</p>}</div><div className={`report-status ${report.completionState === "needs_follow_up" ? "unfinished" : ""}`}><span>{report.completionState === "needs_follow_up" ? dialogueText.unfinished : dialogueText.completed}</span><time>{report.completedAt ? new Date(report.completedAt).toLocaleString(language) : ""}</time></div></div>
-              {report.parentReportId && <button className="link-button" onClick={() => setSelectedReportId(report.parentReportId!)}>{({ ru: "Продолжение · Показать предыдущий итог", en: "Continuation · Show previous result", cs: "Pokračování · Zobrazit předchozí závěr", fr: "Suite · Voir le résultat précédent" })[language]}</button>}
-              <div className="report-source">{reportsText.proposed}: <strong>{report.proposedBy.join(" + ")}</strong></div>
-              {report.completionState === "needs_follow_up" && <div className="notice">{reportsText.unfinished}</div>}
-              <section className="report-transcript"><div className="report-dialogue-heading"><strong>{dialogueText.conversation}</strong><small>{report.messageCount} {reportsText.messages}</small></div><div role="log" aria-label={dialogueText.conversation}>{report.messages.map((message, index) => <div className={`transcript-message ${message.local ? "local" : "peer"}`} key={`${report.id}-${index}`}><strong>{message.speaker}</strong><p>{message.text}</p></div>)}</div></section>
-              <ConversationUpdates reportId={report.id} state={state} language={language} onOpenReport={setSelectedReportId} />
-              {report.comparison && <div className="report-comparison"><small>{dialogueText.result}</small><p>{report.comparison}</p></div>}
-              {(report.localPosition || report.peerPosition) && <details className="report-position-details"><summary>{dialogueText.positions}</summary><div className="report-positions">{report.localPosition && <div className="report-answer local"><small>{reportsText.answer} {state.displayName || deviceText.local}</small><p>{report.localPosition}</p></div>}{report.peerPosition && <div className="report-answer peer"><small>{reportsText.answer} {state.remote.peerName || deviceText.partner}</small><p>{report.peerPosition}</p></div>}</div></details>}
-              <ReportContinuation reportId={report.id} state={state} language={language} onState={setState} dictationBusy={Boolean(activeDictation)} onDictationBusy={(value) => setActiveDictation((current) => value ? `report-${report.id}` : current === `report-${report.id}` ? "" : current)} />
-            </article>)}</div>
+            <ConversationThreads state={state} language={language} selectedReportId={selectedReportId} onState={setState} activeDictation={activeDictation}
+              onDictationBusy={(id, value) => setActiveDictation(current => value ? `report-${id}` : current === `report-${id}` ? "" : current)} />
             <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>
           </section>}
 
@@ -844,7 +840,7 @@ export function App() {
                 <div className="update-card" aria-live="polite">
                   {state.update.checking && <div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Проверяем обновления</strong><small>Обычно это занимает несколько секунд.</small></div></div>}
                   {state.update.downloading && <div className="update-download"><div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Скачиваем версию {state.update.version}</strong><small>Приложение продолжает работать. После загрузки предложим перезапуск.</small></div><b>{state.update.progress ?? 0}%</b></div><progress max="100" value={state.update.progress ?? 0} /></div>}
-                  {state.update.ready && <div className="update-status update-ready"><Check size={18} /><div><strong>Версия {state.update.version} скачана</strong><small>Осталось перезапустить приложение — ваши данные сохранятся.</small></div><button onClick={() => void api?.installUpdate()}>Перезапустить и установить</button></div>}
+                  {state.update.ready && <div className="update-status update-ready"><LoaderCircle className="spin" size={18} /><div><strong>Версия {state.update.version} готова</strong><small>Установится автоматически после завершения текущих действий и диктовки. Разговоры и черновики сохранятся.</small></div></div>}
                   {state.update.error && <div className="update-status update-failed"><Bell size={18} /><div><strong>Не удалось обновиться</strong><small>{state.update.error}</small></div><button onClick={() => void api?.checkForUpdates()}>Повторить</button></div>}
                   {!state.update.checking && !state.update.downloading && !state.update.ready && !state.update.error && <div className="update-status"><Check size={18} /><div><strong>Установлена последняя версия</strong><small>Новые версии скачиваются автоматически в фоне.</small></div><button onClick={() => void api?.checkForUpdates()}>Проверить сейчас</button></div>}
                 </div>

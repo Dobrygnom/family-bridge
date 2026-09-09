@@ -10,6 +10,7 @@ import { AtomicStore } from "./store.js";
 import { DictationService } from "./dictation.js";
 import { dictationFetch } from "./dictation-network.js";
 import { allowAppPermission } from "../src/core/media-permissions.js";
+import { AutomaticUpdate } from "./automatic-update.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -22,7 +23,17 @@ const dictation = new DictationService(undefined, dictationFetch, undefined, (fi
 let isQuitting = false;
 let macUpdater: MacReleaseUpdater | null = null;
 let updateInstallIsQuitting = false;
-let promptedUpdateVersion: string | undefined;
+let rendererUpdateBlocked = true;
+let activeIpc = 0;
+let preparingUpdate = false;
+let updateGate: AutomaticUpdate;
+function handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: any[]) => any) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (updateInstallIsQuitting || preparingUpdate && channel !== "bridge:update-blocked") throw new Error("Приложение обновляется. Черновики сохранены.");
+    activeIpc++;
+    try { return await listener(event, ...args); } finally { activeIpc--; }
+  });
+}
 let windowsUpdateVersion: string | undefined;
 let windowsUpdateDownloading = false;
 let windowsUpdateReady = false;
@@ -46,6 +57,7 @@ function showMainWindow() {
 }
 
 function createWindow() {
+  rendererUpdateBlocked = true;
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -118,46 +130,23 @@ async function installPreparedUpdate() {
     try {
       updateInstallIsQuitting = true;
       const launched = await macUpdater.launchInstaller();
-      if (!launched) return;
+      if (!launched) throw new Error("Не удалось запустить установщик");
       isQuitting = true;
       app.quit();
     } catch (error) {
       updateInstallIsQuitting = false;
       isQuitting = false;
-      const message = error instanceof Error ? error.message : String(error);
-      service.setUpdateState({ available: true, downloading: false, ready: true, error: message });
-      showMainWindow();
-      const options: MessageBoxOptions = {
-        type: "error",
-        title: "Не удалось установить обновление",
-        message,
-        detail: "Можно скачать тот же проверенный архив вручную.",
-        buttons: ["Скачать вручную", "Позже"],
-        defaultId: 0,
-        cancelId: 1,
-      };
-      const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
-      if (result.response === 0 && macUpdater.downloadUrl) await shell.openExternal(macUpdater.downloadUrl);
+      throw error;
     }
     return;
   }
+  updateInstallIsQuitting = true;
+  isQuitting = true;
   autoUpdater.quitAndInstall(true, true);
 }
 
 async function presentReadyUpdate(state: UpdateState) {
-  if (!state.ready || !state.version || promptedUpdateVersion === state.version) return;
-  promptedUpdateVersion = state.version;
-  const options: MessageBoxOptions = {
-    type: "info",
-    title: "Обновление готово",
-    message: `Версия ${state.version} готова к установке`,
-    detail: "Перезапустить приложение сейчас? Если выбрать «Позже», обновление установится при обычном выходе.",
-    buttons: ["Перезапустить", "Позже"],
-    defaultId: 0,
-    cancelId: 1,
-  };
-  const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
-  if (result.response === 0) await installPreparedUpdate();
+  if (state.ready && state.version) updateGate.ready();
 }
 
 function checkForUpdates() {
@@ -202,6 +191,19 @@ app.whenReady().then(async () => {
     },
   );
   await service.start();
+  updateGate = new AutomaticUpdate({
+    canInstall: () => app.isPackaged && activeIpc === 0 && (!mainWindow || !rendererUpdateBlocked) && powerMonitor.getSystemIdleTime() >= 10,
+    prepare: async () => {
+      preparingUpdate = true;
+      const prepared = await service.prepareForUpdate();
+      if (!prepared) preparingUpdate = false;
+      return prepared;
+    },
+    install: installPreparedUpdate,
+    resume: () => { preparingUpdate = false; updateInstallIsQuitting = false; isQuitting = false; service.cancelPreparedUpdate(); },
+    failed: error => service.setUpdateState({ available:true, downloading:false, ready:true, error:error instanceof Error ? error.message : String(error) }),
+  });
+  handle("bridge:update-blocked", (_event, blocked) => { rendererUpdateBlocked = blocked !== false; });
   powerMonitor.on("resume", () => {
     void service.checkContextForUpdates();
     void checkForUpdates();
@@ -210,40 +212,40 @@ app.whenReady().then(async () => {
   // A local verification build must not replace the installed app's login entry.
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
-  ipcMain.handle("bridge:get-state", () => service.state());
-  ipcMain.handle("bridge:diagnose-ui", async (_event, input: unknown) => {
+  handle("bridge:get-state", () => service.state());
+  handle("bridge:diagnose-ui", async (_event, input: unknown) => {
     const shown = input as { onboardingComplete?: unknown; analysisStatus?: unknown } | null;
     service.diagnostics.record("renderer.snapshot", { onboarding: shown?.onboardingComplete === true, analysisStatus: ["ready", "analyzing", "error"].includes(String(shown?.analysisStatus)) ? String(shown?.analysisStatus) : "none" });
   });
-  ipcMain.handle("bridge:open-diagnostics", async () => {
+  handle("bridge:open-diagnostics", async () => {
     service.diagnostics.record("diagnostics.open");
     const error = await shell.openPath(service.diagnostics.file);
     if (error) throw new Error("Не удалось открыть журнал диагностики");
   });
-  ipcMain.handle("bridge:get-local-context-state", () => service.localContextState());
-  ipcMain.handle("bridge:add-topic", (_event, topic: string) => service.addTopic(topic));
-  ipcMain.handle("bridge:block-topic", (_event, topic: string) => service.blockTopic(topic));
-  ipcMain.handle("bridge:run-conversation", async (_event, input: { topic: string; realCodex: boolean }) => {
+  handle("bridge:get-local-context-state", () => service.localContextState());
+  handle("bridge:add-topic", (_event, topic: string) => service.addTopic(topic));
+  handle("bridge:block-topic", (_event, topic: string) => service.blockTopic(topic));
+  handle("bridge:run-conversation", async (_event, input: { topic: string; realCodex: boolean }) => {
     const report = await service.run(input.topic, input.realCodex);
     if (Notification.isSupported()) {
       new Notification({ title: "Разговор завершён", body: report.sharedSummary || "Итог готов" }).show();
     }
     return report;
   });
-  ipcMain.handle("bridge:set-autostart", async (_event, enabled: boolean) => {
+  handle("bridge:set-autostart", async (_event, enabled: boolean) => {
     app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: true });
     await store.update({ autoStart: enabled });
     return service.state();
   });
-  ipcMain.handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
-  ipcMain.handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
-  ipcMain.handle("bridge:list-context-threads", () => service.listContextThreads());
-  ipcMain.handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
-  ipcMain.handle("bridge:sync-context", () => service.syncContext());
-  ipcMain.handle("bridge:refresh-context-now", () => service.refreshContextNow());
-  ipcMain.handle("bridge:update-portrait-observation", (_event, input: unknown) => service.updatePortraitObservation(input));
-  ipcMain.handle("bridge:complete-onboarding", (_event, counterpartPersonId?: string) => service.completeOnboarding(counterpartPersonId));
-  ipcMain.handle("bridge:open-reports", async () => {
+  handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
+  handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
+  handle("bridge:list-context-threads", () => service.listContextThreads());
+  handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
+  handle("bridge:sync-context", () => service.syncContext());
+  handle("bridge:refresh-context-now", () => service.refreshContextNow());
+  handle("bridge:update-portrait-observation", (_event, input: unknown) => service.updatePortraitObservation(input));
+  handle("bridge:complete-onboarding", (_event, counterpartPersonId?: string) => service.completeOnboarding(counterpartPersonId));
+  handle("bridge:open-reports", async () => {
     const internalReports = path.join(app.getPath("userData"), "reports");
     const exportedReports = path.join(app.getPath("documents"), "Family Bridge Reports");
     await mkdir(internalReports, { recursive: true });
@@ -256,36 +258,38 @@ app.whenReady().then(async () => {
     const error = await shell.openPath(exportedReports);
     if (error) throw new Error(`Не удалось открыть папку с файлами: ${error}`);
   });
-  ipcMain.handle("bridge:create-pair", (_event, counterpartPersonId: unknown) => service.createPair(counterpartPersonId));
-  ipcMain.handle("bridge:join-pair", (_event, input: { invite?: unknown; counterpartPersonId?: unknown }) => service.joinPair(String(input?.invite ?? ""), input?.counterpartPersonId));
-  ipcMain.handle("bridge:update-context-topic", (_event, input: unknown) => service.updateContextTopic(input));
-  ipcMain.handle("bridge:refine-context-topic", (_event, input: unknown) => service.refineContextTopic(input));
-  ipcMain.handle("bridge:update-context-topics", (_event, input: unknown) => service.updateContextTopics(input));
-  ipcMain.handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
-  ipcMain.handle("bridge:discuss-all-topics", () => service.discussAllTopics());
-  ipcMain.handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
-  ipcMain.handle("bridge:continue-report", (_event, input: unknown) => service.continueReport(input));
-  ipcMain.handle("bridge:retry-continuation", (_event, id: unknown) => service.retryContinuation(id));
+  handle("bridge:create-pair", (_event, counterpartPersonId: unknown) => service.createPair(counterpartPersonId));
+  handle("bridge:join-pair", (_event, input: { invite?: unknown; counterpartPersonId?: unknown }) => service.joinPair(String(input?.invite ?? ""), input?.counterpartPersonId));
+  handle("bridge:update-context-topic", (_event, input: unknown) => service.updateContextTopic(input));
+  handle("bridge:refine-context-topic", (_event, input: unknown) => service.refineContextTopic(input));
+  handle("bridge:update-context-topics", (_event, input: unknown) => service.updateContextTopics(input));
+  handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
+  handle("bridge:discuss-all-topics", () => service.discussAllTopics());
+  handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
+  handle("bridge:continue-report", (_event, input: unknown) => service.continueReport(input));
+  handle("bridge:retry-continuation", (_event, id: unknown) => service.retryContinuation(id));
   const trustedDictationSender = (event: IpcMainInvokeEvent) => event.sender === mainWindow?.webContents && event.senderFrame === mainWindow?.webContents.mainFrame;
-  ipcMain.handle("bridge:request-microphone", async (event) => {
+  handle("bridge:request-microphone", async (event) => {
     if (!trustedDictationSender(event)) return false;
     try {
       return process.platform === "darwin" ? await systemPreferences.askForMediaAccess("microphone") : systemPreferences.getMediaAccessStatus("microphone") !== "denied";
     } catch { return false; }
   });
-  ipcMain.handle("bridge:transcribe-audio", (event, input: unknown) => trustedDictationSender(event) ? dictation.transcribe(input) : { ok: false, code: "unavailable" });
-  ipcMain.handle("bridge:cancel-dictation", (event, id: unknown) => { if (trustedDictationSender(event) && typeof id === "string") dictation.cancel(id); });
-  ipcMain.handle("bridge:check-updates", async () => {
+  handle("bridge:transcribe-audio", (event, input: unknown) => trustedDictationSender(event) ? dictation.transcribe(input) : { ok: false, code: "unavailable" });
+  handle("bridge:cancel-dictation", (event, id: unknown) => { if (trustedDictationSender(event) && typeof id === "string") dictation.cancel(id); });
+  handle("bridge:check-updates", async () => {
     await checkForUpdates();
   });
-  ipcMain.handle("bridge:check-pair-versions", async () => {
+  handle("bridge:check-pair-versions", async () => {
     return service.requestPeerVersionCheck();
   });
-  ipcMain.handle("bridge:install-update", () => installPreparedUpdate());
+  handle("bridge:install-update", () => { updateGate.ready(); });
   serviceReady = true;
   createWindow();
   createTray();
   if (app.isPackaged) {
+    const automaticUpdateTimer = setInterval(() => void updateGate.tick(), 2_000);
+    automaticUpdateTimer.unref();
     autoUpdater.logger = null;
     if (process.platform === "darwin") {
       macUpdater = new MacReleaseUpdater(app.getVersion(), process.execPath, app.getPath("userData"), process.arch, (update) => {
@@ -318,6 +322,10 @@ app.whenReady().then(async () => {
         service.setUpdateState({ available: false, downloading: false });
       });
       autoUpdater.on("error", (error) => {
+        preparingUpdate = false;
+        updateInstallIsQuitting = false;
+        isQuitting = false;
+        service.cancelPreparedUpdate();
         windowsUpdateVersion = undefined;
         windowsUpdateDownloading = false;
         windowsUpdateReady = false;

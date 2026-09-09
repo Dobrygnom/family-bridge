@@ -10,6 +10,9 @@ export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
 export type TopicSource = "local" | "peer" | "unknown";
 export interface ConversationContinuation {
+  originReportId?: string;
+  attempts?: number;
+  retryAt?: number;
   parentReportId: string;
   topic: string;
   pairId: string;
@@ -31,6 +34,7 @@ export interface PendingOwnerQuestion {
 }
 
 export interface StoredState {
+  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; attempts: number; retryAt?: number }>;
   owner: OwnerId;
   onboardingComplete: boolean;
   identityConfigured: boolean;
@@ -72,6 +76,7 @@ export interface StoredState {
 }
 
 const defaults: StoredState = {
+  topicLaunches: {},
   owner: "dima",
   onboardingComplete: false,
   identityConfigured: false,
@@ -96,12 +101,18 @@ const defaults: StoredState = {
 };
 
 export async function replaceStateFile(temporary: string, destination: string) {
+  // Windows scanners/readers can hold the destination longer than a few hundred
+  // milliseconds. Keep the write queue locked while retrying the SAME snapshot;
+  // never remove the destination or fall back to a non-atomic overwrite.
+  let waitedMs = 0;
   for (let attempt = 0; ; attempt += 1) {
     try { await rename(temporary, destination); return; }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (attempt >= 5 || code !== "EPERM" && code !== "EBUSY") throw error;
-      await delay(10 * 2 ** attempt);
+      if (waitedMs >= 10_000 || code !== "EPERM" && code !== "EBUSY") throw error;
+      const waitMs = Math.min(10 * 2 ** Math.min(attempt, 6), 500, 10_000 - waitedMs);
+      await delay(waitMs);
+      waitedMs += waitMs;
     }
   }
 }

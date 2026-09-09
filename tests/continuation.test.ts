@@ -89,6 +89,25 @@ test("retry after send failure reuses the prepared message without charging for 
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
+test("continuing an older result uses the latest result and all prior replies", async () => {
+  const f = await fixture();
+  try {
+    const child = path.join(f.dir, "reports", "child.json");
+    const extended = [...history, { from: "dima", text: "Additional context" }, { from: "katya", text: "Latest answer" }];
+    await writeFile(child, JSON.stringify({ conversationId: "child-id", parentReportId: "original-id", topic: "Звонки", messages: extended, completedAt: "2026-09-02T00:00:00Z", pairId: "pair" }));
+    await f.store.update({ reports: [child, f.report] });
+    (f.service as any).localRemoteAgent = () => ({ start: async (prompt: string) => {
+      assert.match(prompt, /Latest answer/);
+      return response("Filtered follow-up");
+    } });
+    await f.service.continueReport({ reportId: "original-id", requestId: "latest-request", prompt: "Private prompt" });
+    await until(async () => (await f.store.read()).continuations["latest-request"]?.status === "waiting");
+    assert.equal(f.sent[0].payload.continuation.parentReportId, "child-id");
+    assert.deepEqual(f.sent[0].payload.continuation.history, extended);
+    assert.doesNotMatch(JSON.stringify(f.sent), /Private prompt/);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
 test("receiving a continuation supplies prior history and does not treat its first answer as a finished conversation", async () => {
   const f = await fixture();
   let received = "";
@@ -213,13 +232,13 @@ test("simultaneous duplicate requests start one model turn", async () => {
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
-test("restart marks an interrupted follow-up retryable without rerunning it or clearing the original", async () => {
+test("restart preserves an interrupted follow-up for automatic recovery without clearing the original", async () => {
   const f = await fixture();
   try {
     await f.store.update({ continuations: { "request-interrupted": { parentReportId: "original-id", pairId: "pair", topic: "Звонки", history, instruction: "Сохранённое поручение", status: "starting" } } });
     await f.service.start();
     const state = await f.store.read();
-    assert.equal(state.continuations["request-interrupted"].status, "error");
+    assert.equal(state.continuations["request-interrupted"].status, "starting");
     assert.equal(state.continuations["request-interrupted"].instruction, "Сохранённое поручение");
     assert.deepEqual(state.reports, [f.report]);
     assert.equal(f.sent.length, 0);
