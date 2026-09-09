@@ -139,6 +139,14 @@ export class SupabaseTransport {
     if (result.error) throw result.error;
   }
 
+  async readConversation(pairId: string, conversationId: string): Promise<RemoteEnvelope[]> {
+    const result = await this.client.from("bridge_messages").select("*")
+      .eq("pair_id", pairId).eq("conversation_id", conversationId)
+      .order("sequence_number", { ascending: true }).limit(100);
+    if (result.error) throw result.error;
+    return result.data.map(row=>({ ...row, payload:decryptPayload(row.encrypted_payload,this.encryptionSecret) }) as RemoteEnvelope);
+  }
+
   subscribe(pairId: string, onWake: () => void): () => Promise<unknown> {
     this.channel = this.client
       .channel(`family-pair:${pairId}`, { config: { private: true } })

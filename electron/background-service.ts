@@ -13,6 +13,7 @@ import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRef
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
+import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
 import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
@@ -239,6 +240,28 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
 export class BackgroundService {
   private updating = false;
   private automaticBusy = false;
+  private recoveredLegacyReplies = false;
+  private legacyRecoveryRetryAt = 0;
+
+  private async recoverLegacyReplies() {
+    if (this.recoveredLegacyReplies || Date.now() < this.legacyRecoveryRetryAt || !this.remote) return;
+    const state = await this.store.read();
+    if (!this.options.experienceResetVersion || !state.remote || state.remote.peerExperienceVersion !== this.options.experienceResetVersion) return;
+    this.legacyRecoveryRetryAt = Date.now() + 60_000;
+    const completed = new Set(readReportSummaries(state.reports).map(r=>r.id));
+    for (const [id, transcript] of Object.entries(state.conversationTranscripts)) {
+      if (completed.has(id) || transcript.topic.startsWith(VERSION_PROBE_PREFIX) || transcript.messages.at(-1)?.from !== state.owner) continue;
+      const rows = await this.remote.readConversation(state.remote.pairId, id);
+      await this.store.mutate(current => {
+        if (current.remote?.pairId !== state.remote!.pairId) return {};
+        const reply = droppedReply(current, rows, this.options.experienceResetVersion);
+        if (!reply) return {};
+        this.diagnostics.record("dialogue.recovered-missing-version");
+        return { incomingDeliveries:{...current.incomingDeliveries,[reply.id]:{envelope:reply}} };
+      });
+    }
+    this.recoveredLegacyReplies = true;
+  }
   private launchPromises = new Map<string, Promise<void>>();
 
   async prepareForUpdate() {
@@ -273,6 +296,7 @@ export class BackgroundService {
     try {
       const state = await this.store.read();
       if (!state.onboardingComplete || !state.identityConfigured || !state.remote || this.options.experienceResetVersion && state.remote.peerExperienceVersion !== this.options.experienceResetVersion) return;
+      try { await this.recoverLegacyReplies(); } catch { this.diagnostics.record("dialogue.recovery-deferred"); }
       for (const [id, continuation] of Object.entries(state.continuations)) {
         if (continuation.pairId !== state.remote.pairId) continue;
         if (!(continuation.status === "starting" || continuation.status === "error" && (continuation.attempts ?? 0) < 3 && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
@@ -1490,7 +1514,8 @@ export class BackgroundService {
         await this.remote.acknowledge(envelope.id);
         return;
       }
-      if (this.options.experienceResetVersion && envelope.payload.experienceVersion !== this.options.experienceResetVersion) {
+      if (this.options.experienceResetVersion && envelope.payload.experienceVersion !== this.options.experienceResetVersion && !isKnownLegacyReply(stored, envelope, this.options.experienceResetVersion)) {
+        this.diagnostics.record("dialogue.incompatible-version");
         await this.remote.acknowledge(envelope.id);
         return;
       }

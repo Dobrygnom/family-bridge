@@ -60,8 +60,8 @@ test("owner question survives restart and raw answer is not sent to the peer", a
     });
 
     const agent = new CapturingAgent();
-    const sent: Array<{ payload: { text: string }; sequence: number }> = [];
-    const service = new BackgroundService(directory, process.cwd(), store, () => null);
+    const sent: Array<{ payload: { text: string; senderVersion?: string; experienceVersion?: string }; sequence: number }> = [];
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, {appVersion:"1.2.10",experienceResetVersion:"current"});
     const internal = service as unknown as {
       remote: {
         pairState(pairId: string): Promise<{ id: string; owner_id: string; partner_id: string }>;
@@ -95,6 +95,8 @@ test("owner question survives restart and raw answer is not sent to the peer", a
     assert.match(agent.received, new RegExp(rawAnswer));
     assert.equal(sent.length, 1);
     assert.equal(sent[0].sequence, question.nextSequence);
+    assert.equal(sent[0].payload.senderVersion,"1.2.10");
+    assert.equal(sent[0].payload.experienceVersion,"current");
     assert.equal(sent[0].payload.text, "Уточнённый вывод без дословного личного ответа");
     assert.doesNotMatch(sent[0].payload.text, new RegExp(rawAnswer));
     assert.deepEqual((await store.read()).pendingOwnerQuestions, []);

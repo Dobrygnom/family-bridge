@@ -108,6 +108,44 @@ test("continuing an older result uses the latest result and all prior replies", 
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
+test("reply without metadata in a known current conversation is not silently acknowledged and lost", async () => {
+  const f=await fixture();
+  try {
+    (f.service as any).options.experienceResetVersion="current";
+    await f.store.mutate(s=>({remote:{...s.remote!,peerExperienceVersion:"current"},conversationTranscripts:{live:{topic:"Topic",messages:history}}}));
+    let delivered=false;
+    f.transport.claimNext=async()=>{
+      if(delivered)return null;delivered=true;
+      return {id:"missing-meta",pair_id:"pair",conversation_id:"live",sequence_number:3,sender_agent:"katya",created_at:new Date().toISOString(),payload:{kind:"dialogue",topic:"Topic",text:"Reply after human answered",status:"continue"}};
+    };
+    (f.service as any).localRemoteAgent=()=>({start:async()=>response("Continue naturally")});
+    await (f.service as any).pumpRemote();
+    const s=await f.store.read();
+    assert.ok(s.conversationTranscripts.live.messages.some(m=>m.text==="Reply after human answered"));
+    assert.equal(f.sent[0].sequence,4);
+  } finally {await rm(f.dir,{recursive:true,force:true});}
+});
+
+test("startup recovery queues an already acknowledged legacy reply once without rewriting history", async()=>{
+  const f=await fixture();
+  try {
+    (f.service as any).options.experienceResetVersion="current";
+    const previous=[{from:"katya" as const,text:"Peer question"},{from:"dima" as const,text:"Saved answer"}];
+    await f.store.mutate(s=>({remote:{...s.remote!,peerExperienceVersion:"current"},conversationTranscripts:{live:{topic:"Topic",messages:previous}}}));
+    const envelope={id:"recovered",pair_id:"pair",conversation_id:"live",sequence_number:3,sender_agent:"katya",created_at:new Date().toISOString(),status:"processed",payload:{kind:"dialogue",topic:"Topic",text:"Dropped reply",status:"continue"}};
+    (f.transport as any).readConversation=async()=>[{...envelope,id:"sent",sequence_number:2,sender_agent:"dima",payload:{...envelope.payload,text:"Saved answer"}},envelope];
+    await (f.service as any).recoverLegacyReplies();
+    await (f.service as any).recoverLegacyReplies();
+    assert.deepEqual((await f.store.read()).conversationTranscripts.live.messages,previous);
+    assert.equal(Object.keys((await f.store.read()).incomingDeliveries).length,1);
+    (f.service as any).localRemoteAgent=()=>({start:async()=>response("New filtered answer")});
+    await (f.service as any).drainRemoteInbox();
+    assert.equal(f.sent.length,1);
+    assert.equal(f.sent[0].sequence,4);
+    assert.equal((await f.store.read()).conversationTranscripts.live.messages.length,4);
+  }finally{await rm(f.dir,{recursive:true,force:true});}
+});
+
 test("receiving a continuation supplies prior history and does not treat its first answer as a finished conversation", async () => {
   const f = await fixture();
   let received = "";
