@@ -27,6 +27,7 @@ export interface AppState {
   continuationStates?: Array<{ id: string; parentReportId: string; mode?: "restart" | "clean-continuation"; status: "starting" | "waiting" | "complete" | "error" }>;
   conversationRevision?: number;
   repairPendingIds?: string[];
+  repairWaiting?: Record<string, "peer" | "version" | "active" | "queued">;
   liveConversations?: LiveConversation[];
   lastConversationAt?: string;
   running: boolean;
@@ -56,6 +57,7 @@ declare global {
   interface Window {
     familyBridge?: {
       getState(): Promise<AppState>;
+      notifyConversation(threadId: string): Promise<void>;
       diagnoseUi(input: { onboardingComplete: boolean; analysisStatus?: string }): Promise<void>;
       openDiagnostics(): Promise<void>;
       getLocalContextState(): Promise<Pick<AppState, "context" | "contextAnalysis">>;

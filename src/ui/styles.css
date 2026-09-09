@@ -259,3 +259,12 @@ button[aria-busy="true"] { cursor: progress; }
 .peer-presence { display: block; margin: 6px 0; }
 .peer-presence.online { color: var(--accent, #83d5bd); }
 .peer-presence.offline { opacity: .7; }
+.unread-badge { display: inline-block; margin-left: 12px; color: #8edbc9; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.unread-nav { background: #254940; color: #a3efda; }
+.message-anchor { scroll-margin-top: 18px; }
+.message-anchor + .message-anchor { margin-top: 10px; }
+.report-transcript > .message-anchor:last-child { display: block; }
+.message-read-sentinel { display: block; height: 1px; }
+.unread-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: #91d8c6; font-size: 12px; }
+.unread-divider::before, .unread-divider::after { content: ''; height: 1px; flex: 1; background: #396057; }
+.unread-jump { position: sticky; bottom: 16px; display: block; margin: 12px auto; z-index: 1; background: #19362e; }

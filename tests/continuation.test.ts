@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { migrateRepairIdentifiers, repairRequestId } from "../electron/repair-identifiers.js";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,36 @@ async function fixture() {
   (service as any).versionProbePair = "pair:two"; // These tests exercise dialogue, not the initial service handshake.
   return { dir, report, store, service, sent, transport };
 }
+
+test("migrated repair automatically sends its exact saved reply with a UUID and no model call", async () => {
+  const f = await fixture();
+  try {
+    const root = "a96e2bd0-1555-4ebd-8769-3ad7cff59861", old = `repair-1211-${root}`, id = repairRequestId(root);
+    await f.store.mutate(s => ({ remote: { ...s.remote!, peerVersion: "1.2.14" },
+      continuations: { [old]: { parentReportId: "original-id", originReportId: "original-id", pairId: "pair", topic: "Звонки", instruction: "Private instruction", mode: "restart", history: [], status: "error", attempts: 3, preparedMessage: "Saved reply" } },
+      conversationParents: { [old]: "original-id" }, conversationModes: { [old]: "restart" },
+      conversationTranscripts: { [old]: { topic: "Звонки", messages: [{ from: "dima", text: "Saved reply" }] } },
+    }));
+    assert.equal((f.service as any).conversationSnapshot(await f.store.read()).liveConversations[0].activity, "retrying");
+    await f.store.mutate(migrateRepairIdentifiers);
+    (f.service as any).options.backgroundTasks = true;
+    (f.service as any).localRemoteAgent = () => assert.fail("Must reuse the persisted reply");
+    (f.service as any).recoverLegacyReplies = async () => {};
+    const send = f.transport.send;
+    f.transport.send = async (input: any) => {
+      assert.match(input.conversationId, /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+      return send(input);
+    };
+    await (f.service as any).automaticWork();
+    await until(async () => (await f.store.read()).continuations[id]?.status === "waiting" && !(f.service as any).continuing.has(id));
+    await (f.service as any).automaticWork();
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].payload.text, "Saved reply");
+    assert.doesNotMatch(JSON.stringify(f.sent), /Private instruction/);
+    assert.equal((f.service as any).conversationSnapshot(await f.store.read()).liveConversations[0].activity, "waiting-peer");
+    assert.equal((await f.store.read()).conversationTranscripts[id].messages.length, 1);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
 
 test("restart sends a clean new attempt, preserves files, and survives an idempotent retry", async () => {
   const f = await fixture();
@@ -117,7 +148,8 @@ test("automatic repair waits for a fresh compatible peer and runs only on the or
     await (f.service as any).repairLegacyConversations(); assert.equal(generated,0);
     await f.store.update({owner:'dima'});
     await (f.service as any).repairLegacyConversations();
-    await until(async()=> (await f.store.read()).continuations['repair-1211-original-id']?.status==='waiting');
+    await until(async()=> (await f.store.read()).continuations[repairRequestId('original-id')]?.status==='waiting');
+    assert.match(f.sent[0].conversationId, /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
     await (f.service as any).repairLegacyConversations();
     assert.equal(generated,1); assert.equal(f.sent.length,1);
   } finally { await rm(f.dir,{recursive:true,force:true}); }

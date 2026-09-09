@@ -27,6 +27,8 @@ import { languageNames, translations, type Language } from "./i18n.js";
 import { DictationControl } from "./DictationControl.js";
 import { PeerVersionControl } from "./PeerVersionControl.js";
 import { ConversationThreads } from "./ConversationThreads.js";
+import { useConversationReading } from "./useConversationReading.js";
+import { attentionLabels } from "../core/conversation-attention.js";
 import { applyConversationUpdate, keepNewerConversations, type ConversationUpdateEvent } from "../core/conversation-updates.js";
 import { dictationText } from "./dictation-text.js";
 import { appendDictation } from "../core/dictation.js";
@@ -81,6 +83,9 @@ export function App() {
     dispatchState((current) => typeof action === "function" ? action(current) : keepNewerConversations(current, action));
   }
   const [loaded, setLoaded] = useState(false);
+  const reading = useConversationReading(state, loaded, window.familyBridge?.notifyConversation);
+  const openConversation = useRef<(id: string) => void>(() => {});
+  const [revealToken, setRevealToken] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const [reload, setReload] = useState(0);
   const [topic, setTopic] = useState(() => { try { return localStorage.getItem("family-bridge-new-topic-draft") || ""; } catch { return ""; } });
@@ -178,10 +183,10 @@ export function App() {
     fr: { topicsFor: "Conversations avec", needReview: "à vérifier", all: "Tous", review: "Vérifier", approved: "Choisies", allowedOf: "choisies sur", allowSafe: "Choisir les sujets sûrs", search: "Rechercher une conversation", collapse: "Réduire", expand: "Afficher les détails", noFilteredTopics: "Aucun sujet ne correspond à ce filtre.", context: "De quoi s’agit-il", goal: "Ce qu’il faut comprendre", opening: "Comment la conversation peut commencer", more: "Afficher les autres", less: "Réduire la liste", refine: "Clarifier le sujet", topicLabel: "Titre de la conversation", save: "Enregistrer la clarification", retry: "Réessayer", cancel: "Annuler", editHint: "L’enregistrement ne partage pas le sujet. Sélectionnez-le ensuite séparément.", selectedHint: "Ce sujet est déjà sélectionné. Désélectionnez-le avant de le clarifier.", instruction: "Qu’est-ce qui n’est pas clair ou quel contexte manque ?", instructionPlaceholder: "Expliquez à votre agent de quoi il s’agit réellement ou demandez-lui de rendre le sujet plus clair", prepare: "Clarifier le sujet", preparing: "Votre agent clarifie le sujet…", preview: "Le sujet se présentera maintenant ainsi", previewHint: "C’est le texte exact à partager. Votre explication reste uniquement avec votre agent.", prepared: "Sujet clarifié" },
   }[language];
   const navigationText = {
-    ru: { start: "Первый запуск", connection: "Подключение", context: "Исходный чат и темы", people: "Что знает мой агент", reports: "Итоги разговоров", settings: "Имя и автозапуск", setupTitle: "Подготовка к первому разговору", connectionTitle: "Подключение и темы", contextTitle: "Исходный чат и темы", peopleTitle: "Что знает мой агент", reportsTitle: "Итоги разговоров", settingsTitle: "Имя и автозапуск" },
-    en: { start: "First run", connection: "Connection", context: "Source chat and topics", people: "What my agent knows", reports: "Conversation results", settings: "Name and startup", setupTitle: "Prepare the first conversation", connectionTitle: "Connection and topics", contextTitle: "Source chat and topics", peopleTitle: "What my agent knows", reportsTitle: "Conversation results", settingsTitle: "Name and startup" },
-    cs: { start: "První spuštění", connection: "Propojení", context: "Zdrojový chat a témata", people: "Co můj agent ví", reports: "Výsledky rozhovorů", settings: "Jméno a spuštění", setupTitle: "Příprava prvního rozhovoru", connectionTitle: "Propojení a témata", contextTitle: "Zdrojový chat a témata", peopleTitle: "Co můj agent ví", reportsTitle: "Výsledky rozhovorů", settingsTitle: "Jméno a spuštění" },
-    fr: { start: "Premier démarrage", connection: "Connexion", context: "Chat source et sujets", people: "Ce que sait mon agent", reports: "Résultats des conversations", settings: "Nom et démarrage", setupTitle: "Préparer la première conversation", connectionTitle: "Connexion et sujets", contextTitle: "Chat source et sujets", peopleTitle: "Ce que sait mon agent", reportsTitle: "Résultats des conversations", settingsTitle: "Nom et démarrage" },
+    ru: { start: "Первый запуск", connection: "Подключение", context: "Исходный чат и темы", people: "Что знает мой агент", reports: "Разговоры", settings: "Имя и автозапуск", setupTitle: "Подготовка к первому разговору", connectionTitle: "Подключение и темы", contextTitle: "Исходный чат и темы", peopleTitle: "Что знает мой агент", reportsTitle: "Разговоры", settingsTitle: "Имя и автозапуск" },
+    en: { start: "First run", connection: "Connection", context: "Source chat and topics", people: "What my agent knows", reports: "Conversations", settings: "Name and startup", setupTitle: "Prepare the first conversation", connectionTitle: "Connection and topics", contextTitle: "Source chat and topics", peopleTitle: "What my agent knows", reportsTitle: "Conversations", settingsTitle: "Name and startup" },
+    cs: { start: "První spuštění", connection: "Propojení", context: "Zdrojový chat a témata", people: "Co můj agent ví", reports: "Rozhovory", settings: "Jméno a spuštění", setupTitle: "Příprava prvního rozhovoru", connectionTitle: "Propojení a témata", contextTitle: "Zdrojový chat a témata", peopleTitle: "Co můj agent ví", reportsTitle: "Rozhovory", settingsTitle: "Jméno a spuštění" },
+    fr: { start: "Premier démarrage", connection: "Connexion", context: "Chat source et sujets", people: "Ce que sait mon agent", reports: "Conversations", settings: "Nom et démarrage", setupTitle: "Préparer la première conversation", connectionTitle: "Connexion et sujets", contextTitle: "Chat source et sujets", peopleTitle: "Ce que sait mon agent", reportsTitle: "Conversations", settingsTitle: "Nom et démarrage" },
   }[language];
   const portraitText = {
     ru: { eyebrow: "ПОРТРЕТЫ ЛЮДЕЙ", title: "Как агент понимает людей", hint: "Портреты строятся из исходного чата и уточняются после завершённых разговоров агентов.", you: "Вы", empty: "Пока о человеке недостаточно информации.", updating: "Дополняем портреты из завершённого разговора…", sourceChat: "Из исходного чата", sourceConversation: "Из разговора", edit: "Исправить", remove: "Удалить", save: "Сохранить", cancel: "Отмена", removeConfirm: "Удалить это суждение из портрета?", kinds: { fact: "Факт", view: "Позиция", preference: "Желание или граница", pattern: "Повторяющаяся реакция", uncertainty: "Неопределённость" } },
@@ -251,12 +256,14 @@ export function App() {
   }
 
   function goTo(section: SectionId) {
-    if (section !== activeSection && activeDictation && !window.confirm(dictationText[language].leave)) return;
+    if (section !== activeSection && activeDictation && !window.confirm(dictationText[language].leave)) return false;
     setActiveSection(section);
     setShowContextPicker(false);
     if (section === "context" && !state.context && !contextThreads.length) void loadContextThreads();
     if (section !== "reports") window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    return true;
   }
+  openConversation.current = id => { if (goTo("reports")) { setSelectedReportId(id); setRevealToken(String(Date.now())); } };
 
   async function changeLanguage(value: Language) {
     setLanguage(value);
@@ -283,9 +290,6 @@ export function App() {
     void api?.setUpdateBlocked?.(Boolean(activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim()), activeDictation ? "dictation" : editingTopicId || inviteCode.trim() ? "editing" : "activity").catch(() => undefined);
   }, [activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode]);
   useEffect(() => {
-    if (activeSection === "reports" && selectedReportId) document.getElementById(`report-${selectedReportId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [activeSection, selectedReportId]);
-  useEffect(() => {
     let active = true;
     let sequence = 0;
     const refreshState = () => {
@@ -306,6 +310,8 @@ export function App() {
     const onFocus = refreshState;
     window.addEventListener("focus", onFocus);
     const unsubscribe = api?.onEvent((raw) => {
+      const navigation = raw as { type?: string; threadId?: string };
+      if (navigation.type === "open-conversation" && navigation.threadId) { openConversation.current(navigation.threadId); return; }
       if ((raw as { type?: string }).type === "conversations") {
         setState((current) => applyConversationUpdate(current, raw as ConversationUpdateEvent));
         return;
@@ -685,7 +691,7 @@ export function App() {
           <button className={activeSection === "overview" ? "active" : ""} onClick={() => goTo("overview")}><Activity size={18} /><span>{state.onboardingComplete ? navigationText.connection : navigationText.start}</span>{state.ownerQuestions.length > 0 && <b className="nav-badge">{state.ownerQuestions.length}</b>}</button>
           <button className={activeSection === "context" ? "active" : ""} onClick={() => goTo("context")}><BookHeart size={18} />{navigationText.context}</button>
           <button className={activeSection === "people" ? "active" : ""} onClick={() => goTo("people")}><UserRound size={18} />{navigationText.people}</button>
-          <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{navigationText.reports}</button>
+          <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{navigationText.reports}{reading.unreadCount > 0 && <b className="nav-badge unread-nav">{reading.unreadCount}</b>}</button>
           <button className={activeSection === "settings" ? "active" : ""} onClick={() => goTo("settings")}><Settings2 size={18} />{navigationText.settings}</button>
         </nav>
         <div className="sidebar-status">
@@ -830,8 +836,8 @@ export function App() {
           </section>}
 
           {activeSection === "reports" && <section className="panel report-panel" id="reports">
-            <div className="panel-title"><div><p className="eyebrow">{t.result}</p><h3>{t.latest}</h3></div><ScrollText size={20} /></div>
-            <ConversationThreads state={state} language={language} selectedReportId={selectedReportId} onState={setState} activeDictation={activeDictation}
+            {reading.saveFailed && <p role="alert">{attentionLabels[language].saveError}</p>}
+            <ConversationThreads state={state} language={language} selectedReportId={selectedReportId} onState={setState} activeDictation={activeDictation} reading={reading.reading} onRead={reading.markRead} revealToken={revealToken}
               onDictationBusy={(id, value) => setActiveDictation(current => value ? `report-${id}` : current === `report-${id}` ? "" : current)} />
             <button className="link-button" onClick={() => void api?.openReports()}>{reportsText.files}</button>
           </section>}

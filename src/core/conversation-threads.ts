@@ -12,6 +12,7 @@ export interface ConversationStage {
   newMessages: Message[];
   report?: Report;
   live: boolean;
+  activity?: import("./conversation-updates.js").LiveConversation["activity"];
 }
 
 // A read-only projection. Group exclusively by explicit parent IDs, never title.

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("familyBridge", {
   getState: () => ipcRenderer.invoke("bridge:get-state"),
+  notifyConversation: (threadId: string) => ipcRenderer.invoke("bridge:notify-conversation", threadId),
   setUpdateBlocked: (blocked: boolean, reason?: "dictation" | "editing" | "activity") => ipcRenderer.invoke("bridge:update-blocked", blocked, reason),
   diagnoseUi: (input: { onboardingComplete: boolean; analysisStatus?: string }) => ipcRenderer.invoke("bridge:diagnose-ui", input),
   openDiagnostics: () => ipcRenderer.invoke("bridge:open-diagnostics"),

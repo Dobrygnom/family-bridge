@@ -6,10 +6,11 @@ export interface LiveConversation {
   restarted?: boolean;
   topic: string;
   inheritedMessageCount: number;
+  activity?: "preparing" | "sending" | "waiting-peer" | "needs-answer" | "retrying" | "error" | "interrupted";
   messages: Array<{ speaker: string; text: string; local: boolean }>;
 }
 
-export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates" | "repairPendingIds"> & {
+export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates" | "repairPendingIds" | "repairWaiting"> & {
   conversationRevision: number;
   liveConversations: LiveConversation[];
 };
@@ -25,7 +26,7 @@ export function applyConversationUpdate(state: AppState, event: ConversationUpda
 // A focus/IPC snapshot started before a push must not roll back newer messages.
 export function keepNewerConversations(current: AppState, incoming: AppState): AppState {
   if ((incoming.conversationRevision ?? 0) >= (current.conversationRevision ?? 0)) return incoming;
-  return { ...incoming, repairPendingIds: current.repairPendingIds, conversationRevision: current.conversationRevision, liveConversations: current.liveConversations,
+  return { ...incoming, repairPendingIds: current.repairPendingIds, repairWaiting: current.repairWaiting, conversationRevision: current.conversationRevision, liveConversations: current.liveConversations,
     reports: current.reports, reportSummaries: current.reportSummaries, continuationStates: current.continuationStates };
 }
 

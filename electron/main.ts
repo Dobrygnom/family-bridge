@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
+import { conversationThreads } from "../src/core/conversation-threads.js";
 import electronUpdater from "electron-updater";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -222,6 +223,18 @@ app.whenReady().then(async () => {
   handle("bridge:update-blocked", (_event, blocked, reason) => {
     rendererUpdateBlocked = blocked !== false;
     rendererUpdateReason = reason === "dictation" || reason === "editing" ? reason : "activity";
+  });
+  const conversationNotifications = new Map<string, number>();
+  handle("bridge:notify-conversation", async (_event, threadId: unknown) => {
+    if (typeof threadId !== "string" || !Notification.isSupported() || mainWindow?.isFocused()) return;
+    if (Date.now() - (conversationNotifications.get(threadId) ?? 0) < 60_000) return;
+    const snapshot = await service.state();
+    if (!conversationThreads(snapshot).some(thread => thread.id === threadId)) return;
+    const body = { ru: "В разговоре появилось продолжение. Открыть новые сообщения.", en: "A conversation has new messages. Open the continuation.", cs: "V rozhovoru jsou nové zprávy. Otevřít pokračování.", fr: "Une conversation contient de nouveaux messages. Ouvrir la suite." }[snapshot.language];
+    const notification = new Notification({ title: "Family Bridge", body });
+    notification.on("click", () => { showMainWindow(); mainWindow?.webContents.send("bridge:event", { type: "open-conversation", threadId }); });
+    conversationNotifications.set(threadId, Date.now());
+    notification.show();
   });
   powerMonitor.on("resume", () => {
     void service.checkContextForUpdates();

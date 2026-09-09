@@ -18,7 +18,7 @@ import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/cor
 import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
-import { PEER_HEARTBEAT_MS, PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, supportsSilentVersionProbe, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
+import { PEER_HEARTBEAT_MS, PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, peerIsOnline, supportsSilentVersionProbe, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
 import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
 import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
@@ -28,6 +28,7 @@ import { TOPIC_BRIEF_LIMIT } from "../src/core/topic-limits.js";
 import { reconcileTopicQueue } from "../src/core/topic-queue.js";
 import { resolveHistory, type HistoryReport } from "../src/core/conversation-history.js";
 import { repairCandidates } from "../src/core/conversation-repair.js";
+import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -304,7 +305,8 @@ export class BackgroundService {
       for (const [id, continuation] of Object.entries(state.continuations)) {
         if (continuation.pairId !== state.remote.pairId) continue;
         if (readReportSummaries(state.reports).some(report => report.id === id)) continue;
-        if (!(continuation.status === "starting" || continuation.status === "error" && (continuation.attempts ?? 0) < 3 && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
+        const canRetry = (continuation.attempts ?? 0) < 3 || Boolean(continuation.preparedMessage && this.peerPresence?.pairId === state.remote.pairId && peerIsOnline(this.peerPresence.at));
+        if (!(continuation.status === "starting" || continuation.status === "error" && canRetry && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
         try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }); }
         catch { this.diagnostics.record("continuation.resume-deferred"); }
       }
@@ -327,7 +329,7 @@ export class BackgroundService {
     if (!state.remote) return;
     const reports = this.historyReports(state), completed = new Set(reports.map(report => report.id));
     const candidates = repairCandidates(reports, state.roleRepairCutoffAt).filter(candidate =>
-      candidate.initiator === state.owner && !state.continuations[`repair-1211-${candidate.rootId}`]
+      candidate.initiator === state.owner && !state.continuations[repairRequestId(candidate.rootId)]
       && !Object.entries(state.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(state.conversationParents[id])));
     if (!candidates.length) return;
     const probe = this.versionProbe;
@@ -340,7 +342,7 @@ export class BackgroundService {
       if (Object.keys(state.conversationTranscripts).some(id => !completed.has(id) && (candidate.ids.has(id) || candidate.ids.has(state.conversationParents[id])))
         || state.pendingOwnerQuestions.some(question => !completed.has(question.conversationId) && candidate.ids.has(question.conversationId))) continue;
       try {
-        await this.restartReport({ reportId: candidate.reportId, requestId: `repair-1211-${candidate.rootId}` });
+        await this.restartReport({ reportId: candidate.reportId, requestId: repairRequestId(candidate.rootId) });
         this.diagnostics.record("conversation.repair-started");
         break; // Bounded work; the next tick can start another eligible topic.
       } catch { this.diagnostics.record("conversation.repair-deferred"); }
@@ -455,18 +457,29 @@ export class BackgroundService {
     const history = new Map(this.historyReports(stored).map(report => [report.id, report]));
     const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр", topicSources: stored.topicSources }).map(report => ({ ...report, parentReportId: report.parentReportId ?? history.get(report.id)?.parentReportId }));
     const completed = new Set(reportSummaries.map(report => report.id));
+    const repairs = supportsRestart(this.options.appVersion) ? repairCandidates([...history.values()], stored.roleRepairCutoffAt)
+      .filter(candidate => !Object.entries(stored.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(stored.conversationParents[id]) && (stored.conversationTranscripts[id] || completed.has(id)))) : [];
+    const repairWaiting = Object.fromEntries(repairs.map(candidate => [candidate.rootId,
+      candidate.initiator !== stored.owner ? "peer" : !supportsRestart(stored.remote?.peerVersion) ? "version"
+      : Object.keys(stored.conversationTranscripts).some(id => !completed.has(id) && (candidate.ids.has(id) || candidate.ids.has(stored.conversationParents[id]))) ? "active" : "queued"
+    ])) as NonNullable<ConversationSnapshot["repairWaiting"]>;
     const liveConversations: LiveConversation[] = Object.entries(stored.conversationTranscripts).filter(([id, transcript]) => !completed.has(id) && !transcript.topic.startsWith(VERSION_PROBE_PREFIX)).map(([id, transcript]) => {
       const parentReportId = stored.conversationParents[id];
-      return { id, parentReportId, restarted: stored.conversationModes[id] === "restart", topic: transcript.topic,
+      const continuation = stored.continuations[id];
+      const pending = Object.values(stored.incomingDeliveries).find(item => item.envelope.conversation_id === id);
+      const activity: LiveConversation["activity"] = stored.pendingOwnerQuestions.some(q => q.conversationId === id) ? "needs-answer"
+        : this.continuing.has(id) ? continuation?.preparedMessage ? "sending" : "preparing"
+        : this.remoteWorkers.has(id) ? pending?.response ? "sending" : "preparing"
+        : continuation?.status === "error" ? continuation.preparedMessage ? "retrying" : "error"
+        : pending ? "retrying" : transcript.messages.at(-1)?.from === stored.owner ? "waiting-peer" : "interrupted";
+      return { id, parentReportId, activity, restarted: stored.conversationModes[id] === "restart", topic: transcript.topic,
         inheritedMessageCount: stored.continuations[id]?.history.length ?? reportSummaries.find((report) => report.id === parentReportId)?.messageCount ?? 0,
         messages: transcript.messages.map((message) => ({ text: message.text, local: message.from === stored.owner,
           speaker: message.from === stored.owner ? stored.displayName || "Вы" : stored.remote?.peerName || "Партнёр" })),
       };
     });
     return { conversationRevision: this.conversationRevision, reports: stored.reports, reportSummaries, liveConversations,
-      repairPendingIds: supportsRestart(this.options.appVersion) ? repairCandidates([...history.values()], stored.roleRepairCutoffAt)
-        .filter(candidate => !Object.entries(stored.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(stored.conversationParents[id]) && (stored.conversationTranscripts[id] || completed.has(id))))
-        .map(candidate => candidate.rootId) : [],
+      repairPendingIds: repairs.map(candidate => candidate.rootId), repairWaiting,
       continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, mode: value.mode, status: completed.has(id) ? "complete" as const : value.status })) };
   }
 
@@ -950,6 +963,10 @@ export class BackgroundService {
     let { state } = await this.resetExperienceOnce();
     state = await this.resetConversationResultsOnce();
     state = await this.ensureTopicSources(state);
+    if (Object.keys(migrateRepairIdentifiers(state)).length) {
+      state = await this.store.mutate(migrateRepairIdentifiers);
+      this.diagnostics.record("conversation.repair-identifiers-migrated");
+    }
     if (state.inFlightTopics.length) {
       state = await this.store.update({
         pendingTopics: recoverInterruptedTopics(state.pendingTopics, state.inFlightTopics),
@@ -1685,7 +1702,10 @@ export class BackgroundService {
           this.remoteAgents.delete(envelope.conversation_id);
           this.diagnostics.record("dialogue.retry_pending");
           this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
-        } finally { this.remoteWorkers.delete(envelope.conversation_id); }
+        } finally {
+          this.remoteWorkers.delete(envelope.conversation_id);
+          this.publishConversations(await this.store.read());
+        }
       });
       this.remoteWorkers.set(envelope.conversation_id, task);
       work.push(task);
