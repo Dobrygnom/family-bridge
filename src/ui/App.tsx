@@ -339,6 +339,9 @@ export function App() {
         downloading: Boolean(event.downloading),
         progress: typeof event.progress === "number" ? event.progress : undefined,
         ready: Boolean(event.ready),
+        installRequested: Boolean((raw as AppState["update"]).installRequested),
+        installing: Boolean((raw as AppState["update"]).installing),
+        waitingFor: (raw as AppState["update"]).waitingFor,
         error: typeof event.error === "string" ? event.error : undefined,
       } }));
     });

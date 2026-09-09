@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UpdateControl } from "../src/ui/UpdateControl.js";
 import type { AppState } from "../src/global.js";
 
 const render=(update:AppState['update'])=>renderToStaticMarkup(createElement(UpdateControl,{update,version:'1.2.12',language:'ru',onCheck:async()=>{},onInstall:async()=>{}}));
+test('live update events retain installation and waiting fields in the app',()=>{
+  const source=readFileSync(new URL('../src/ui/App.tsx',import.meta.url),'utf8');
+  const handler=source.slice(source.indexOf('if (event.type === "update")'),source.indexOf('return () => {',source.indexOf('if (event.type === "update")')));
+  for(const field of ['installRequested','installing','waitingFor']) assert.match(handler,new RegExp(`${field}:.*\\.${field}`));
+});
 test('a downloaded update always exposes an enabled install-now button, including after failure',()=>{
   for(const extra of [{},{error:'Installation failed'},{installRequested:true,waitingFor:'background' as const}]) {
     const html=render({available:true,downloading:false,ready:true,version:'1.2.13',...extra});
