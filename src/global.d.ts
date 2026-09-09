@@ -49,7 +49,7 @@ export interface AppState {
     portraits?: PersonPortrait[];
     topics: RoutedTopic[];
   };
-  update: { available: boolean; version?: string; checking?: boolean; downloading: boolean; progress?: number; ready?: boolean; error?: string };
+  update: { available: boolean; version?: string; checking?: boolean; downloading: boolean; progress?: number; ready?: boolean; error?: string; installRequested?: boolean; installing?: boolean; waitingFor?: "activity" | "dictation" | "editing" | "background" };
 }
 
 declare global {
@@ -86,7 +86,7 @@ declare global {
       transcribeAudio(input: { id: string; audio: Uint8Array }): Promise<DictationResult>;
       cancelDictation(id: string): Promise<void>;
       checkForUpdates(): Promise<void>;
-      setUpdateBlocked(blocked: boolean): Promise<void>;
+      setUpdateBlocked(blocked: boolean, reason?: "dictation" | "editing" | "activity"): Promise<void>;
       checkPairVersions(): Promise<AppState>;
       installUpdate(): Promise<void>;
       onEvent(listener: (event: unknown) => void): () => void;

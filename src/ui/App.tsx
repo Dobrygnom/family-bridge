@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { UpdateControl } from "./UpdateControl.js";
 import {
   Activity,
   Ban,
@@ -279,7 +280,7 @@ export function App() {
     catch { void api?.setUpdateBlocked?.(true); }
   }, [topic]);
   useEffect(() => {
-    void api?.setUpdateBlocked?.(Boolean(activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim())).catch(() => undefined);
+    void api?.setUpdateBlocked?.(Boolean(activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim()), activeDictation ? "dictation" : editingTopicId || inviteCode.trim() ? "editing" : "activity").catch(() => undefined);
   }, [activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode]);
   useEffect(() => {
     if (activeSection === "reports" && selectedReportId) document.getElementById(`report-${selectedReportId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -837,13 +838,7 @@ export function App() {
               <div className="settings-actions">
                 <button className="ghost" onClick={() => void api?.openDiagnostics().catch(() => setError(loadingText[1]))}>{loadingText[3]}</button>
                 <label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label>
-                <div className="update-card" aria-live="polite">
-                  {state.update.checking && <div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Проверяем обновления</strong><small>Обычно это занимает несколько секунд.</small></div></div>}
-                  {state.update.downloading && <div className="update-download"><div className="update-status"><LoaderCircle className="spin" size={18} /><div><strong>Скачиваем версию {state.update.version}</strong><small>Приложение продолжает работать. После загрузки предложим перезапуск.</small></div><b>{state.update.progress ?? 0}%</b></div><progress max="100" value={state.update.progress ?? 0} /></div>}
-                  {state.update.ready && <div className="update-status update-ready"><LoaderCircle className="spin" size={18} /><div><strong>Версия {state.update.version} готова</strong><small>Установится автоматически после завершения текущих действий и диктовки. Разговоры и черновики сохранятся.</small></div></div>}
-                  {state.update.error && <div className="update-status update-failed"><Bell size={18} /><div><strong>Не удалось обновиться</strong><small>{state.update.error}</small></div><button onClick={() => void api?.checkForUpdates()}>Повторить</button></div>}
-                  {!state.update.checking && !state.update.downloading && !state.update.ready && !state.update.error && <div className="update-status"><Check size={18} /><div><strong>Установлена последняя версия</strong><small>Новые версии скачиваются автоматически в фоне.</small></div><button onClick={() => void api?.checkForUpdates()}>Проверить сейчас</button></div>}
-                </div>
+                <UpdateControl update={state.update} version={state.appVersion} language={language} onCheck={async () => api?.checkForUpdates()} onInstall={async () => api?.installUpdate()} />
               </div>
             </section>
             <section className="panel privacy-panel"><div className="panel-title"><div><p className="eyebrow">{t.boundaries}</p><h3>{t.doNotDiscuss}</h3></div><Ban size={20} /></div><div className="input-row compact"><input value={blocked} onChange={(e) => setBlocked(e.target.value)} placeholder={t.blockedPlaceholder} onKeyDown={(e) => e.key === "Enter" && void blockTopic()} /><button onClick={() => void blockTopic()}>{t.block}</button></div>{state.blockedTopics.map((item) => <span className="blocked-chip" key={item}>{item}</span>)}{!state.blockedTopics.length && <p className="muted">{t.noBlocks}</p>}</section>

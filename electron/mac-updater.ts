@@ -19,6 +19,9 @@ export interface UpdateState {
   progress?: number;
   ready?: boolean;
   error?: string;
+  installRequested?: boolean;
+  installing?: boolean;
+  waitingFor?: "activity" | "dictation" | "editing" | "background";
 }
 
 interface ReleaseAsset {

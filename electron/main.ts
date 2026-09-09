@@ -24,6 +24,13 @@ let isQuitting = false;
 let macUpdater: MacReleaseUpdater | null = null;
 let updateInstallIsQuitting = false;
 let rendererUpdateBlocked = true;
+let rendererUpdateReason: "activity" | "dictation" | "editing" = "activity";
+let currentUpdate: UpdateState = { available: false, downloading: false };
+
+function publishUpdate(update: UpdateState) {
+  currentUpdate = update;
+  service.setUpdateState(update);
+}
 let activeIpc = 0;
 let preparingUpdate = false;
 let updateGate: AutomaticUpdate;
@@ -126,6 +133,7 @@ function createTray() {
 }
 
 async function installPreparedUpdate() {
+  publishUpdate({ ...currentUpdate, installing: true, waitingFor: undefined, error: undefined });
   if (process.platform === "darwin" && macUpdater) {
     try {
       updateInstallIsQuitting = true;
@@ -158,11 +166,11 @@ function checkForUpdates() {
       await macUpdater.checkForUpdates();
       return;
     }
-    service.setUpdateState({ available: false, checking: true, downloading: false });
+    publishUpdate({ available: false, checking: true, downloading: false });
     try {
       await autoUpdater.checkForUpdatesAndNotify();
     } catch (error) {
-      service.setUpdateState({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
+      publishUpdate({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
     }
   })().finally(() => { updateCheckOperation = undefined; });
   return updateCheckOperation;
@@ -192,7 +200,7 @@ app.whenReady().then(async () => {
   );
   await service.start();
   updateGate = new AutomaticUpdate({
-    canInstall: () => app.isPackaged && activeIpc === 0 && (!mainWindow || !rendererUpdateBlocked) && powerMonitor.getSystemIdleTime() >= 10,
+    canInstall: () => app.isPackaged && activeIpc === 0 && (!mainWindow || !rendererUpdateBlocked),
     prepare: async () => {
       preparingUpdate = true;
       const prepared = await service.prepareForUpdate();
@@ -201,9 +209,16 @@ app.whenReady().then(async () => {
     },
     install: installPreparedUpdate,
     resume: () => { preparingUpdate = false; updateInstallIsQuitting = false; isQuitting = false; service.cancelPreparedUpdate(); },
-    failed: error => service.setUpdateState({ available:true, downloading:false, ready:true, error:error instanceof Error ? error.message : String(error) }),
+    failed: error => publishUpdate({ ...currentUpdate, available:true, downloading:false, ready:true, installing:false, error:error instanceof Error ? error.message : String(error) }),
+    waiting: reason => {
+      const waitingFor = reason === "activity" && rendererUpdateBlocked ? rendererUpdateReason : reason;
+      if (currentUpdate.waitingFor !== waitingFor) publishUpdate({ ...currentUpdate, installing: false, waitingFor });
+    },
   });
-  handle("bridge:update-blocked", (_event, blocked) => { rendererUpdateBlocked = blocked !== false; });
+  handle("bridge:update-blocked", (_event, blocked, reason) => {
+    rendererUpdateBlocked = blocked !== false;
+    rendererUpdateReason = reason === "dictation" || reason === "editing" ? reason : "activity";
+  });
   powerMonitor.on("resume", () => {
     void service.checkContextForUpdates();
     void checkForUpdates();
@@ -283,7 +298,15 @@ app.whenReady().then(async () => {
   handle("bridge:check-pair-versions", async () => {
     return service.requestPeerVersionCheck();
   });
-  handle("bridge:install-update", () => { updateGate.ready(); });
+  handle("bridge:install-update", () => {
+    if (!app.isPackaged) throw new Error("Установка обновлений доступна в установленном приложении.");
+    if (!currentUpdate.ready) throw new Error("Обновление ещё не скачано. Сначала проверьте обновления.");
+    updateGate.requestNow();
+    publishUpdate({ ...currentUpdate, installRequested: true, error: undefined });
+    // Leave this IPC handler before testing activeIpc; otherwise the request
+    // would block itself. This also bypasses the automatic retry cooldown.
+    setTimeout(() => void updateGate.tick(), 0);
+  });
   serviceReady = true;
   createWindow();
   createTray();
@@ -293,7 +316,7 @@ app.whenReady().then(async () => {
     autoUpdater.logger = null;
     if (process.platform === "darwin") {
       macUpdater = new MacReleaseUpdater(app.getVersion(), process.execPath, app.getPath("userData"), process.arch, (update) => {
-        service.setUpdateState(update);
+        publishUpdate(update);
         void presentReadyUpdate(update);
       });
     } else {
@@ -305,23 +328,24 @@ app.whenReady().then(async () => {
         windowsUpdateVersion = info.version;
         windowsUpdateDownloading = true;
         windowsUpdateReady = false;
-        service.setUpdateState({ available: true, version: info.version, downloading: true, progress: 0 });
+        publishUpdate({ available: true, version: info.version, downloading: true, progress: 0 });
       });
-      autoUpdater.on("download-progress", (progress) => service.setUpdateState({ available: true, version: windowsUpdateVersion, downloading: true, progress: Math.round(progress.percent) }));
+      autoUpdater.on("download-progress", (progress) => publishUpdate({ available: true, version: windowsUpdateVersion, downloading: true, progress: Math.round(progress.percent) }));
       autoUpdater.on("update-downloaded", (info) => {
         windowsUpdateDownloading = false;
         windowsUpdateReady = true;
         const update = { available: true, version: info.version, downloading: false, progress: 100, ready: true };
-        service.setUpdateState(update);
+        publishUpdate(update);
         void presentReadyUpdate(update);
       });
       autoUpdater.on("update-not-available", () => {
         windowsUpdateVersion = undefined;
         windowsUpdateDownloading = false;
         windowsUpdateReady = false;
-        service.setUpdateState({ available: false, downloading: false });
+        publishUpdate({ available: false, downloading: false });
       });
       autoUpdater.on("error", (error) => {
+        updateGate.cancel();
         preparingUpdate = false;
         updateInstallIsQuitting = false;
         isQuitting = false;
@@ -329,7 +353,7 @@ app.whenReady().then(async () => {
         windowsUpdateVersion = undefined;
         windowsUpdateDownloading = false;
         windowsUpdateReady = false;
-        service.setUpdateState({ available: false, downloading: false, error: error.message });
+        publishUpdate({ available: false, downloading: false, error: error.message });
       });
     }
     setTimeout(() => void checkForUpdates(), 10_000);
@@ -356,7 +380,7 @@ app.on("before-quit", (event) => {
   }).catch((error) => {
     updateInstallIsQuitting = false;
     isQuitting = false;
-    service.setUpdateState({ available: true, downloading: false, ready: true, error: error instanceof Error ? error.message : String(error) });
+    publishUpdate({ ...currentUpdate, available: true, downloading: false, ready: true, installing: false, error: error instanceof Error ? error.message : String(error) });
     showMainWindow();
   });
 });
