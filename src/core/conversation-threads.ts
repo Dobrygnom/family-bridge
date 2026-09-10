@@ -1,5 +1,6 @@
 import type { AppState } from "../global.js";
 import { VERSION_PROBE_PREFIX } from "./peer-version.js";
+import { stitchMessages } from "./stitch-messages.js";
 
 type Report = AppState["reportSummaries"][number];
 type Message = Report["messages"][number];
@@ -9,6 +10,7 @@ export interface ConversationStage {
   restarted?: boolean;
   topic: string;
   messages: Message[];
+  inheritedMessageCount?: number;
   newMessages: Message[];
   report?: Report;
   live: boolean;
@@ -45,6 +47,7 @@ export function conversationThreads(state: Pick<AppState, "reportSummaries" | "l
     const root = rootOf(node.id);
     groups.set(root, [...(groups.get(root) ?? []), node]);
   }
+  const stitched = stitchMessages([...nodes.values()], (a,b)=>a.local === b.local && a.text === b.text);
   return [...groups].map(([id, members]) => {
     const stages: ConversationStage[] = [], seen = new Set<string>();
     const append = (node: ConversationStage) => {
@@ -52,13 +55,9 @@ export function conversationThreads(state: Pick<AppState, "reportSummaries" | "l
       seen.add(node.id);
       const parent = node.parentReportId ? nodes.get(node.parentReportId) : undefined;
       if (parent) append(parent);
-      // Remove only an exact inherited prefix. If histories disagree, keep the
-      // unmatched messages rather than cutting by a guessed message count.
-      let inherited = 0;
-      while (!node.restarted && parent && stages.some(stage => stage.id === parent.id) && inherited < parent.messages.length && inherited < node.messages.length
-        && parent.messages[inherited].text === node.messages[inherited].text
-        && parent.messages[inherited].local === node.messages[inherited].local) inherited++;
-      stages.push({ ...node, newMessages: node.messages.slice(inherited) });
+      // Shared reconstruction handles explicit context lengths and mixed legacy
+      // snapshots without rewriting reports or globally deduplicating replies.
+      stages.push({ ...node, newMessages: stitched.get(node.id)!.newMessages });
     };
     members.sort((a, b) => (a.report?.completedAt ?? "\uffff").localeCompare(b.report?.completedAt ?? "\uffff")).forEach(append);
     const restart = stages.filter(stage => stage.restarted).at(-1);

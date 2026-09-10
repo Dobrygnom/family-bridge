@@ -7,6 +7,7 @@ import { attentionLabels, unreadMessages, type ReadingState, type ConversationTh
 import { ReadMessage } from "./ReadMessage.js";
 import { activityLabels, repairLabels } from "./conversation-status.js";
 import { StableDetails } from "./StableDetails.js";
+import { originLabel } from "./message-origin.js";
 
 const labels = {
   ru: { live: "Разговор продолжается", done: "Обсудили", follow: "Нужно вернуться к теме", history: "Предыдущие реплики", next: "Продолжение", messages: "реплик", result: "Последний итог", draft: "Дополнить этот этап", empty: "Разговоров пока нет" },
@@ -74,7 +75,7 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
                 const key = `${stage.id}:${stage.messages.length - stage.newMessages.length + i}`;
                 return <div key={key} id={`message-${key}`} className="message-anchor">
                   {boundary === key && <div className="unread-divider">{attention.since}</div>}
-                  <div className={`transcript-message ${message.local ? "local" : "peer"}`}><ReadMessage messageKey={key} unread={Boolean(reading && !reading.seen[key])} onRead={onRead}><strong>{message.speaker}</strong><p>{message.text}</p></ReadMessage></div>
+                  <div className={`transcript-message ${message.local ? "local" : "peer"}`}><ReadMessage messageKey={key} unread={Boolean(reading && !reading.seen[key])} onRead={onRead}><strong>{message.speaker}</strong>{message.origin && <small className="message-origin">{originLabel(message.origin, message.local, language)}</small>}<p>{message.text}</p></ReadMessage></div>
                 </div>;
               })}
             </div>

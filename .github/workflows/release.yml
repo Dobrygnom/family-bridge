@@ -29,6 +29,8 @@ jobs:
         run: npm run package -- --x64 --arm64
       - name: Verify packaged state (no UI or personal data)
         run: node scripts/verify-packaged-state.mjs
+      - name: Verify local crash dumps in isolated test processes
+        run: node scripts/verify-crash-capture.mjs
       - name: Record complete build artifact checksums
         run: node scripts/checksum-build-artifacts.mjs
       - uses: actions/upload-artifact@v4

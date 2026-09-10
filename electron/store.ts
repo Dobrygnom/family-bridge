@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
 import type { RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse } from "../src/core/types.js";
+import type { SharedMessage } from "../src/core/continuation.js";
 
 export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
@@ -18,7 +19,7 @@ export interface ConversationContinuation {
   topic: string;
   pairId: string;
   instruction: string;
-  history: Array<{ from: OwnerId; text: string }>;
+  history: SharedMessage[];
   status: "starting" | "waiting" | "complete" | "error";
   preparedMessage?: string;
 }
@@ -31,7 +32,7 @@ export interface PendingOwnerQuestion {
   createdAt: string;
   peerName?: string;
   nextSequence: number;
-  transcript: Array<{ from: OwnerId; text: string }>;
+  transcript: SharedMessage[];
 }
 
 export interface StoredState {
@@ -53,7 +54,8 @@ export interface StoredState {
   blockedTopics: string[];
   reports: string[];
   pendingOwnerQuestions: PendingOwnerQuestion[];
-  conversationTranscripts: Record<string, { topic: string; messages: Array<{ from: OwnerId; text: string }> }>;
+  conversationTranscripts: Record<string, { topic: string; messages: SharedMessage[] }>;
+  conversationInheritedCounts: Record<string, number>;
   conversationResetVersion?: string;
   conversationResetAt?: string;
   experienceResetVersion?: string;
@@ -96,6 +98,7 @@ const defaults: StoredState = {
   reports: [],
   pendingOwnerQuestions: [],
   conversationTranscripts: {},
+  conversationInheritedCounts: {},
   ignoredConversationIds: [],
   continuations: {},
   conversationParents: {},

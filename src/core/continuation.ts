@@ -1,6 +1,10 @@
 import { agentKnowledgeRules } from "./agent-context-rules.js";
 
-export type SharedMessage = { from: "dima" | "katya"; text: string };
+export type MessageOrigin = "agent" | "continuation" | "owner-answer";
+export function messageOrigin(value: unknown): MessageOrigin | undefined {
+  return value === "agent" || value === "continuation" || value === "owner-answer" ? value : undefined;
+}
+export type SharedMessage = { from: "dima" | "katya"; text: string; origin?: MessageOrigin };
 
 export function supportsRestart(version: string | undefined) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
@@ -42,7 +46,7 @@ export function sharedHistory(value: unknown): SharedMessage[] {
   if (!Array.isArray(value) || value.length > 500) throw new Error("Invalid conversation history");
   const result = value.map((item): SharedMessage => {
     if (!item || !["dima", "katya"].includes(item.from) || typeof item.text !== "string" || !item.text.trim() || item.text.length > 30_000) throw new Error("Invalid conversation message");
-    return { from: item.from, text: item.text };
+    return { from: item.from, text: item.text, ...(messageOrigin(item.origin) ? { origin: messageOrigin(item.origin) } : {}) };
   });
   if (JSON.stringify(result).length > 500_000) throw new Error("Conversation history is too large");
   return result;

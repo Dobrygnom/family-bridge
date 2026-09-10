@@ -1,6 +1,7 @@
 import type { SharedMessage } from "./continuation.js";
+import { stitchMessages } from "./stitch-messages.js";
 
-export interface HistoryReport { id: string; parentReportId?: string; restarted?: boolean; cleanContext?: boolean; topic: string; completedAt: string; messages: SharedMessage[] }
+export interface HistoryReport { id: string; parentReportId?: string; restarted?: boolean; cleanContext?: boolean; inheritedMessageCount?: number; topic: string; completedAt: string; messages: SharedMessage[] }
 export function resolveHistory(reports: HistoryReport[], requestedId: string) {
   const nodes = new Map(reports.map(report => [report.id, report]));
   if (!nodes.has(requestedId)) throw new Error("Исходный разговор не найден");
@@ -35,13 +36,11 @@ export function resolveHistory(reports: HistoryReport[], requestedId: string) {
   };
   const current = restart ? ordered.filter(report => attemptOf(report) === restart.id) : ordered;
   const history: SharedMessage[] = [];
+  const stitched = stitchMessages(ordered, (a,b)=>a.from === b.from && a.text === b.text);
   for (const report of current) {
     // A restart is an explicit context boundary, while its parent remains a UI link.
     if (report.restarted) history.length = 0;
-    const parent = report.parentReportId ? nodes.get(report.parentReportId) : undefined;
-    let prefix = 0;
-    while (!report.restarted && parent && prefix < parent.messages.length && prefix < report.messages.length && parent.messages[prefix].from === report.messages[prefix].from && parent.messages[prefix].text === report.messages[prefix].text) prefix++;
-    history.push(...report.messages.slice(prefix));
+    history.push(...stitched.get(report.id)!.newMessages);
   }
   return { rootId, ids: new Set(ordered.map(report=>report.id)), latest: current.at(-1)!, history };
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
 import { conversationThreads } from "../src/core/conversation-threads.js";
 import electronUpdater from "electron-updater";
 import path from "node:path";
@@ -12,6 +12,8 @@ import { DictationService } from "./dictation.js";
 import { dictationFetch } from "./dictation-network.js";
 import { allowAppPermission } from "../src/core/media-permissions.js";
 import { AutomaticUpdate } from "./automatic-update.js";
+import { Diagnostics } from "./diagnostics.js";
+import { installCrashDiagnostics } from "./crash-diagnostics.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -51,6 +53,7 @@ if (process.env.FAMILY_BRIDGE_E2E_USER_DATA) app.setPath("userData", path.resolv
 const hasSingleInstanceLock = process.env.FAMILY_BRIDGE_E2E_ALLOW_SECOND_INSTANCE === "1" || app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) app.quit();
+else installCrashDiagnostics(app, crashReporter, new Diagnostics(app.getPath("userData")), () => updateInstallIsQuitting);
 app.on("second-instance", () => {
   showMainWindow();
 });
@@ -91,7 +94,9 @@ function createWindow() {
   });
   const contents = mainWindow.webContents;
   contents.on("preload-error", () => service.diagnostics.record("renderer.preload-failed"));
-  contents.on("render-process-gone", (_event, details) => service.diagnostics.record("renderer.gone", { code: details.reason }));
+  contents.on("render-process-gone", (_event, details) => service.diagnostics.record("renderer.gone", { code: `${details.reason}:${details.exitCode}` }));
+  mainWindow.on("unresponsive", () => service.diagnostics.record("renderer.unresponsive"));
+  mainWindow.on("responsive", () => service.diagnostics.record("renderer.responsive"));
   contents.on("did-finish-load", () => {
     if (!app.isPackaged) mainWindow?.setTitle("Family Bridge — локальная сборка");
     service.diagnostics.record("renderer.loaded");

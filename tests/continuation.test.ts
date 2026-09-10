@@ -57,6 +57,7 @@ test("migrated repair automatically sends its exact saved reply with a UUID and 
     await (f.service as any).automaticWork();
     assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].payload.text, "Saved reply");
+    assert.equal(f.sent[0].payload.origin, "agent");
     assert.doesNotMatch(JSON.stringify(f.sent), /Private instruction/);
     assert.equal((f.service as any).conversationSnapshot(await f.store.read()).liveConversations[0].activity, "waiting-peer");
     assert.equal((await f.store.read()).conversationTranscripts[id].messages.length, 1);
@@ -214,6 +215,8 @@ test("owner follow-up preserves original result, uses old dialogue and never sen
     assert.equal(starts, 1);
     assert.equal(f.sent.length, 1);
     assert.match(prompt, /RAW_PRIVATE_INSTRUCTION/);
+    assert.equal(f.sent[0].payload.origin, "continuation");
+    assert.equal((await f.store.read()).conversationTranscripts[input.requestId].messages.at(-1)?.origin, "continuation");
     assert.match(prompt, /Давай согласуем/);
     assert.doesNotMatch(JSON.stringify(f.sent), /RAW_PRIVATE_INSTRUCTION/);
     assert.doesNotMatch(JSON.stringify(await f.service.state()), /RAW_PRIVATE_INSTRUCTION/);
@@ -335,7 +338,7 @@ test("received messages are pushed live and a first answer remains open for a re
     if (delivered) return null;
     delivered = true;
     return { id: "message-live", pair_id: "pair", conversation_id: "live-child", sequence_number: 1, sender_agent: "katya",
-      payload: { kind: "dialogue", topic: "Звонки", text: "Новая реплика прямо сейчас", status: "continue", continuation: { parentReportId: "original-id", history } } };
+      payload: { kind: "dialogue", topic: "Звонки", text: "Новая реплика прямо сейчас", origin: "owner-answer", status: "continue", continuation: { parentReportId: "original-id", history } } };
   };
   const processing = (f.service as any).pumpRemote();
   try {
@@ -349,6 +352,8 @@ test("received messages are pushed live and a first answer remains open for a re
     assert.equal(latestContinuation(visible, "original-id")?.messages.length, 2);
     assert.equal(visible.reports.length, 1);
     assert.ok(pushes.length >= 2, "Incoming and outgoing snapshots are delivered without a reload");
+    assert.equal(visible.liveConversations?.[0].messages.at(-2)?.origin, "owner-answer");
+    assert.equal(visible.liveConversations?.[0].messages.at(-1)?.origin, "agent");
     assert.doesNotMatch(JSON.stringify(pushes), /encryptionSecret|instruction|preparedMessage/);
     assert.equal((await f.service.state()).liveConversations.length, 1);
   } finally {

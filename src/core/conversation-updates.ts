@@ -5,9 +5,9 @@ export interface LiveConversation {
   parentReportId?: string;
   restarted?: boolean;
   topic: string;
-  inheritedMessageCount: number;
+  inheritedMessageCount?: number;
   activity?: "preparing" | "sending" | "waiting-peer" | "needs-answer" | "retrying" | "error" | "interrupted";
-  messages: Array<{ speaker: string; text: string; local: boolean }>;
+  messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./continuation.js").MessageOrigin }>;
 }
 
 export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates" | "repairPendingIds" | "repairWaiting"> & {

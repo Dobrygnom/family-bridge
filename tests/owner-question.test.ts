@@ -60,7 +60,7 @@ test("owner question survives restart and raw answer is not sent to the peer", a
     });
 
     const agent = new CapturingAgent();
-    const sent: Array<{ payload: { text: string; senderVersion?: string; experienceVersion?: string }; sequence: number }> = [];
+    const sent: Array<{ payload: { text: string; origin?: string; senderVersion?: string; experienceVersion?: string }; sequence: number }> = [];
     const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, {appVersion:"1.2.10",experienceResetVersion:"current"});
     const internal = service as unknown as {
       remote: {
@@ -98,6 +98,8 @@ test("owner question survives restart and raw answer is not sent to the peer", a
     assert.equal(sent[0].payload.senderVersion,"1.2.10");
     assert.equal(sent[0].payload.experienceVersion,"current");
     assert.equal(sent[0].payload.text, "Уточнённый вывод без дословного личного ответа");
+    assert.equal(sent[0].payload.origin, "owner-answer");
+    assert.equal((await service.state()).liveConversations[0].messages.at(-1)?.origin, "owner-answer");
     assert.doesNotMatch(sent[0].payload.text, new RegExp(rawAnswer));
     assert.deepEqual((await store.read()).pendingOwnerQuestions, []);
     const learned = JSON.parse(await readFile(path.join(directory, "psychologist-memory", "learned-context.json"), "utf8")) as Array<{ topic: string; question: string; disposition: string; answer?: string }>;

@@ -28,6 +28,7 @@ import { TOPIC_BRIEF_LIMIT } from "../src/core/topic-limits.js";
 import { reconcileTopicQueue } from "../src/core/topic-queue.js";
 import { resolveHistory, type HistoryReport } from "../src/core/conversation-history.js";
 import { repairCandidates } from "../src/core/conversation-repair.js";
+import { messageOrigin, type SharedMessage, type MessageOrigin } from "../src/core/continuation.js";
 import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
 
 const execFileAsync = promisify(execFile);
@@ -52,6 +53,7 @@ interface TopicPayload {
 }
 
 interface DialoguePayload {
+  origin?: import("../src/core/continuation.js").MessageOrigin;
   kind?: "dialogue";
   text: string;
   topic: string;
@@ -82,6 +84,7 @@ export interface LearnedContextEntry {
 }
 
 export interface ReportSummaryView {
+  inheritedMessageCount?: number;
   id: string;
   parentReportId?: string;
   restarted?: boolean;
@@ -94,7 +97,7 @@ export interface ReportSummaryView {
   comparison?: string;
   completedAt: string;
   messageCount: number;
-  messages: Array<{ speaker: string; text: string; local: boolean }>;
+  messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("../src/core/continuation.js").MessageOrigin }>;
 }
 
 interface BackgroundServiceOptions {
@@ -189,6 +192,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
         conversationId?: string;
         parentReportId?: string;
         restarted?: boolean;
+        inheritedMessageCount?: number;
         topic?: string;
         topics?: string[];
         sharedSummary?: string;
@@ -198,14 +202,14 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
         comparisonSummary?: string;
         completionState?: "completed" | "needs_follow_up";
         completedAt?: string;
-        messages?: Array<{ from?: string; text?: string; payload?: string }>;
+        messages?: Array<{ from?: string; text?: string; payload?: string; origin?: unknown }>;
       };
       const messages = (report.messages ?? []).flatMap((message) => {
         const text = (message.text ?? message.payload ?? "").trim();
         if (!text) return [];
         const local = Boolean(names.localOwnerId && message.from === names.localOwnerId);
         const speaker = local ? (names.localName || "Вы") : (names.peerName || message.from || "Второй агент");
-        return [{ speaker, text, local }];
+        return [{ speaker, text, local, ...(messageOrigin(message.origin) ? { origin: messageOrigin(message.origin) } : {}) }];
       });
       const topic = report.topic || report.topics?.[0] || "Разговор агентов";
       // Keep the original file, but never present control traffic as a dialogue.
@@ -226,6 +230,7 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
         id: report.conversationId || reportPath,
         ...(report.parentReportId ? { parentReportId: report.parentReportId } : {}),
         ...(report.restarted ? { restarted: true } : {}),
+        ...(Number.isInteger(report.inheritedMessageCount) ? { inheritedMessageCount: report.inheritedMessageCount } : {}),
         topic,
         summary,
         answerFrom: report.answerFrom?.trim() || names.peerName || "Второй участник",
@@ -354,8 +359,8 @@ export class BackgroundService {
       try {
         const raw = JSON.parse(readFileSync(file, "utf8"));
         if (raw.pairId && raw.pairId !== state.remote?.pairId || !raw.conversationId || !Array.isArray(raw.messages)) return [];
-        return [{ id: raw.conversationId, parentReportId: raw.parentReportId, restarted: raw.restarted, cleanContext: raw.cleanContext,
-          topic: raw.topic || raw.topics?.[0], completedAt: raw.completedAt || "", messages: sharedHistory(raw.messages.map((m: { from: string; text?: string; payload?: string }) => ({ from: m.from, text: m.text ?? m.payload }))) }];
+        return [{ id: raw.conversationId, parentReportId: raw.parentReportId, restarted: raw.restarted, cleanContext: raw.cleanContext, inheritedMessageCount: raw.inheritedMessageCount ?? state.continuations[raw.conversationId]?.history.length ?? state.conversationInheritedCounts[raw.conversationId],
+          topic: raw.topic || raw.topics?.[0], completedAt: raw.completedAt || "", messages: sharedHistory(raw.messages.map((m: { from: string; text?: string; payload?: string; origin?: unknown }) => ({ from: m.from, text: m.text ?? m.payload, origin: m.origin }))) }];
       } catch { return []; }
     });
     const nodes = new Map(reports.map(report => [report.id, report]));
@@ -404,7 +409,7 @@ export class BackgroundService {
   private remoteWorkers = new Map<string, Promise<void>>();
   private incomingRetryAt = new Map<string, number>();
   private readonly remoteAgents = new Map<string, AgentRuntime>();
-  private readonly remoteMessages = new Map<string, Array<{ from: "dima" | "katya"; text: string }>>();
+  private readonly remoteMessages = new Map<string, SharedMessage[]>();
   private readonly answeringQuestions = new Set<string>();
   private updateState: UpdateState = { available: false, downloading: false };
 
@@ -455,7 +460,7 @@ export class BackgroundService {
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
     const history = new Map(this.historyReports(stored).map(report => [report.id, report]));
-    const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр", topicSources: stored.topicSources }).map(report => ({ ...report, parentReportId: report.parentReportId ?? history.get(report.id)?.parentReportId }));
+    const reportSummaries = readReportSummaries(stored.reports, { localOwnerId: stored.owner, localName: stored.displayName || "Вы", peerName: stored.remote?.peerName || "Партнёр", topicSources: stored.topicSources }).map(report => ({ ...report, parentReportId: report.parentReportId ?? history.get(report.id)?.parentReportId, inheritedMessageCount: report.inheritedMessageCount ?? stored.continuations[report.id]?.history.length ?? stored.conversationInheritedCounts[report.id] }));
     const completed = new Set(reportSummaries.map(report => report.id));
     const repairs = supportsRestart(this.options.appVersion) ? repairCandidates([...history.values()], stored.roleRepairCutoffAt)
       .filter(candidate => !Object.entries(stored.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(stored.conversationParents[id]) && (stored.conversationTranscripts[id] || completed.has(id)))) : [];
@@ -473,8 +478,8 @@ export class BackgroundService {
         : continuation?.status === "error" ? continuation.preparedMessage ? "retrying" : "error"
         : pending ? "retrying" : transcript.messages.at(-1)?.from === stored.owner ? "waiting-peer" : "interrupted";
       return { id, parentReportId, activity, restarted: stored.conversationModes[id] === "restart", topic: transcript.topic,
-        inheritedMessageCount: stored.continuations[id]?.history.length ?? reportSummaries.find((report) => report.id === parentReportId)?.messageCount ?? 0,
-        messages: transcript.messages.map((message) => ({ text: message.text, local: message.from === stored.owner,
+        inheritedMessageCount: stored.continuations[id]?.history.length ?? stored.conversationInheritedCounts[id],
+        messages: transcript.messages.map((message) => ({ text: message.text, ...(messageOrigin(message.origin) ? { origin: messageOrigin(message.origin) } : {}), local: message.from === stored.owner,
           speaker: message.from === stored.owner ? stored.displayName || "Вы" : stored.remote?.peerName || "Партнёр" })),
       };
     });
@@ -884,6 +889,7 @@ export class BackgroundService {
       reports: [],
       pendingOwnerQuestions: [],
       conversationTranscripts: {},
+      conversationInheritedCounts: {},
       conversationResetVersion: resetVersion,
       conversationResetAt: new Date().toISOString(),
       ignoredConversationIds: [...conversationIds].slice(-500),
@@ -939,6 +945,7 @@ export class BackgroundService {
       reports: [],
       pendingOwnerQuestions: [],
       conversationTranscripts: {},
+      conversationInheritedCounts: {},
       continuations: {},
       conversationParents: {},
       conversationResetVersion: resetVersion,
@@ -1205,7 +1212,7 @@ export class BackgroundService {
     reportId = existing?.parentReportId ?? thread.latest.id;
     const reportPath = state.reports.find((file) => readReportSummaries([file])[0]?.id === reportId);
     if (!reportPath) throw new Error("Исходный результат не найден. История не изменена.");
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as { topic?: string; topics?: string[]; pairId?: string; messages?: Array<{ from?: string; text?: string; payload?: string }> };
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as { topic?: string; topics?: string[]; pairId?: string; messages?: Array<{ from?: string; text?: string; payload?: string; origin?: unknown }> };
     if (report.pairId && report.pairId !== state.remote.pairId) throw new Error("Этот разговор относится к другому подключению");
     const topic = report.topic || report.topics?.[0] || "Разговор агентов";
     if (state.blockedTopics.some((blocked) => topic.toLowerCase().includes(blocked.toLowerCase()))) throw new Error("Тема заблокирована локальной политикой");
@@ -1274,11 +1281,12 @@ export class BackgroundService {
     }
     const current = await this.store.read();
     if (current.remote?.pairId !== request.pairId) throw new Error("Pair changed");
-    const messages = [...request.history, { from: state.owner, text }];
+    const origin: MessageOrigin = request.mode === "restart" ? "agent" : "continuation";
+    const messages = [...request.history, { from: state.owner, text, origin }];
     this.remoteMessages.set(id, messages);
     await this.persistTranscript(id, request.topic, messages);
     await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
-      payload: { kind: "dialogue", text, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history, mode: request.mode } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
+      payload: { kind: "dialogue", text, origin, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history, mode: request.mode } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
     const next = await this.store.mutate((latest) => ({
       continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
       activeTopics: latest.continuations[id].status === "complete" ? latest.activeTopics : mergeTopicCatalog(latest.activeTopics, [request.topic]),
@@ -1388,11 +1396,11 @@ export class BackgroundService {
     if (!text) throw new Error("Агент не подготовил реплику");
     await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],preparedMessage:text}}}));
     }
-    const messages = [{ from: stored.owner, text }];
+    const messages: SharedMessage[] = [{ from: stored.owner, text, origin: "agent" }];
     this.remoteMessages.set(conversationId, messages);
     await this.persistTranscript(conversationId, topic, messages);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text, topic, status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { kind: "dialogue", text, origin: "agent", topic, status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     const next = await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "waiting"}}, activeTopics:mergeTopicCatalog(current.activeTopics,[topic])}));
     this.emitTopicState(next);
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text, turn: 1 });
@@ -1760,7 +1768,7 @@ export class BackgroundService {
         ? sharedHistory(dialogue.continuation.history) : [];
       if (dialogue.continuation && envelope.sequence_number === 1) {
         if (typeof dialogue.continuation.parentReportId !== "string" || dialogue.continuation.parentReportId.length > 500) throw new Error("Invalid parent conversation");
-        await this.store.mutate((current) => ({ conversationParents: { ...current.conversationParents, [envelope.conversation_id]: dialogue.continuation!.parentReportId },
+        await this.store.mutate((current) => ({ conversationInheritedCounts: { ...current.conversationInheritedCounts, [envelope.conversation_id]: inherited.length }, conversationParents: { ...current.conversationParents, [envelope.conversation_id]: dialogue.continuation!.parentReportId },
           conversationModes: mode ? { ...current.conversationModes, [envelope.conversation_id]: mode } : current.conversationModes }));
       }
       const messages = this.remoteMessages.get(envelope.conversation_id)
@@ -1768,7 +1776,7 @@ export class BackgroundService {
         ?? inherited;
       const delivery = currentTopics.incomingDeliveries[envelope.id];
       const previousMessages = (delivery?.received ? messages.slice(0, delivery.responseSent ? -2 : -1) : messages).map((message) => ({ ...message }));
-      if (!delivery?.received) messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text });
+      if (!delivery?.received) messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text, ...(messageOrigin(dialogue.origin) ? { origin: messageOrigin(dialogue.origin) } : {}) });
       this.remoteMessages.set(envelope.conversation_id, messages);
       const receivedState = await this.store.mutate((current) => ({
         conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },
@@ -1813,8 +1821,8 @@ export class BackgroundService {
       const recipientId = pair.owner_id === me ? pair.partner_id! : pair.owner_id;
       const sequence = envelope.sequence_number + 1;
       await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
-      if (!delivery?.responseSent) messages.push({ from: stored.owner, text: response.message_to_peer });
+        payload: { kind: "dialogue", text: response.message_to_peer, origin: "agent", topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+      if (!delivery?.responseSent) messages.push({ from: stored.owner, text: response.message_to_peer, origin: "agent" });
       const sentState = await this.store.mutate((current) => ({
         conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },
         incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...current.incomingDeliveries[envelope.id], envelope, responseSent: true } },
@@ -1911,12 +1919,12 @@ export class BackgroundService {
         sequence: pending.nextSequence,
         recipientId,
         senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion,
+        payload: { kind: "dialogue", text: response.message_to_peer, origin: "owner-answer", topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion,
           ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history, mode: stored.continuations[pending.conversationId].mode } } : {}),
         } satisfies DialoguePayload,
         idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,
       });
-      const messages = [...pending.transcript, { from: stored.owner, text: response.message_to_peer }];
+      const messages: SharedMessage[] = [...pending.transcript, { from: stored.owner, text: response.message_to_peer, origin: "owner-answer" }];
       this.remoteMessages.set(pending.conversationId, messages);
       await this.persistTranscript(pending.conversationId, pending.topic, messages);
       const pendingOwnerQuestions = stored.pendingOwnerQuestions.filter((item) => item.id !== id);
@@ -1930,7 +1938,7 @@ export class BackgroundService {
     }
   }
 
-  private async persistTranscript(conversationId: string, topic: string, messages: Array<{ from: OwnerId; text: string }>) {
+  private async persistTranscript(conversationId: string, topic: string, messages: SharedMessage[]) {
     const next = await this.store.mutate((state) => ({ conversationTranscripts: { ...state.conversationTranscripts, [conversationId]: { topic, messages: messages.map((message) => ({ ...message })) } } }));
     this.publishConversations(next);
   }
@@ -1946,6 +1954,7 @@ export class BackgroundService {
       conversationId,
       parentReportId: state.conversationParents[conversationId],
       restarted: state.conversationModes[conversationId] === "restart",
+      inheritedMessageCount: state.continuations[conversationId]?.history.length ?? state.conversationInheritedCounts[conversationId],
       cleanContext: Boolean(state.conversationModes[conversationId]),
       pairId: state.remote?.pairId,
       topic,
