@@ -37,12 +37,15 @@ export interface PairState {
 export class SupabaseTransport {
   private readonly client: SupabaseClient;
   private channel?: RealtimeChannel;
+  private lastPairRefresh = 0;
+  private pairRefresh?: Promise<unknown>;
 
   constructor(
     url: string,
     publishableKey: string,
     private readonly encryptionSecret: string,
     storage?: AuthStorage,
+    private readonly preserveIdentity = false,
   ) {
     this.client = createClient(url, publishableKey, {
       auth: { persistSession: true, autoRefreshToken: true, storage },
@@ -50,8 +53,15 @@ export class SupabaseTransport {
   }
 
   async ensureAnonymousIdentity(): Promise<string> {
+    const session = await this.client.auth.getSession();
+    if (session.error) throw session.error;
     const existing = await this.client.auth.getUser();
     if (existing.data.user) return existing.data.user.id;
+    // A failed refresh/network request is NOT a first installation. Replacing
+    // an anonymous identity strands the existing pair and its message queue.
+    if (this.preserveIdentity || session.data.session || existing.error && existing.error.name !== "AuthSessionMissingError") {
+      throw new Error("Не удалось восстановить авторизацию подключения. Прежняя пара сохранена; новая учётная запись не создаётся.");
+    }
     const created = await this.client.auth.signInAnonymously();
     if (created.error || !created.data.user) throw created.error ?? new Error("Anonymous sign-in failed");
     return created.data.user.id;
@@ -78,10 +88,28 @@ export class SupabaseTransport {
   }
 
   async pairState(pairId: string): Promise<PairState> {
-    const result = await this.client.rpc("get_family_pair", { requested_pair_id: pairId });
+    // Await auth initialization/refresh before asking an RLS-protected RPC.
+    // An anonymous RPC can return an empty result for a perfectly intact pair.
+    const session = await this.client.auth.getSession();
+    if (session.error) throw session.error;
+    if (!session.data.session) throw new Error("Нет действующей авторизации подключения. Прежняя пара сохранена.");
+    let result = await this.client.rpc("get_family_pair", { requested_pair_id: pairId });
+    const empty = (value: typeof result) => !value.error && !(Array.isArray(value.data) ? value.data[0] : value.data);
+    if (empty(result) || result.error?.code === "PGRST301" || result.error?.code === "PGRST303") {
+      // Refresh only the EXISTING identity; never join/create a pair to repair
+      // authorization. Coalesce concurrent polling/health/version requests.
+      if (this.pairRefresh || Date.now() - this.lastPairRefresh >= 60_000) {
+        if (!this.pairRefresh) {
+          this.lastPairRefresh = Date.now();
+          this.pairRefresh = this.client.auth.refreshSession().then(({error})=>{if(error)throw error;}).finally(()=>{this.pairRefresh=undefined;});
+        }
+        await this.pairRefresh;
+        result = await this.client.rpc("get_family_pair", { requested_pair_id: pairId });
+      }
+    }
     if (result.error) throw result.error;
     const row = Array.isArray(result.data) ? result.data[0] : result.data;
-    if (!row) throw new Error("Pair not found");
+    if (!row) throw new Error("Текущая авторизация не даёт доступа к сохранённой паре. Подключение не сброшено.");
     return row as PairState;
   }
 
@@ -157,5 +185,10 @@ export class SupabaseTransport {
       )
       .subscribe();
     return () => this.client.removeChannel(this.channel!);
+  }
+
+  dispose(): void {
+    void this.client.auth.stopAutoRefresh();
+    void this.client.removeAllChannels();
   }
 }

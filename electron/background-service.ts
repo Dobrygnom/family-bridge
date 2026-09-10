@@ -13,6 +13,7 @@ import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRef
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
+import { durableAuthStorage } from "./auth-storage.js";
 import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
 import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
@@ -1139,7 +1140,7 @@ export class BackgroundService {
     const stored = await this.store.read();
     if (!stored.identityConfigured) throw new Error("Сначала укажите, как вас называть");
     const counterpartPersonId = this.requireCounterpartPerson(counterpartPersonIdValue);
-    const transport = this.configureRemote("");
+    const transport = this.configureRemote("", false);
     const invite = await transport.createPair();
     await this.store.update({ owner: "dima", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret, counterpartPersonId } });
     this.configureRemote(invite.encryptionSecret);
@@ -1152,7 +1153,7 @@ export class BackgroundService {
     if (!stored.identityConfigured) throw new Error("Сначала укажите, как вас называть");
     const counterpartPersonId = this.requireCounterpartPerson(counterpartPersonIdValue);
     const invite = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")) as PairingInvite & { participantName?: string; appVersion?: string };
-    const transport = this.configureRemote(invite.encryptionSecret);
+    const transport = this.configureRemote(invite.encryptionSecret, false);
     await transport.joinPair(invite);
     await this.store.update({ owner: "katya", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, peerName: invite.participantName?.trim() || undefined, peerVersion: invite.appVersion?.trim() || undefined, counterpartPersonId } });
     await this.activateContextTopics(counterpartPersonId);
@@ -1506,34 +1507,17 @@ export class BackgroundService {
     }
   }
 
-  private configureRemote(secret: string) {
+  private configureRemote(secret: string, preserveIdentity = true) {
     if (this.remoteTimer) clearInterval(this.remoteTimer);
-    this.remote = new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage());
+    this.remote?.dispose();
+    this.remote = new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), preserveIdentity);
     this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
     void this.pumpRemote();
     return this.remote;
   }
 
   private authStorage(): AuthStorage {
-    const file = path.join(this.userData, "supabase-auth.json");
-    const read = (): Record<string, string> => {
-      try { return JSON.parse(readFileSync(file, "utf8")) as Record<string, string>; }
-      catch { return {}; }
-    };
-    return {
-      getItem: (key) => read()[key] ?? null,
-      setItem: (key, value) => {
-        const data = read();
-        data[key] = value;
-        writeFileSync(file, JSON.stringify(data), "utf8");
-      },
-      removeItem: (key) => {
-        const data = read();
-        delete data[key];
-        if (Object.keys(data).length) writeFileSync(file, JSON.stringify(data), "utf8");
-        else rmSync(file, { force: true });
-      },
-    };
+    return durableAuthStorage(this.userData);
   }
 
   private savedTopicBrief(briefs: Record<string, TopicBrief>, topic: string) {
