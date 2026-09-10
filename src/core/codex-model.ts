@@ -2,6 +2,10 @@ import { CodexHistoryClient } from "./codex-history.js";
 
 const ASTRA = "gpt-6-astra";
 
+// Apply at invocation, not in cache identity: changing runtime effort must not
+// discard completed extraction notes or force a full source-chat reanalysis.
+export const CODEX_REASONING_ARGS = ["-c", 'model_reasoning_effort="medium"'];
+
 /** One catalog request for concurrent jobs; failures keep the client's own default. */
 export function createModelResolver(
   listModels: (command: string) => Promise<Array<{ model: string; hidden?: boolean }>>,

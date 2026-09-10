@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import type { TopicBrief } from "./conversation-quality.js";
-import { preferredModelArgs } from "./codex-model.js";
+import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
 import { naturalTopicRules } from "./topic-discovery-prompts.js";
 import { TOPIC_BRIEF_LIMIT, TOPIC_TITLE_LIMIT } from "./topic-limits.js";
 
@@ -88,7 +88,7 @@ export class CodexTopicRefiner implements TopicRefiner {
 
   async refine(input: TopicRefinementInput): Promise<TopicRefinement> {
     await mkdir(this.workspace, { recursive: true });
-    const args = ["exec", ...await preferredModelArgs(this.command), "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
+    const args = ["exec", ...await preferredModelArgs(this.command), ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     const prompt = buildTopicRefinementPrompt(input);
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });

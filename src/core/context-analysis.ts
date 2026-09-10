@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { preferredModelArgs } from "./codex-model.js";
+import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
 import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
 import { buildDiscoveryPrompt, buildTopicSelectionPrompt } from "./topic-discovery-prompts.js";
 import { coveragePrompt, coverageSchema, dialogueGroupingPrompt, selectionEvidence, validateCoverage, TopicCoverageError, type CoverageAnalysis } from "./topic-coverage.js";
@@ -272,7 +272,7 @@ export class CodexContextAnalyzer {
   }
 
   private async run(prompt: string, modelArgs: string[], schemaPath = this.schemaPath): Promise<RawAnalysis> {
-    const args = ["exec", ...modelArgs, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", schemaPath, "-C", this.workspace, "-"];
+    const args = ["exec", ...modelArgs, ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });

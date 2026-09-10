@@ -4,7 +4,7 @@ import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentId, AgentResponse, AgentRuntime } from "./types.js";
-import { preferredModelArgs } from "./codex-model.js";
+import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
 import { agentKnowledgeRules, naturalDialogueStyleRules } from "./agent-context-rules.js";
 
 interface CodexJsonEvent {
@@ -94,7 +94,7 @@ export function buildInitialPrompt(options: CodexRuntimeOptions, initialPrompt: 
   const peerName = options.peerName ?? (options.id === "dima" ? "Катя" : "Дима");
   const language = options.language ?? "ru";
   const examples = options.communicationExamples ?? "Примеры отсутствуют: используй спокойный, прямой и естественный тон.";
-  return `${SYSTEM_RULES}\n\nВо внутренней системе ты обозначен как «Агент ${options.displayName}», но в самом разговоре не произноси это обозначение. Ты говоришь от первого лица как ${ownerName}; к ${peerName} обращайся напрямую на «ты». Не пиши о ${ownerName} и ${peerName} как о третьих лицах.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, owner_question, topics, private_report, shared_summary и comparison_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения, сленг, допустимую резкость и уместный юмор. Это обязательное стилевое ограничение: результат должен звучать так, чтобы владелец узнал свою манеру, а не манеру психолога или корпоративного медиатора. Не копируй чувствительные высказывания дословно и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
+  return `${SYSTEM_RULES}\n\nВо внутренней системе ты обозначен как «Агент ${options.displayName}», но в самом разговоре не произноси это обозначение. Ты говоришь от первого лица как ${ownerName}; к ${peerName} обращайся напрямую на «ты». Не пиши о ${ownerName} и ${peerName} как о третьих лицах.\n\nЯзык сессии: ${languageNames[language]}. Строго пиши на этом языке все текстовые поля JSON: message_to_peer, owner_question, topics, private_report, shared_summary и comparison_summary. Сохраняй выбранный язык на протяжении всей сессии, даже если входящее сообщение написано на другом языке. Имена участников сохраняй в том виде, в котором они указаны в приложении.\n\nПримеры реплик ${ownerName} из выбранного базового чата:\n${examples}\nСамостоятельно определи по этим репликам тон, длину и ритм фраз, прямоту, лексику, пунктуацию, формы обращения, сленг, допустимую резкость и уместный юмор. Самостоятельно отличай устойчивую манеру от случайного состояния, слов-паразитов, оговорок и цитат других людей. Не усиливай частотность сленга, ругани или вводных. Ориентир: результат должен звучать так, чтобы владелец узнал свою манеру в обычном ясном разговоре с близким человеком, а не манеру психолога, корпоративного медиатора или карикатуру на себя. Не копируй чувствительные высказывания дословно и никогда не считай содержание примеров фактами текущего разговора. Примеры задают только форму речи.\n\nЛокальная перспектива ${ownerName}:\n${options.perspective}\n\nПервое входящее сообщение:\n${initialPrompt}`;
 }
 
 export function buildStartInvocation(options: CodexRuntimeOptions, initialPrompt: string) {
@@ -212,7 +212,7 @@ export class CodexCliAgent implements AgentRuntime {
     const selectedArgs = await this.modelArgs;
     return new Promise((resolve, reject) => {
       const commandEnd = args[1] === "resume" ? 2 : 1;
-      const child = spawn(command, [...args.slice(0, commandEnd), ...selectedArgs, ...args.slice(commandEnd)], {
+      const child = spawn(command, [...args.slice(0, commandEnd), ...selectedArgs, ...CODEX_REASONING_ARGS, ...args.slice(commandEnd)], {
         cwd: this.options.workspace,
         windowsHide: true,
         shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),

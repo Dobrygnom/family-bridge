@@ -61,6 +61,7 @@ process.stdin.on("end", () => {
   const args = process.argv.slice(2);
   const modelAt = reviewing ? 2 : 1;
   if (args[0] !== "exec" || (reviewing && args[1] !== "resume") || args[modelAt] !== "--model" || args[modelAt + 1] !== "gpt-6-astra") process.exit(3);
+  if (args[modelAt + 2] !== "-c" || args[modelAt + 3].replaceAll('"', '') !== "model_reasoning_effort=medium") process.exit(4);
   if (!reviewing) console.log(JSON.stringify({ type: "thread.started", thread_id: "autonomy-test-session" }));
   const response = reviewing
     ? { message_to_peer: "Я думаю, нам лучше начать с того, что уже понятно, а детали уточнить потом.", status: "continue", owner_question: "", topics: [], private_report: "", shared_summary: "", comparison_summary: "" }

@@ -28,6 +28,7 @@ import { TOPIC_BRIEF_LIMIT } from "../src/core/topic-limits.js";
 import { reconcileTopicQueue } from "../src/core/topic-queue.js";
 import { resolveHistory, type HistoryReport } from "../src/core/conversation-history.js";
 import { repairCandidates } from "../src/core/conversation-repair.js";
+import { selectCommunicationExamples } from "../src/core/communication-style.js";
 import { messageOrigin, type SharedMessage, type MessageOrigin } from "../src/core/continuation.js";
 import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
 
@@ -1572,7 +1573,7 @@ export class BackgroundService {
       ].filter(Boolean).join("\n\n");
       memory = combinedMemory || memory;
       const examplesFile = path.join(memoryRoot, "style-samples.jsonl");
-      if (existsSync(examplesFile)) communicationExamples = readFileSync(examplesFile, "utf8").slice(-30_000);
+      if (existsSync(examplesFile)) communicationExamples = selectCommunicationExamples(readFileSync(examplesFile, "utf8"));
     } catch { /* optional */ }
     if (topic) {
       const analysis = this.readContextAnalysis();
