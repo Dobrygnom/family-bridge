@@ -64,6 +64,58 @@ test("migrated repair automatically sends its exact saved reply with a UUID and 
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
+for (const outcome of ["sent", "network", "unsafe"] as const) test(`exhausted automatic repair gets one durable reconnect attempt: ${outcome}`, async () => {
+  const f = await fixture();
+  const id = repairRequestId("original-id");
+  let generated = 0;
+  try {
+    await f.store.mutate(s => ({ remote: { ...s.remote!, peerVersion: "1.2.20" },
+      continuations: { [id]: { parentReportId: "original-id", originReportId: "original-id", pairId: "pair", topic: "Звонки", instruction: "Restart", mode: "restart", history: [], status: "error", attempts: 3, retryAt: 0 } },
+      conversationParents: { [id]: "original-id" }, conversationModes: { [id]: "restart" },
+    }));
+    (f.service as any).options.backgroundTasks = true;
+    (f.service as any).recoverLegacyReplies = async () => {};
+    (f.service as any).refreshHealth = () => {};
+    (f.service as any).localRemoteAgent = () => ({ start: async () => { generated++; return response("New reply", outcome === "unsafe" ? "unsafe" : "continue"); } });
+    await (f.service as any).automaticWork();
+    assert.equal((await f.store.read()).continuations[id].attempts, 3, "No retry without fresh connection and healthy agent");
+    (f.service as any).peerPresence = { pairId: "pair", at: new Date().toISOString() };
+    (f.service as any).health = { installed: true, authenticated: true };
+    if (outcome === "network") f.transport.pairState = async () => { throw Error("Network unavailable"); };
+    const original = await readFile(f.report, "utf8");
+    await (f.service as any).automaticWork();
+    await until(async () => !(f.service as any).continuing.has(id));
+    const after = (await f.store.read()).continuations[id];
+    assert.equal(after.attempts, 4);
+    assert.equal(after.connectivityRetryUsed, true);
+    assert.equal(after.status, outcome === "sent" ? "waiting" : "error");
+    assert.equal(after.failureKind, outcome === "sent" ? undefined : outcome === "unsafe" ? "unsafe" : "connection");
+    assert.equal(f.sent.length, outcome === "sent" ? 1 : 0);
+    assert.equal(generated, outcome === "network" ? 0 : 1);
+    assert.equal(await readFile(f.report, "utf8"), original);
+    // A new process cannot spend the recovery budget again.
+    await f.store.mutate(s => ({ continuations: { ...s.continuations, [id]: { ...s.continuations[id], retryAt: 0 } } }));
+    const restarted = new BackgroundService(f.dir, process.cwd(), f.store, () => null, undefined, { backgroundTasks: true });
+    Object.assign(restarted as any, { remote: f.transport, peerPresence: { pairId: "pair", at: new Date().toISOString() }, health: { installed: true, authenticated: true }, recoverLegacyReplies: async () => {}, refreshHealth: () => {}, localRemoteAgent: () => assert.fail("Must not repeat exhausted generation") });
+    await (restarted as any).automaticWork();
+    assert.equal((await f.store.read()).continuations[id].attempts, 4);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("known unsafe repairs and pending owner questions do not consume reconnect retries", async () => {
+  const f = await fixture(), id = repairRequestId("original-id");
+  try {
+    await f.store.mutate(s => ({ remote: { ...s.remote!, peerVersion: "1.2.20" }, continuations: { [id]: { parentReportId: "original-id", pairId: "pair", topic: "Звонки", instruction: "Restart", mode: "restart", history: [], status: "error", attempts: 3, retryAt: 0, failureKind: "unsafe" } } }));
+    Object.assign(f.service as any, { peerPresence: { pairId: "pair", at: new Date().toISOString() }, health: { installed: true, authenticated: true }, recoverLegacyReplies: async () => {}, localRemoteAgent: () => assert.fail("Do not bypass a safety result or owner question") });
+    (f.service as any).options.backgroundTasks = true;
+    await (f.service as any).automaticWork();
+    await f.store.mutate(s => ({ continuations: { [id]: { ...s.continuations[id], failureKind: undefined } }, pendingOwnerQuestions: [{ id: "question", conversationId: id, topic: "Звонки", question: "Private question", createdAt: new Date().toISOString(), nextSequence: 1, transcript: [] }] }));
+    await (f.service as any).automaticWork();
+    assert.equal((await f.store.read()).continuations[id].attempts, 3);
+    assert.equal((await f.store.read()).continuations[id].connectivityRetryUsed, undefined);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
 test("restart sends a clean new attempt, preserves files, and survives an idempotent retry", async () => {
   const f = await fixture();
   try {

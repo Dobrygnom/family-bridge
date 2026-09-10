@@ -15,13 +15,15 @@ export function migrateRepairIdentifiers(state: StoredState): Partial<StoredStat
   let changed = false;
   for (const [oldId, request] of Object.entries(state.continuations)) {
     const match = /^repair-1211-([a-f0-9-]{36})$/i.exec(oldId);
-    if (!match || request.mode !== "restart" || !["error", "starting"].includes(request.status) || !request.preparedMessage) continue;
+    if (!match || request.mode !== "restart" || !["error", "starting"].includes(request.status)) continue;
     // Only migrate unsent first replies. Never change an established dialogue.
-    if ((transcripts[oldId]?.messages.length ?? 0) > request.history.length + 1
+    if ((transcripts[oldId]?.messages.length ?? 0) > request.history.length + (request.preparedMessage ? 1 : 0)
       || state.pendingOwnerQuestions.some(q => q.conversationId === oldId)) continue;
     const id = repairRequestId(match[1]);
     if (continuations[id]) continue;
-    continuations[id] = { ...request, status: "starting", attempts: 0, retryAt: undefined };
+    continuations[id] = request.preparedMessage
+      ? { ...request, status: "starting", attempts: 0, retryAt: undefined }
+      : { ...request, status: "error", retryAt: request.retryAt ?? 0 };
     delete continuations[oldId];
     if (transcripts[oldId]) { transcripts[id] = transcripts[oldId]; delete transcripts[oldId]; }
     parents[id] = parents[oldId] ?? request.parentReportId; delete parents[oldId];

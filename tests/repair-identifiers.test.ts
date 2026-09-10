@@ -27,5 +27,14 @@ test("repair IDs fit the server UUID column, and migration retains prepared text
     // An established exchange is not an unsent launch and must never be remapped.
     const established = { ...before, conversationTranscripts: { [old]: { ...transcript, messages: [...transcript.messages, { from: "dima" as const, text: "Peer already replied" }] } } };
     assert.deepEqual(migrateRepairIdentifiers(established), {});
+    // A pairing failure can happen before any model output exists.
+    const unprepared = { ...before, continuations: { [old]: { ...request, preparedMessage: undefined } }, conversationTranscripts: {} };
+    const fixed = migrateRepairIdentifiers(unprepared);
+    assert.equal(fixed.continuations![old], undefined);
+    assert.equal(fixed.continuations![id].status, "error");
+    assert.equal(fixed.continuations![id].attempts, 3, "Migration must not erase the retry budget");
+    assert.equal(fixed.continuations![id].retryAt, 0);
+    assert.equal(fixed.continuations![id].preparedMessage, undefined);
+    assert.deepEqual(fixed.continuations![id].history, request.history);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

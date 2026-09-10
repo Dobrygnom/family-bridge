@@ -316,12 +316,21 @@ export class BackgroundService {
       const state = await this.store.read();
       if (!state.onboardingComplete || !state.identityConfigured || !state.remote || this.options.experienceResetVersion && state.remote.peerExperienceVersion !== this.options.experienceResetVersion) return;
       try { await this.recoverLegacyReplies(); } catch { this.diagnostics.record("dialogue.recovery-deferred"); }
+      const completed = new Set(readReportSummaries(state.reports).map(report => report.id));
+      const automaticRepairIds = new Set([...completed].map(repairRequestId));
       for (const [id, continuation] of Object.entries(state.continuations)) {
+        if (this.continuing.size >= 3) break;
         if (continuation.pairId !== state.remote.pairId) continue;
-        if (readReportSummaries(state.reports).some(report => report.id === id)) continue;
-        const canRetry = (continuation.attempts ?? 0) < 3 || Boolean(continuation.preparedMessage && this.peerPresence?.pairId === state.remote.pairId && peerIsOnline(this.peerPresence.at));
+        if (completed.has(id)) continue;
+        const peerOnline = this.peerPresence?.pairId === state.remote.pairId && peerIsOnline(this.peerPresence.at);
+        // Old automatic repairs exhausted their budget while pairing/auth was
+        // broken, before preparing any reply. Allow one durable recovery attempt.
+        const recoveryRetry = continuation.mode === "restart" && automaticRepairIds.has(id)
+          && (continuation.attempts ?? 0) >= 3 && !continuation.preparedMessage && !continuation.connectivityRetryUsed
+          && continuation.failureKind !== "unsafe" && Boolean(peerOnline && this.health.installed && this.health.authenticated);
+        const canRetry = continuation.failureKind !== "unsafe" && ((continuation.attempts ?? 0) < 3 || Boolean(continuation.preparedMessage && peerOnline) || recoveryRetry);
         if (!(continuation.status === "starting" || continuation.status === "error" && canRetry && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
-        try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }); }
+        try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }, recoveryRetry); }
         catch { this.diagnostics.record("continuation.resume-deferred"); }
       }
       await this.repairLegacyConversations();
@@ -464,6 +473,7 @@ export class BackgroundService {
     const state = await this.store.read();
     if (logs) this.diagnostics.snapshotProfile(this.userData, "support");
     const analysis = this.readContextAnalysis();
+    const completed = new Set(readReportSummaries(state.reports).map(r => r.id));
     return sanitizeSupportReport({ schema: 1, at: new Date().toISOString(), bootId: this.diagnostics.bootId,
       status: { version: this.options.appVersion, platform: process.platform, arch: process.arch,
         uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000), onboarding: state.onboardingComplete,
@@ -471,13 +481,20 @@ export class BackgroundService {
         topics: analysis?.topics.length ?? 0, people: analysis?.people.length ?? 0, reports: state.reports.length,
         running: this.running, workers: this.remoteWorkers.size, pendingDeliveries: Object.keys(state.incomingDeliveries).length,
         pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
-        continuations: Object.values(state.continuations).filter(c => c.status !== "complete").length,
+        continuations: Object.entries(state.continuations).filter(([id, c]) => c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
         configured: Boolean(state.remote), connected: Date.now() - this.lastPollAt < 30_000 && !this.lastPollCode,
         recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode,
         codexChecked: Boolean(this.healthCheckedAt), codexInstalled: this.health.installed, codexAuthenticated: this.health.authenticated,
         codexVersion: this.health.version, healthAgeSeconds: this.healthCheckedAt ? Math.floor((Date.now() - this.healthCheckedAt) / 1000) : undefined },
       update: { ...this.updateState, error: Boolean(this.updateState.error) },
+      continuations: Object.entries(state.continuations).filter(([, c]) => c.pairId === state.remote?.pairId).map(([id, c]) => ({
+        id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
+        attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
+        active: this.continuing.has(id), messages: state.conversationTranscripts[id]?.messages.length ?? 0,
+        ownerQuestion: state.pendingOwnerQuestions.some(q => q.conversationId === id),
+        connectivityRetryUsed: Boolean(c.connectivityRetryUsed), failureKind: c.failureKind, failureCode: c.failureCode,
+      })),
       events: logs ? supportEvents(this.diagnostics) : [],
     })!;
   }
@@ -1248,7 +1265,7 @@ export class BackgroundService {
     return this.continueReport({ reportId: value?.reportId, requestId: value?.requestId, prompt: "Обсуди исходную тему заново.", restart: true });
   }
 
-  async continueReport(input: unknown) {
+  async continueReport(input: unknown, connectivityRetry = false) {
     if (this.updating) throw new Error("Устанавливаем обновление. Черновик сохранён; попробуйте через несколько секунд.");
     const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown; restart?: unknown } | null;
     if (typeof value?.reportId !== "string" || typeof value.requestId !== "string" || !/^[a-z0-9-]{8,80}$/i.test(value.requestId) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 8_000) throw new Error("Введите уточнение до 8000 символов");
@@ -1287,16 +1304,16 @@ export class BackgroundService {
       const started = await this.store.mutate((current) => {
         if (inProgress(current)) throw new Error("Этот разговор уже продолжается");
         return {
-        continuations: { ...current.continuations, [requestId]: { ...existing, mode, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
+        continuations: { ...current.continuations, [requestId]: { ...existing, mode, connectivityRetryUsed: existing?.connectivityRetryUsed || connectivityRetry, failureKind: undefined, failureCode: undefined, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
         conversationParents: { ...current.conversationParents, [requestId]: reportId },
         conversationModes: mode ? { ...current.conversationModes, [requestId]: mode } : current.conversationModes,
       }; });
       this.publishConversations(started);
       this.diagnostics.record("continuation.start");
-      void this.processContinuation(requestId).catch(async () => {
+      void this.processContinuation(requestId).catch(async (error) => {
         this.continuing.delete(requestId);
-        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], retryAt:Date.now()+60_000, status: current.continuations[requestId].status === "complete" ? "complete" : "error" } } }));
-        this.diagnostics.record("continuation.failed");
+        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], failureCode: supportErrorCode(error), retryAt:Date.now()+60_000, status: current.continuations[requestId].status === "complete" ? "complete" : "error" } } }));
+        this.diagnostics.record("continuation.failed", { code: supportErrorCode(error) });
       }).finally(async () => { this.continuing.delete(requestId); this.publishConversations(await this.store.read()); });
       return this.state();
     } catch (error) { this.continuing.delete(requestId); throw error; }
@@ -1312,30 +1329,33 @@ export class BackgroundService {
     if (!state.remote || !this.remote || state.remote.pairId !== request.pairId) throw new Error("Pair changed");
     if (request.mode && !supportsRestart(state.remote.peerVersion)) throw new Error("Peer does not support restarting conversations");
     const transport = this.remote;
+    await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:"connection"}}}));
     const pair = await transport.pairState(request.pairId);
     const me = await transport.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
     if (!recipientId) throw new Error("Peer has not joined");
     let text = request.preparedMessage;
     if (!text) {
+      await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:"generation"}}}));
       const brief = this.savedTopicBrief(state.topicBriefs, request.topic);
       const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName, request.topic, brief, state.remote.counterpartPersonId, Boolean(request.mode));
       const response = await agent.start(request.mode === "restart"
         ? conversationOpeningPrompt(state.displayName, request.topic, brief)
         : continuationPrompt(request.topic, request.history, request.instruction));
       if (response.status === "unsafe") {
-        await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],attempts:3}}}));
+        await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],attempts:Math.max(3,current.continuations[id].attempts ?? 0),failureKind:"unsafe"}}}));
         throw new Error("Unsafe continuation");
       }
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({ conversationId: id, topic: request.topic, question: response.owner_question, peerName: state.remote.peerName, nextSequence: 1, transcript: request.history });
-        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [id]: { ...current.continuations[id], status: "waiting" } } }));
+        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [id]: { ...current.continuations[id], failureKind: undefined, status: "waiting" } } }));
         return;
       }
       text = response.message_to_peer.trim();
       if (!text) throw new Error("Empty continuation");
       await this.store.mutate((current) => ({ continuations: { ...current.continuations, [id]: { ...current.continuations[id], preparedMessage: text } } }));
     }
+    await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:"delivery"}}}));
     const current = await this.store.read();
     if (current.remote?.pairId !== request.pairId) throw new Error("Pair changed");
     const origin: MessageOrigin = request.mode === "restart" ? "agent" : "continuation";
@@ -1345,7 +1365,7 @@ export class BackgroundService {
     await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
       payload: { kind: "dialogue", text, origin, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history, mode: request.mode } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
     const next = await this.store.mutate((latest) => ({
-      continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
+      continuations: { ...latest.continuations, [id]: { ...latest.continuations[id], failureKind: undefined, failureCode: undefined, status: latest.continuations[id].status === "complete" ? "complete" : "waiting" } },
       activeTopics: latest.continuations[id].status === "complete" ? latest.activeTopics : mergeTopicCatalog(latest.activeTopics, [request.topic]),
     }));
     this.emitTopicState(next);

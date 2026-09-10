@@ -2,7 +2,8 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Diagnostics } from "./diagnostics.js";
 
 // This is a separate, stricter boundary than the LOCAL lifecycle log. Never
-// serialize local paths, arbitrary exception text, identifiers or crash dumps.
+// serialize local paths, arbitrary exception text or crash dumps. Conversation
+// identifiers are allowed only in the dedicated technical continuation schema.
 const events = new Set([
   "startup.begin", "startup.ready", "startup.saved-state", "startup.failed", "process.runtime", "storage.file",
   "crash-capture.started", "crash-capture.failed", "process.previous-unfinished", "process.marker-write-failed",
@@ -11,7 +12,8 @@ const events = new Set([
   "analysis.start", "analysis.progress", "analysis.ready", "analysis.failed", "health.failed",
   "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
   "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
-  "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
+  "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
+  "conversation.repair-started", "conversation.repair-identifiers-migrated",
   "peer-version.sent", "peer-version.received", "peer-version.timeout", "peer-version.error",
   "support.request", "support.received", "support.failed", "support.update-requested", "support.channel-failed", "support.channel-ready",
   "analysis.coverage-recovery", "topic.refinement.start", "topic.refinement.ready", "topic.refinement.failed",
@@ -51,14 +53,29 @@ export function sanitizeSupportFields(value: unknown): Fields {
 }
 export interface SupportReport {
   schema: 1; at: string; bootId: string; status: Fields; update: Fields;
+  continuations?: Array<Fields>;
   events: Array<{ at: string; event: string; fields: Fields }>;
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
 export const supportId = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
+function continuationDiagnostics(value: unknown): Fields[] {
+  const identifier = (v: unknown): v is string => typeof v === "string" && /^(?:repair-1211-)?[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
+  return (Array.isArray(value) ? value : []).slice(-100).flatMap(row => {
+    if (!row || !identifier(row.id) || !identifier(row.parentId)) return [];
+    const safe: Fields = { id: row.id, parentId: row.parentId };
+    for (const key of ["prepared", "completed", "active", "ownerQuestion", "connectivityRetryUsed"]) if (typeof row[key] === "boolean") safe[key] = row[key];
+    for (const key of ["attempts", "messages"]) if (Number.isSafeInteger(row[key]) && row[key] >= 0) safe[key] = row[key];
+    for (const [key, values] of Object.entries({ mode: ["restart", "clean-continuation", "continuation"], status: ["starting", "waiting", "complete", "error"], failureKind: ["unsafe", "connection", "generation", "delivery"], failureCode: [...codes] })) {
+      if (typeof row[key] === "string" && values.includes(row[key])) safe[key] = row[key];
+    }
+    return [safe];
+  });
+}
 export function sanitizeSupportReport(value: unknown): SupportReport | undefined {
   const r = value as SupportReport | null;
   if (!r || r.schema !== 1 || !iso(r.at) || !supportId(r.bootId)) return;
   return { schema: 1, at: r.at, bootId: r.bootId, status: sanitizeSupportFields(r.status), update: sanitizeSupportFields(r.update),
+    ...(Array.isArray(r.continuations) ? { continuations: continuationDiagnostics(r.continuations) } : {}),
     events: (Array.isArray(r.events) ? r.events : []).slice(-120).filter(e => e && iso(e.at) && events.has(e.event))
       .map(e => ({ at: e.at, event: e.event, fields: sanitizeSupportFields(e.fields) })) };
 }

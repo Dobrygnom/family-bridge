@@ -21,6 +21,14 @@ crash dumps are excluded. Error text is classified into fixed technical codes.
 The protocol supports only a diagnostic snapshot and the official app updater.
 It has no shell, arbitrary file read, download URL, script or account-reset action.
 
+Starting with 1.2.21, reports also include up to 100 continuation records for the
+current pair: conversation/parent UUID, mode, status, attempt and message counts,
+prepared/active/completed flags, owner-question presence, recovery-budget flag,
+and fixed failure phase/code. They contain no topic or message text. Completion
+also checks persisted reports, so an old status cannot inflate the pending count.
+These identifiers let support correlate a shared conversation with its stalled
+launch. Earlier receivers omit this optional field.
+
 ## Operator commands
 
 Run from the source checkout on the operator's computer:

@@ -15,6 +15,9 @@ export interface ConversationContinuation {
   originReportId?: string;
   attempts?: number;
   retryAt?: number;
+  connectivityRetryUsed?: boolean;
+  failureKind?: "unsafe" | "connection" | "generation" | "delivery";
+  failureCode?: string;
   parentReportId: string;
   topic: string;
   pairId: string;

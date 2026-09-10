@@ -52,6 +52,13 @@ test("support exports only typed technical fields, including logs from the indep
     assert.equal(safe.events.find(e => e.event === "analysis.progress")?.fields.current, 2);
     assert.equal(supportErrorCode({ code: "PGRST301", message: "private-text" }), "PGRST301");
     assert.equal(supportErrorCode(new Error("Не удалось восстановить авторизацию подключения")), "AUTH");
+    const id = randomUUID(), parentId = randomUUID();
+    const detail = sanitizeSupportReport({ ...report(), continuations: [{ id, parentId, status: "error", mode: "restart", attempts: 3, prepared: false, completed: false, active: false, messages: 0, failureKind: "connection", failureCode: "AUTH", topic: "private", instruction: "secret", preparedMessage: "secret", history: ["secret"] }, { id: "private", parentId }, { id, parentId, failureKind: "private", failureCode: "secret", messages: Infinity }] })!;
+    assert.doesNotMatch(JSON.stringify(detail), /private|secret|Infinity|history|preparedMessage/);
+    assert.equal(detail.continuations?.length, 2);
+    assert.equal(detail.continuations?.[0].id, id);
+    assert.equal(detail.continuations?.[0].failureCode, "AUTH");
+    assert.equal(detail.continuations?.[0].attempts, 3);
   } finally { await f.cleanup(); }
 });
 
@@ -155,6 +162,11 @@ test("support runs during a blocked dialogue pump without an LLM, and preserves 
     const store = new AtomicStore(f.dir);
     await store.update({ remote: { pairId: "pair", encryptionSecret: "secret", peerVersion: "1.2.20" },
       displayName: "Private name", pendingTopics: ["private topic"], identityConfigured: false });
+    const id = randomUUID(), parentId = randomUUID(), otherId = randomUUID();
+    const completedFile = path.join(f.dir, "completed.json");
+    await writeFile(completedFile, JSON.stringify({ conversationId: id, topic: "private topic", completedAt: new Date().toISOString(), messages: [] }));
+    const job = { parentReportId: parentId, pairId: "pair", topic: "private topic", instruction: "private instruction", history: [], status: "error" as const, mode: "restart" as const, attempts: 3 };
+    await store.update({ reports: [completedFile], continuations: { [id]: job, [otherId]: { ...job, pairId: "old-pair" } } });
     const service = new BackgroundService(f.dir, process.cwd(), store, () => null, undefined, { backgroundTasks: false, appVersion: "1.2.20" });
     (service as any).remoteBusy = true;
     (service as any).localRemoteAgent = () => assert.fail("support must not invoke LLM");
@@ -163,7 +175,12 @@ test("support runs during a blocked dialogue pump without an LLM, and preserves 
     f.incoming.push(f.envelope());
     await service.support.tick();
     assert.ok(f.sent.some(s => s.payload.support.replyTo));
-    assert.doesNotMatch(JSON.stringify(f.sent), /private topic|Private name|encryptionSecret|"secret"/);
+    const snapshot = (await (service as any).supportSnapshot(false)) as SupportReport;
+    assert.equal(snapshot.status.continuations, 0, "Persisted report completes a stale error status");
+    assert.equal(snapshot.continuations?.length, 1, "Old-pair attempts are excluded");
+    assert.equal(snapshot.continuations?.[0].id, id);
+    assert.equal(snapshot.continuations?.[0].completed, true);
+    assert.doesNotMatch(JSON.stringify(f.sent), /private topic|private instruction|Private name|encryptionSecret|"secret"/);
     assert.equal(await readFile(path.join(f.dir, "state.json"), "utf8"), before);
   } finally { await f.cleanup(); }
 });
