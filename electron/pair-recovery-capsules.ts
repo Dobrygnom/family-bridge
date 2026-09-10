@@ -1,0 +1,5 @@
+// Authenticated ciphertext only. Capsules can be opened only by installations
+// already holding the matching pair's 256-bit shared secret.
+export const PAIR_RECOVERY_CAPSULES: readonly string[] = [
+  "qkB5tAXpXXi81NIfaJ6AYSnSaOHtYtSA35y8g5xkp6lhfTyslPrXOTghJNcKrgHDI8BT-Q9MHmsenIRT2fXIWne-VH4vgC4cN8v7FfpQ0dmv0hJK9tAx1fvXdJ4zV7vs4PwR733R4cRpx_hR6dzO05nDiN5QpAwL-PdLgTtiehFbQ1JOD3A6ozWkYq-sVCXb4dGZu5RCQelDhSuZYdfjiEHA8Jy97OqDZR9_eaZrneJ16HFU13YlybWD7osGPjM_eCMu46u8tSZNzM_lVbpDNBtrFXytrzrJA9BgpvbWG5hSQbN2cZBD3neUlJw39D1THzk1lj59-i44e_3geC5rxHEn-mXzfajDCwOgz3k9qpElNk30RRKSszgBOfQqgC6oMkLaEQ",
+];

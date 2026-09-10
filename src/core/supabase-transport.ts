@@ -16,6 +16,7 @@ export interface PairingInvite {
 }
 
 export interface RemoteEnvelope<T = unknown> {
+  historicalDelivery?: boolean;
   id: string;
   pair_id: string;
   conversation_id: string;
@@ -173,6 +174,30 @@ export class SupabaseTransport {
       .order("sequence_number", { ascending: true }).limit(100);
     if (result.error) throw result.error;
     return result.data.map(row=>({ ...row, payload:decryptPayload(row.encrypted_payload,this.encryptionSecret) }) as RemoteEnvelope);
+  }
+
+  async readPendingSent(pairId: string): Promise<Array<RemoteEnvelope & { idempotencyKey: string }>> {
+    const me = await this.identity();
+    const rows: Array<RemoteEnvelope & { idempotencyKey: string }> = [];
+    for (let offset = 0; ; offset += 500) {
+      const result = await this.client.from("bridge_messages").select("*")
+        .eq("pair_id", pairId).eq("sender_id", me).in("status", ["pending", "claimed"])
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(offset, offset + 499);
+      if (result.error) throw result.error;
+      rows.push(...result.data.map(row => ({ ...row, idempotencyKey: row.idempotency_key,
+        payload: decryptPayload(row.encrypted_payload, this.encryptionSecret) } as RemoteEnvelope & { idempotencyKey: string })));
+      if (result.data.length < 500) return rows;
+    }
+  }
+
+  async readClaimedReceived(pairId: string): Promise<RemoteEnvelope | null> {
+    const me = await this.identity();
+    const result = await this.client.from("bridge_messages").select("*")
+      .eq("pair_id", pairId).eq("recipient_id", me).eq("status", "claimed")
+      .order("created_at", { ascending: true }).limit(1);
+    if (result.error) throw result.error;
+    const row = result.data[0];
+    return row ? { ...row, payload: decryptPayload(row.encrypted_payload, this.encryptionSecret) } as RemoteEnvelope : null;
   }
 
   subscribe(pairId: string, onWake: () => void): () => Promise<unknown> {

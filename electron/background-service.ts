@@ -16,7 +16,7 @@ import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnv
 import { durableAuthStorage } from "./auth-storage.js";
 import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
-import { AtomicStore, replaceStateFile, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
+import { AtomicStore, replaceStateFile, type StoredState, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
 import { PEER_HEARTBEAT_MS, PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, peerIsOnline, supportsSilentVersionProbe, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
@@ -32,6 +32,9 @@ import { repairCandidates } from "../src/core/conversation-repair.js";
 import { selectCommunicationExamples } from "../src/core/communication-style.js";
 import { messageOrigin, type SharedMessage, type MessageOrigin } from "../src/core/continuation.js";
 import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
+import { openPairRecovery } from "../src/core/pair-recovery.js";
+import { RecoveryTransport } from "../src/core/recovery-transport.js";
+import { PAIR_RECOVERY_CAPSULES } from "./pair-recovery-capsules.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -983,7 +986,7 @@ export class BackgroundService {
       });
       this.emitTopicState(state);
     }
-    if (state.remote && this.options.backgroundTasks !== false) this.configureRemote(state.remote.encryptionSecret);
+    if (state.remote && this.options.backgroundTasks !== false) this.configureRemote(state.remote.encryptionSecret, true, state);
     const savedAnalysis = this.readContextAnalysis();
     const recoveredAnalysis = recoverInterruptedContextAnalysis(savedAnalysis);
     if (recoveredAnalysis && recoveredAnalysis !== savedAnalysis) {
@@ -1507,10 +1510,14 @@ export class BackgroundService {
     }
   }
 
-  private configureRemote(secret: string, preserveIdentity = true) {
+  private configureRemote(secret: string, preserveIdentity = true, savedState?: StoredState) {
     if (this.remoteTimer) clearInterval(this.remoteTimer);
     this.remote?.dispose();
-    this.remote = new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), preserveIdentity);
+    const recovery = savedState?.remote && openPairRecovery(PAIR_RECOVERY_CAPSULES, secret, savedState.remote.pairId);
+    this.remote = recovery
+      ? new RecoveryTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), recovery, savedState!.owner)
+      : new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), preserveIdentity);
+    if (recovery) this.diagnostics.record("connection.recovery-route-enabled");
     this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
     void this.pumpRemote();
     return this.remote;
@@ -1619,7 +1626,7 @@ export class BackgroundService {
       }
       const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
       if (!envelope) return this.drainRemoteInbox();
-      await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
+      if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
       // Service messages must not depend on onboarding, topics, or an LLM.
       if (envelope.payload.topic.startsWith(VERSION_PROBE_PREFIX) || envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
         if (envelope.payload.kind === "topic" && (envelope.payload.requestVersion || envelope.payload.requestUpdateCheck)) {
