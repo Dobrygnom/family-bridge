@@ -14,6 +14,7 @@ import { allowAppPermission } from "../src/core/media-permissions.js";
 import { AutomaticUpdate } from "./automatic-update.js";
 import { Diagnostics } from "./diagnostics.js";
 import { installCrashDiagnostics } from "./crash-diagnostics.js";
+import { startSupportControl } from "./support-control.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -203,12 +204,25 @@ app.whenReady().then(async () => {
       experienceResetVersion: "natural-dialogues-v1",
       reportsExportDirectory: path.join(app.getPath("documents"), "Family Bridge Reports"),
       requestUpdateCheck: () => setTimeout(() => void checkForUpdates(), 0),
+      requestSupportUpdate: () => {
+        setTimeout(() => {
+          void checkForUpdates().then(() => {
+            if (currentUpdate.ready) {
+              updateGate.requestNow();
+              void updateGate.tick();
+            }
+          }).catch(() => service.diagnostics.record("support.failed"));
+        }, 0);
+      },
     },
   );
   service.diagnostics.record('process.runtime', { version: app.getVersion(), executable: process.execPath, userData: app.getPath('userData'), cwd: process.cwd(), updatedLaunch: process.argv.includes('--updated'), agentLaunched: Boolean(process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID) });
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'before-start');
   await service.start();
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'after-start');
+  void startSupportControl(app.getPath("userData"), service.support)
+    .then(server => app.once("will-quit", () => { service.support.stop(); server.close(); }))
+    .catch(() => service.diagnostics.record("support.failed"));
   updateGate = new AutomaticUpdate({
     canInstall: () => app.isPackaged && activeIpc === 0 && (!mainWindow || !rendererUpdateBlocked),
     prepare: async () => {

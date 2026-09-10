@@ -35,6 +35,9 @@ import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.
 import { openPairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
 import { PAIR_RECOVERY_CAPSULES } from "./pair-recovery-capsules.js";
+import { RemoteSupport } from "./remote-support.js";
+import { SupportChannel } from "./support-channel.js";
+import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -112,6 +115,7 @@ interface BackgroundServiceOptions {
   experienceResetVersion?: string;
   reportsExportDirectory?: string;
   requestUpdateCheck?: () => void;
+  requestSupportUpdate?: () => void;
   topicRefiner?: TopicRefiner;
 }
 
@@ -381,6 +385,10 @@ export class BackgroundService {
     return reports;
   }
   readonly diagnostics: Diagnostics;
+  readonly support: RemoteSupport;
+  private lastPollCode?: string;
+  private lastPollAt = 0;
+  private readonly startedAt = Date.now();
   private healthCheck?: Promise<void>;
   private healthCheckedAt = 0;
   private health = { installed: false, authenticated: false, version: "" };
@@ -428,7 +436,51 @@ export class BackgroundService {
     private readonly windowProvider: () => BrowserWindow | null,
     private readonly ownerQuestionNotifier: () => void = () => undefined,
     private readonly options: BackgroundServiceOptions = {},
-  ) { this.diagnostics = new Diagnostics(userData); }
+  ) {
+    this.diagnostics = new Diagnostics(userData);
+    this.support = new RemoteSupport(path.join(userData, "diagnostics", "support"), {
+      context: async () => {
+        if (this.updating) return undefined;
+        const state = await this.store.read(), transport = this.remote;
+        if (!state.remote || !transport) return undefined;
+        const pair = await transport.pairState(state.remote.pairId), me = await transport.identity();
+        const peer = pair.owner_id === me ? pair.partner_id : pair.partner_id === me ? pair.owner_id : undefined;
+        if (!peer || this.remote !== transport) return undefined;
+        return { transport, pairId: state.remote.pairId, me, peer, owner: state.owner, peerVersion: state.remote.peerVersion };
+      },
+      snapshot: logs => this.supportSnapshot(logs),
+      update: () => {
+        const request = this.options.requestSupportUpdate ?? this.options.requestUpdateCheck;
+        if (!request) throw new Error("Updater unavailable");
+        request();
+      },
+      record: (event, code) => this.diagnostics.record(event, { code }),
+    }, Date.now, this.options.backgroundTasks === false ? undefined : new SupportChannel(path.join(userData, "support-channel"),
+      (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
+      async () => { const state = await this.store.read(); return state.remote ? { pairId: state.remote.pairId, owner: state.owner } : undefined; }));
+  }
+
+  private async supportSnapshot(logs: boolean): Promise<SupportReport> {
+    const state = await this.store.read();
+    if (logs) this.diagnostics.snapshotProfile(this.userData, "support");
+    const analysis = this.readContextAnalysis();
+    return sanitizeSupportReport({ schema: 1, at: new Date().toISOString(), bootId: this.diagnostics.bootId,
+      status: { version: this.options.appVersion, platform: process.platform, arch: process.arch,
+        uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000), onboarding: state.onboardingComplete,
+        sourceReady: this.readContextSource()?.status === "ready", analysisStatus: analysis?.status ?? "none",
+        topics: analysis?.topics.length ?? 0, people: analysis?.people.length ?? 0, reports: state.reports.length,
+        running: this.running, workers: this.remoteWorkers.size, pendingDeliveries: Object.keys(state.incomingDeliveries).length,
+        pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
+        continuations: Object.values(state.continuations).filter(c => c.status !== "complete").length,
+        contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
+        configured: Boolean(state.remote), connected: Date.now() - this.lastPollAt < 30_000 && !this.lastPollCode,
+        recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode,
+        codexChecked: Boolean(this.healthCheckedAt), codexInstalled: this.health.installed, codexAuthenticated: this.health.authenticated,
+        codexVersion: this.health.version, healthAgeSeconds: this.healthCheckedAt ? Math.floor((Date.now() - this.healthCheckedAt) / 1000) : undefined },
+      update: { ...this.updateState, error: Boolean(this.updateState.error) },
+      events: logs ? supportEvents(this.diagnostics) : [],
+    })!;
+  }
 
   async state() {
     const stored = await this.store.read();
@@ -1518,6 +1570,7 @@ export class BackgroundService {
       ? new RecoveryTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), recovery, savedState!.owner)
       : new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), preserveIdentity);
     if (recovery) this.diagnostics.record("connection.recovery-route-enabled");
+    if (this.options.backgroundTasks !== false) this.support.start();
     this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
     void this.pumpRemote();
     return this.remote;
@@ -1611,6 +1664,9 @@ export class BackgroundService {
       const pair = await this.remote.pairState(stored.remote.pairId);
       if (!pair.partner_id) return;
       const topicSyncKey = `${pair.id}:${pair.partner_id}`;
+      this.lastPollAt = Date.now();
+      if (this.lastPollCode) this.diagnostics.record("connection.poll-ready");
+      this.lastPollCode = undefined;
       if (this.versionProbePair !== topicSyncKey) {
         this.versionProbePair = topicSyncKey;
         this.beginPeerVersionCheck(stored);
@@ -1626,6 +1682,12 @@ export class BackgroundService {
       }
       const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
       if (!envelope) return this.drainRemoteInbox();
+      if ((envelope.payload as { support?: unknown })?.support) {
+        // Dedicated support polling handles this independently of the dialogue
+        // lock, including already-processed rows. Never turn it into a topic.
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
       if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
       // Service messages must not depend on onboarding, topics, or an LLM.
       if (envelope.payload.topic.startsWith(VERSION_PROBE_PREFIX) || envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
@@ -1675,7 +1737,12 @@ export class BackgroundService {
       // the transport lock, so service messages and other conversations proceed.
       await this.remote.acknowledge(envelope.id);
       return this.drainRemoteInbox();
-    } catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
+    } catch (error) {
+      const code = supportErrorCode(error);
+      if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
+      this.lastPollCode = code;
+      this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+    }
     finally { this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
   }
 

@@ -98,6 +98,12 @@ export class RecoveryTransport extends SupabaseTransport {
       ?? await super.readClaimedReceived(this.route.transportPairId);
     return legacy && this.unwrap(legacy);
   }
+  override async readSupportMessages(pairId: string, since: string): Promise<RemoteEnvelope[]> {
+    this.assertPair(pairId);
+    return (await super.readSupportMessages(this.route.transportPairId, since)).flatMap(row => {
+      try { return [this.unwrap(row)]; } catch { return []; }
+    });
+  }
   override async acknowledge(id: string): Promise<void> {
     await super.acknowledge(this.acknowledgements.get(id) ?? id);
     this.acknowledgements.delete(id);

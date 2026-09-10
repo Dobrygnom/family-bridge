@@ -1,5 +1,8 @@
 # Production diagnostics: Windows Inspector failure, 2026-09-10
 
+For support-enabled builds, use the [remote support operator interface](remote-support.md)
+first. It reads the running application without connecting Electron Inspector.
+
 Do not close a debugger WebSocket while a Runtime.evaluate request is still awaiting its response. In Electron 38.8.6 on Windows this can crash the debugged process in `node::inspector::TcpHolder::WriteRaw`, with access violation `0xC0000005` (read at `0x148`, module offset `0x8383c5`).
 
 The 12:39 local crash on 2026-09-10 followed the diagnostic helper sending a request to schedule `inspector.close()` and immediately closing its WebSocket without awaiting the request's response. The same sequence reproduced a native crash in an isolated Electron process. Awaiting the matching response before closing the socket survived repeated isolated checks.

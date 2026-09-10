@@ -50,6 +50,8 @@ export class SupabaseTransport {
   ) {
     this.client = createClient(url, publishableKey, {
       auth: { persistSession: true, autoRefreshToken: true, storage },
+      global: { fetch: (input, init) => fetch(input, { ...init,
+        signal: AbortSignal.any([AbortSignal.timeout(15_000), ...(init?.signal ? [init.signal] : [])]) }) },
     });
   }
 
@@ -174,6 +176,18 @@ export class SupabaseTransport {
       .order("sequence_number", { ascending: true }).limit(100);
     if (result.error) throw result.error;
     return result.data.map(row=>({ ...row, payload:decryptPayload(row.encrypted_payload,this.encryptionSecret) }) as RemoteEnvelope);
+  }
+
+  async readSupportMessages(pairId: string, since: string): Promise<RemoteEnvelope[]> {
+    const me = await this.identity();
+    const result = await this.client.from("bridge_messages").select("*")
+      .eq("pair_id", pairId).eq("recipient_id", me).gte("created_at", since)
+      .like("idempotency_key", "%support-v1:%").order("created_at", { ascending: false }).limit(100);
+    if (result.error) throw result.error;
+    return result.data.flatMap(row => {
+      try { return [{ ...row, payload: decryptPayload(row.encrypted_payload, this.encryptionSecret) } as RemoteEnvelope]; }
+      catch { return []; } // One malformed envelope must not disable support.
+    }).reverse();
   }
 
   async readPendingSent(pairId: string): Promise<Array<RemoteEnvelope & { idempotencyKey: string }>> {
