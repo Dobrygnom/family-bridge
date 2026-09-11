@@ -6,7 +6,7 @@ import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
 import { isolatedCodexInvocation, codexTaskFailure } from "./codex-isolation.js";
 import { buildInitialPortraits, type PersonPortrait, type RawPortrait } from "./person-portraits.js";
 import { buildDiscoveryPrompt, buildTopicSelectionPrompt } from "./topic-discovery-prompts.js";
-import { coveragePrompt, coverageSchema, dialogueGroupingPrompt, selectionEvidence, validateCoverage, TopicCoverageError, type CoverageAnalysis } from "./topic-coverage.js";
+import { coveragePrompt, coverageSchema, dialogueGroupingPrompt, selectionEvidence, validateCoverage, coverageFailureCode, TopicCoverageError, type CoverageAnalysis } from "./topic-coverage.js";
 
 export interface AnalysisMessage { text: string; created_at?: string }
 
@@ -47,6 +47,7 @@ export interface ContextAnalysis {
   error?: string;
   errorCode?: string;
   coverageRecoveryAttempted?: boolean;
+  coverageRecoveryVersion?: number;
   model?: string;
   sourceThrough?: string;
 }
@@ -58,6 +59,7 @@ export interface RawAnalysis {
 }
 
 export const CONTEXT_ANALYSIS_VERSION = 5;
+export const COVERAGE_RECOVERY_VERSION = 2;
 
 export function contextSourceHash(messages: AnalysisMessage[]): string {
   return createHash("sha256").update(JSON.stringify(messages.map((message) => [message.created_at ?? null, message.text])), "utf8").digest("hex");
@@ -181,7 +183,8 @@ export function routeSensitivity(aboutPersonIds: string[], discussWithPersonId: 
 }
 
 export class CodexContextAnalyzer {
-  constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string) {}
+  constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string,
+    private readonly onCoverageFailure?: (fields: { stage: string; code: string; current: number; total: number }) => void) {}
 
   async analyze(input: { sourceId: string; sourceHash: string; ownerName: string; language: string; messages: AnalysisMessage[]; previous?: ContextAnalysis; onProgress?: (progress: NonNullable<ContextAnalysis["progress"]>) => void | Promise<void> }): Promise<ContextAnalysis> {
     await mkdir(this.workspace, { recursive: true });
@@ -223,15 +226,26 @@ export class CodexContextAnalyzer {
     // Empty is a successful result: all meaningful questions may already exist.
     // Never ask the model to recreate candidates from excluded decisions.
     if (!selection.topics.length) return selection;
-    const grouped = await this.coverageStage(dialogueGroupingPrompt(selection, ownerName, language, evidence), modelArgs, schema, selection.topics, true);
+    const grouped = await this.coverageStage(dialogueGroupingPrompt(selection, ownerName, language, evidence), modelArgs, schema, selection.topics, true, selection);
     return { ...grouped, people: selection.people, portraits: selection.portraits };
   }
 
-  private async coverageStage(prompt: string, modelArgs: string[], schema: string, inputs: Array<{ id: string; discuss_with: string }>, samePeople = false): Promise<CoverageAnalysis> {
+  private async coverageStage(prompt: string, modelArgs: string[], schema: string, inputs: Array<{ id: string; discuss_with: string }>, samePeople = false, registry?: RawAnalysis): Promise<CoverageAnalysis> {
+    let issue = '';
     for (let attempt = 0; attempt < 2; attempt++) {
-      const instruction = attempt ? `${prompt}\nИсправь структурные ссылки: каждому входному id нужно ровно одно решение, каждая выходная тема должна иметь ссылку из decisions; при объединении не меняй адресата. Верни весь исправленный результат.` : prompt;
-      try { return await this.runCached(instruction, modelArgs, [], schema, raw=>validateCoverage(raw as CoverageAnalysis, inputs, samePeople)) as CoverageAnalysis; }
-      catch (error) { if (attempt) { if (error instanceof Error && (error.name === 'AssertionError' || error instanceof TopicCoverageError)) throw new TopicCoverageError(); throw error; } }
+      const instruction = attempt ? `${prompt}\nПроверка результата: ${issue}. Исправь структурные ссылки: каждому входному id нужно ровно одно решение, каждая выходная тема должна иметь ссылку из decisions; при объединении не меняй адресата. Верни весь исправленный результат.` : prompt;
+      try { return await this.runCached(instruction, modelArgs, [], schema, raw => {
+        // Grouping owns only topics/decisions. Validate against the authoritative
+        // people registry before checking references, including cached results.
+        if (registry) { raw.people = registry.people; raw.portraits = registry.portraits; }
+        validateCoverage(raw as CoverageAnalysis, inputs, samePeople);
+      }) as CoverageAnalysis; }
+      catch (error) {
+        if (!(error instanceof Error) || !(error.name === 'AssertionError' || error instanceof TopicCoverageError)) throw error;
+        issue = coverageFailureCode(error);
+        this.onCoverageFailure?.({ stage: samePeople ? 'grouping' : 'selection', code: issue, current: attempt + 1, total: 2 });
+        if (attempt) throw new TopicCoverageError(issue);
+      }
     }
     throw new Error("Topic coverage validation failed");
   }

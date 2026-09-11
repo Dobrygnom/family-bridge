@@ -9,7 +9,23 @@ export interface CoverageAnalysis extends RawAnalysis {
 
 export class TopicCoverageError extends Error {
   readonly code = 'TOPIC_COVERAGE_INVALID';
-  constructor() { super('Не удалось проверить новые темы. Сохранённые темы не изменены. Можно повторить подготовку позже.'); }
+  constructor(readonly issue = 'COVERAGE_STRUCTURE') { super('Не удалось проверить новые темы. Сохранённые темы не изменены. Можно повторить подготовку позже.'); }
+}
+
+/** Fixed codes only: assertion diffs may contain private source text. */
+export function coverageFailureCode(error: Error): string {
+  if (error instanceof TopicCoverageError) return error.issue;
+  const reasons: Record<string, string> = {
+    'Every candidate needs exactly one disposition': 'COVERAGE_CANDIDATES',
+    'Duplicate topic ids': 'COVERAGE_DUPLICATE_TOPIC',
+    'Topic has an invalid recipient or missing content': 'COVERAGE_TOPIC_CONTENT',
+    'Topic has no evidence mapping': 'COVERAGE_NO_EVIDENCE',
+    'Missing disposition reason': 'COVERAGE_NO_REASON',
+    'Unknown output topic': 'COVERAGE_UNKNOWN_TOPIC',
+    'Consolidation must not split a conversation again': 'COVERAGE_SPLIT_TOPIC',
+    'Cannot merge different recipients': 'COVERAGE_RECIPIENT_CHANGED',
+  };
+  return Object.entries(reasons).find(([message]) => error.message.startsWith(message))?.[1] ?? 'COVERAGE_STRUCTURE';
 }
 
 /** One authoritative mapping; never ask the model to repeat its inverse. */

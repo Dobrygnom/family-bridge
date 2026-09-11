@@ -10,7 +10,7 @@ const events = new Set([
   "crash-capture.started", "crash-capture.failed", "process.previous-unfinished", "process.marker-write-failed",
   "process.before-quit", "process.will-quit", "process.quit", "process.child-gone", "process.uncaught-exception", "process.exit",
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
-  "context.read-ready", "context.read-progress", "context.read-failed", "analysis.start", "analysis.progress", "analysis.ready", "analysis.failed", "health.failed",
+  "context.read-ready", "context.read-progress", "context.read-failed", "analysis.start", "analysis.progress", "analysis.coverage-invalid", "analysis.ready", "analysis.failed", "health.failed",
   "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
   "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
   "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",

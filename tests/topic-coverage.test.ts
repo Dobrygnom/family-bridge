@@ -102,15 +102,40 @@ test("production analyzer runs selection and grouping, validates coverage and re
       const schema = JSON.parse(await readFile(schemaFile, "utf8")); assert.ok(schema.properties.decisions); calls++;
       if (calls === 1) { assert.match(prompt, /C2/); return raw(); }
       assert.match(prompt, /ДИАЛОГ/);
-      return { ...raw(), decisions: [{ candidateId: "T1", disposition: "included", topicIds: ["T1"], reason: "Самостоятельный разговор" }] };
+      // Real failure: grouping keeps valid recipient keys but omits people.
+      return { ...raw(), people: [], decisions: [{ candidateId: "T1", disposition: "included", topicIds: ["T1"], reason: "Самостоятельный разговор" }] };
     };
     const part = raw(); part.topics = [part.topics[0], { ...part.topics[0], id: "ignored", title: "Второй эпизод" }];
     const args = [[part], "Олег", "ru", undefined, ["-m", "gpt-6-astra"], []];
     const result = await analyzer.consolidate(...args);
     assert.equal(result.topics.length, 1); assert.equal(calls, 2);
+    assert.deepEqual(result.people, raw().people);
+    const previous = normalizeContextAnalysis(raw(), "source", "old");
+    previous.topics[0] = { ...previous.topics[0], id: "discussed-topic", title: "Уже обсудили", reason: "Сохранённые договорённости", approved: true };
+    const refreshed = normalizeContextAnalysis(result, "source", "new", previous);
+    assert.deepEqual(refreshed.topics.slice(0, previous.topics.length), previous.topics);
+    assert.equal(refreshed.topics.length, previous.topics.length + 1);
+    assert.equal(refreshed.topics.at(-1)?.approved, false);
     await analyzer.consolidate(...args); assert.equal(calls, 2);
     const base = JSON.parse(await readFile("schemas/context-analysis.schema.json", "utf8"));
     assert.equal(coverageSchema(base).properties.topics.maxItems, undefined);
     assert.equal(base.properties.decisions, undefined);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("grouping rejects changed recipients with safe diagnostics and does not retry process failures", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "fb-grouping-errors-"));
+  try {
+    const diagnostics: unknown[] = [];
+    const analyzer = new CodexContextAnalyzer("unused", workspace, path.resolve("schemas/context-analysis.schema.json"), event => diagnostics.push(event)) as any;
+    const registry = raw();
+    registry.people.push({ key: "other", label: "Другой человек", aliases: [], relationship: "" });
+    analyzer.run = async () => { const result = raw(); result.topics[0].discuss_with = "other"; return result; };
+    await assert.rejects(analyzer.coverageStage("grouping", [], analyzer.schemaPath, inputs, true, registry), (error: any) => error.issue === "COVERAGE_RECIPIENT_CHANGED");
+    assert.deepEqual(diagnostics, [1, 2].map(current => ({ stage: "grouping", code: "COVERAGE_RECIPIENT_CHANGED", current, total: 2 })));
+    let calls = 0;
+    analyzer.run = async () => { calls++; throw new Error("Process unavailable"); };
+    await assert.rejects(analyzer.coverageStage("process", [], analyzer.schemaPath, inputs), /Process unavailable/);
+    assert.equal(calls, 1);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });

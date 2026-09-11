@@ -10,7 +10,7 @@ import type { UpdateState } from "./mac-updater.js";
 import { CodexCliAgent, defaultCodexCommand, hasRoleVoiceViolation } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
-import { CONTEXT_ANALYSIS_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage } from "../src/core/context-analysis.js";
+import { CONTEXT_ANALYSIS_VERSION, COVERAGE_RECOVERY_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
@@ -777,12 +777,13 @@ export class BackgroundService {
   private async analyzeContext(sourceId: string, sourceHash: string, messages: AnalysisMessage[], previous?: ContextAnalysis) {
     const analysisStartedAt = Date.now();
     this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
-    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [], coverageRecoveryAttempted: previous?.coverageRecoveryAttempted };
+    const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [], coverageRecoveryAttempted: previous?.coverageRecoveryAttempted, coverageRecoveryVersion: previous?.coverageRecoveryVersion };
     await this.writeContextAnalysis(analyzing, true);
     this.emit({ type: "context-analysis", analysis: analyzing });
     try {
       const stored = await this.store.read();
-      const analyzer = new CodexContextAnalyzer(defaultCodexCommand(), path.join(this.userData, "context-analysis"), path.join(this.resourcesPath, "schemas", "context-analysis.schema.json"));
+      const analyzer = new CodexContextAnalyzer(defaultCodexCommand(), path.join(this.userData, "context-analysis"), path.join(this.resourcesPath, "schemas", "context-analysis.schema.json"),
+        fields => this.diagnostics.record("analysis.coverage-invalid", fields));
       const analysis = await analyzer.analyze({
         sourceId, sourceHash, ownerName: stored.displayName, language: stored.language, messages, previous,
         onProgress: async (progress) => {
@@ -1131,12 +1132,13 @@ export class BackgroundService {
       const coverageFailure = failed?.status === 'error' && (failed.errorCode === 'TOPIC_COVERAGE_INVALID' || failed.error?.includes('Every candidate needs exactly one disposition'));
       // A failed automatic repair must not turn into repeated exports/LLM work.
       // Explicit refresh remains available to retry after the underlying issue changes.
-      if (!force && coverageFailure && failed.coverageRecoveryAttempted) return;
-      if (!force && coverageFailure && !failed.coverageRecoveryAttempted && failed.sourceId === selected.id) {
+      const recoveryAttempted = failed?.coverageRecoveryAttempted && failed.coverageRecoveryVersion === COVERAGE_RECOVERY_VERSION;
+      if (!force && coverageFailure && recoveryAttempted) return;
+      if (!force && coverageFailure && !recoveryAttempted && failed.sourceId === selected.id) {
         const text = readFileSync(path.join(this.userData,'psychologist-memory/style-samples.jsonl'),'utf8');
         const messages = text.split(/\r?\n/).filter(line=>line.trim()).map(line=>JSON.parse(line)) as AnalysisMessage[];
         if (!messages.length || messages.some(message=>typeof message.text!=='string') || contextSourceHash(messages)!==failed.sourceHash) throw new Error('Сохранённые реплики изменились. Проверьте исходный чат перед повторной подготовкой тем.');
-        const marked = await this.writeContextAnalysis({ ...failed, coverageRecoveryAttempted: true });
+        const marked = await this.writeContextAnalysis({ ...failed, coverageRecoveryAttempted: true, coverageRecoveryVersion: COVERAGE_RECOVERY_VERSION });
         this.diagnostics.record('analysis.coverage-recovery');
         this.updateContextSync(true,50);
         try {
