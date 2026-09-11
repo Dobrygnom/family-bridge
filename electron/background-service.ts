@@ -411,6 +411,7 @@ export class BackgroundService {
   readonly support: RemoteSupport;
   private lastPollCode?: string;
   private lastPollAt = 0;
+  private inboxProgress = { received: 0, service: 0, dialogue: 0, staleService: 0, lastReceivedAt: 0, lastDialogueAt: 0 };
   private readonly startedAt = Date.now();
   private healthCheck?: Promise<void>;
   private healthCheckedAt = 0;
@@ -507,6 +508,7 @@ export class BackgroundService {
         codexVersion: this.health.version, healthAgeSeconds: this.healthCheckedAt ? Math.floor((Date.now() - this.healthCheckedAt) / 1000) : undefined },
       update: { ...this.updateState, error: Boolean(this.updateState.error) },
       updateDiagnostics: { ...this.updateDiagnostics(), ...this.options.updateDiagnostics?.() },
+      dialogueDiagnostics: this.dialogueDiagnostics(state),
       continuations: Object.entries(state.continuations).filter(([, c]) => c.pairId === state.remote?.pairId).map(([id, c]) => ({
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
         attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
@@ -579,6 +581,27 @@ export class BackgroundService {
     return { conversationRevision: this.conversationRevision, reports: stored.reports, reportSummaries, liveConversations,
       repairPendingIds: repairs.map(candidate => candidate.rootId), repairWaiting,
       continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, mode: value.mode, status: completed.has(id) ? "complete" as const : value.status })) };
+  }
+
+  private dialogueDiagnostics(state: StoredState) {
+    const reports = this.historyReports(state), completed = new Set(reports.map(r => r.id));
+    return { owner: state.owner, pairId: state.remote?.pairId, peerVersion: state.remote?.peerVersion,
+      compatible: !this.options.experienceResetVersion || state.remote?.peerExperienceVersion === this.options.experienceResetVersion,
+      probeStatus: this.versionProbe?.state.status, probeAgeMs: this.versionProbe ? Math.max(0, Date.now() - Date.parse(this.versionProbe.state.requestedAt)) : undefined,
+      ...this.inboxProgress,
+      repairs: repairCandidates(reports, state.roleRepairCutoffAt).map(candidate => {
+        const id = repairRequestId(candidate.rootId), request = state.continuations[id];
+        const restarted = Object.entries(state.conversationModes).some(([child, mode]) => mode === "restart" && candidate.ids.has(state.conversationParents[child]) && (state.conversationTranscripts[child] || completed.has(child)));
+        return { id: candidate.rootId, requestId: id, initiator: candidate.initiator,
+          reason: restarted ? "restarted" : candidate.initiator !== state.owner ? "peer" : request ? request.status
+            : Object.keys(state.conversationTranscripts).some(child => !completed.has(child) && (candidate.ids.has(child) || candidate.ids.has(state.conversationParents[child]))) ? "active"
+            : this.versionProbe?.state.status !== "received" ? "probe" : "queued" };
+      }),
+      conversations: Object.entries(state.conversationTranscripts).filter(([id, t]) => !completed.has(id) && !t.topic.startsWith(VERSION_PROBE_PREFIX)).map(([id, t]) => ({ id,
+        messages: t.messages.length, lastFromLocal: t.messages.at(-1)?.from === state.owner,
+        pending: Object.values(state.incomingDeliveries).some(d => d.envelope.conversation_id === id), active: this.remoteWorkers.has(id),
+      })),
+    };
   }
 
   private publishConversations(stored: Awaited<ReturnType<AtomicStore["read"]>>) {
@@ -1727,17 +1750,47 @@ export class BackgroundService {
         }
         this.syncedTopicsForPair = topicSyncKey;
       }
-      const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
-      if (!envelope) return this.drainRemoteInbox();
+      // Catch up a bounded batch instead of spending a whole two-second tick on
+      // each old version probe. Always drain durable replies after service work.
+      const seen = new Set<string>(), batchStartedAt = Date.now();
+      for (let count = 0; count < 16 && !this.updating && Date.now() - batchStartedAt < 2_000; count++) {
+        const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
+        if (!envelope || seen.has(envelope.id)) break;
+        seen.add(envelope.id);
+        await this.receiveRemoteEnvelope(envelope, stored, pair);
+      }
+      return this.drainRemoteInbox();
+    } catch (error) {
+      const code = supportErrorCode(error);
+      if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
+      this.lastPollCode = code;
+      this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+    }
+    finally { this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
+  }
+
+  private async receiveRemoteEnvelope(envelope: RemoteEnvelope<TopicPayload | DialoguePayload>, stored: StoredState, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>) {
+      if (!this.remote || !stored.remote) return;
+      this.inboxProgress.received++;
+      this.inboxProgress.lastReceivedAt = Date.now();
       if ((envelope.payload as { support?: unknown })?.support) {
         // Dedicated support polling handles this independently of the dialogue
         // lock, including already-processed rows. Never turn it into a topic.
         await this.remote.acknowledge(envelope.id);
         return;
       }
-      if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
       // Service messages must not depend on onboarding, topics, or an LLM.
       if (envelope.payload.topic.startsWith(VERSION_PROBE_PREFIX) || envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
+        this.inboxProgress.service++;
+        const age = Date.now() - Date.parse(envelope.created_at);
+        // An expired challenge cannot establish presence. Acknowledge it without
+        // generating yet another obsolete response or downgrading peer metadata.
+        if (Number.isFinite(age) && age > 5 * 60_000) {
+          this.inboxProgress.staleService++;
+          await this.remote.acknowledge(envelope.id);
+          return;
+        }
+        if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
         if (envelope.payload.kind === "topic" && (envelope.payload.requestVersion || envelope.payload.requestUpdateCheck)) {
           if (!envelope.payload.requestVersion) this.options.requestUpdateCheck?.();
           await this.shareTopicToPair(envelope.payload.topic, await this.store.read(), pair, true, false);
@@ -1745,6 +1798,7 @@ export class BackgroundService {
         await this.remote.acknowledge(envelope.id);
         return;
       }
+      if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
       if (this.options.experienceResetVersion && envelope.payload.experienceVersion !== this.options.experienceResetVersion && !isKnownLegacyReply(stored, envelope, this.options.experienceResetVersion)) {
         this.diagnostics.record("dialogue.incompatible-version");
         await this.remote.acknowledge(envelope.id);
@@ -1783,14 +1837,9 @@ export class BackgroundService {
       // Acknowledge only after a durable local copy exists. LLM work is outside
       // the transport lock, so service messages and other conversations proceed.
       await this.remote.acknowledge(envelope.id);
-      return this.drainRemoteInbox();
-    } catch (error) {
-      const code = supportErrorCode(error);
-      if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
-      this.lastPollCode = code;
-      this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
-    }
-    finally { this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
+      this.inboxProgress.dialogue++;
+      this.inboxProgress.lastDialogueAt = Date.now();
+      this.diagnostics.record("dialogue.received");
   }
 
   private async drainRemoteInbox() {

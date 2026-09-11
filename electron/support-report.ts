@@ -12,7 +12,7 @@ const events = new Set([
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
   "context.read-ready", "context.read-progress", "context.read-failed", "analysis.start", "analysis.progress", "analysis.coverage-invalid", "analysis.ready", "analysis.failed", "health.failed",
   "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
-  "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
+  "dialogue.received", "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
   "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
   "conversation.repair-started", "conversation.repair-identifiers-migrated",
   "peer-version.sent", "peer-version.received", "peer-version.timeout", "peer-version.error",
@@ -58,10 +58,36 @@ export interface SupportReport {
   schema: 1; at: string; bootId: string; status: Fields; update: Fields;
   continuations?: Array<Fields>;
   updateDiagnostics?: ReturnType<typeof sanitizeUpdateDiagnostics>;
+  dialogueDiagnostics?: ReturnType<typeof sanitizeDialogueDiagnostics>;
   events: Array<{ at: string; event: string; fields: Fields }>;
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
 export const supportId = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
+export function sanitizeDialogueDiagnostics(value: unknown) {
+  const r = value as Record<string, any> | null;
+  if (!r || typeof r !== "object") return undefined;
+  const identifier = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
+  const safe: Fields = {};
+  if (["dima", "katya"].includes(r.owner)) safe.owner = r.owner;
+  if (identifier(r.pairId)) safe.pairId = r.pairId;
+  if (typeof r.peerVersion === "string" && /^\d+\.\d+\.\d+$/.test(r.peerVersion)) safe.peerVersion = r.peerVersion;
+  if (typeof r.compatible === "boolean") safe.compatible = r.compatible;
+  if (["checking", "received", "timeout", "error"].includes(r.probeStatus)) safe.probeStatus = r.probeStatus;
+  for (const key of ["probeAgeMs", "received", "service", "dialogue", "staleService", "lastReceivedAt", "lastDialogueAt"])
+    if (Number.isSafeInteger(r[key]) && r[key] >= 0) safe[key] = r[key];
+  const repairs: Fields[] = (Array.isArray(r.repairs) ? r.repairs : []).slice(0,100).flatMap((row: any) => {
+    if (!row || !identifier(row.id) || !identifier(row.requestId) || !["dima", "katya"].includes(row.initiator)
+      || !["restarted", "peer", "starting", "waiting", "complete", "error", "active", "probe", "queued"].includes(row.reason)) return [];
+    return [{ id: row.id, requestId: row.requestId, initiator: row.initiator, reason: row.reason }];
+  });
+  const conversations: Fields[] = (Array.isArray(r.conversations) ? r.conversations : []).slice(0,100).flatMap((row: any) => {
+    if (!row || !identifier(row.id) || !Number.isSafeInteger(row.messages) || row.messages < 0) return [];
+    const entry: Fields = { id: row.id, messages: row.messages };
+    for (const key of ["lastFromLocal", "pending", "active"]) if (typeof row[key] === "boolean") entry[key] = row[key];
+    return [entry];
+  });
+  return { ...safe, repairs, conversations };
+}
 function continuationDiagnostics(value: unknown): Fields[] {
   const identifier = (v: unknown): v is string => typeof v === "string" && /^(?:repair-1211-)?[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
   return (Array.isArray(value) ? value : []).slice(-100).flatMap(row => {
@@ -97,6 +123,7 @@ export function sanitizeSupportReport(value: unknown): SupportReport | undefined
   if (!r || r.schema !== 1 || !iso(r.at) || !supportId(r.bootId)) return;
   return { schema: 1, at: r.at, bootId: r.bootId, status: sanitizeSupportFields(r.status), update: sanitizeSupportFields(r.update),
     ...(r.updateDiagnostics ? { updateDiagnostics: sanitizeUpdateDiagnostics(r.updateDiagnostics) } : {}),
+    ...(r.dialogueDiagnostics ? { dialogueDiagnostics: sanitizeDialogueDiagnostics(r.dialogueDiagnostics) } : {}),
     ...(Array.isArray(r.continuations) ? { continuations: continuationDiagnostics(r.continuations) } : {}),
     events: (Array.isArray(r.events) ? r.events : []).slice(-120).filter(e => e && iso(e.at) && events.has(e.event))
       .map(e => ({ at: e.at, event: e.event, fields: sanitizeSupportFields(e.fields) })) };

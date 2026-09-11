@@ -11,6 +11,7 @@ import { PEER_VERSION_TIMEOUT_MS, validPeerVersion, VERSION_PROBE_PREFIX, PEER_H
 import { PeerVersionControl } from "../src/ui/PeerVersionControl.js";
 import { ReportContinuation } from "../src/ui/ReportContinuation.js";
 import type { AppState } from "../src/global.js";
+import { sanitizeDialogueDiagnostics } from "../electron/support-report.js";
 
 async function until(check: () => boolean) {
   for (let i = 0; i < 100; i++) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 5)); }
@@ -35,6 +36,54 @@ async function fixture() {
   return { dir, store, service, events, sent, incoming, transport, updateChecks: () => updateChecks,
     cleanup: async () => { clearTimeout((service as any).versionProbeTimer); await rm(dir, { recursive: true, force: true }); } };
 }
+
+test("version backlog is drained in a bounded batch and expired challenges do not create more traffic", async () => {
+  const f = await fixture();
+  try {
+    (f.service as any).versionProbePair = "pair:two";
+    let drained = 0, acknowledged = 0;
+    (f.service as any).drainRemoteInbox = async () => { drained++; };
+    f.transport.acknowledge = async () => { acknowledged++; };
+    for (let i = 0; i < 30; i++) f.incoming.push({ id: `old-${i}`, created_at: new Date(Date.now() - 3600_000).toISOString(),
+      payload: { kind: "topic", versionOnly: true, requestVersion: true, topic: `${VERSION_PROBE_PREFIX}${i}`, senderVersion: "1.2.20" } });
+    await (f.service as any).pumpRemote();
+    assert.equal(acknowledged, 16);
+    assert.equal(f.incoming.length, 14);
+    assert.equal(drained, 1, "Saved replies still run while the control queue is nonempty");
+    assert.equal(f.sent.length, 0, "Expired probes must not multiply the backlog");
+    assert.equal((await f.store.read()).remote?.peerVersion, undefined);
+    await (f.service as any).pumpRemote();
+    assert.equal(acknowledged, 30);
+    assert.equal(drained, 2);
+  } finally { await f.cleanup(); }
+});
+
+test("fresh version challenge behind old traffic resolves in the same poll", async () => {
+  const f = await fixture();
+  try {
+    await f.service.requestPeerVersionCheck();
+    await until(() => f.sent.length === 1);
+    for (let i = 0; i < 8; i++) f.incoming.push({ id: `old-${i}`, created_at: new Date(Date.now() - 3600_000).toISOString(),
+      payload: { kind: "topic", versionOnly: true, topic: `${VERSION_PROBE_PREFIX}${i}`, senderVersion: "1.2.20" } });
+    f.incoming.push({ id: "current", created_at: new Date().toISOString(), payload: { kind: "topic", versionOnly: true,
+      topic: f.sent[0].payload.topic, senderVersion: "1.2.27" } });
+    await (f.service as any).pumpRemote();
+    assert.equal((f.service as any).versionProbe.state.status, "received");
+    assert.ok((f.service as any).peerPresence?.at);
+    assert.equal(f.sent.length, 1);
+    assert.deepEqual((await f.store.read()).reports, []);
+  } finally { await f.cleanup(); }
+});
+
+test("dialogue diagnostics retain waiting reasons without text or credentials", () => {
+  const id = "a58f2717-281f-4e7f-a6e6-a70ae88e5609";
+  const safe = sanitizeDialogueDiagnostics({ owner: "dima", pairId: id, compatible: true, probeStatus: "timeout", dialogue: 0,
+    secret: "secret", text: "private", repairs: [{ id, requestId: id, initiator: "dima", reason: "probe", text: "private" }],
+    conversations: [{ id, messages: 3, lastFromLocal: true, text: "private" }] });
+  assert.equal(safe?.repairs[0].reason, "probe");
+  assert.equal(safe?.conversations[0].messages, 3);
+  assert.doesNotMatch(JSON.stringify(safe), /secret|private/);
+});
 
 test("version probes cannot become topics or dialogues when metadata flags are lost", async () => {
   const f = await fixture();
