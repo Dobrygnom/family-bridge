@@ -156,6 +156,22 @@ test("local control requires its secret, rejects browser origins and exposes onl
   }
 });
 
+test("local blocker diagnostics remain readable when normal state reporting is stuck",async()=>{
+  const f=await fixture(); let installs=0;
+  f.support.status=()=>new Promise(()=>{});
+  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),update:()=>{installs++;return {accepted:true};}});
+  try {
+    const locator=JSON.parse(await readFile(supportLocatorFiles(f.dir)[0],'utf8'));
+    const url=`http://127.0.0.1:${locator.port}`, headers={Authorization:`Bearer ${locator.token}`};
+    const result=await (await fetch(`${url}/local/diagnostics`,{headers,signal:AbortSignal.timeout(1000)})).json();
+    assert.deepEqual(result.blockers,['state_writes']);
+    assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers:{...headers,Origin:'https://evil.test'}})).status,403);
+    assert.equal(installs,0);
+    assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers})).status,200);
+    assert.equal(installs,1);
+  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(supportLocatorFiles(f.dir)[1],{force:true});await f.cleanup();}
+});
+
 test("support runs during a blocked dialogue pump without an LLM, and preserves private state", async () => {
   const f = await fixture();
   try {
@@ -171,12 +187,15 @@ test("support runs during a blocked dialogue pump without an LLM, and preserves 
     (service as any).remoteBusy = true;
     (service as any).localRemoteAgent = () => assert.fail("support must not invoke LLM");
     (service as any).remote = { ...f.context.transport, pairState: async () => ({ id: "pair", owner_id: "me", partner_id: "peer" }), identity: async () => "me" };
+    assert.equal(await service.prepareForUpdate(),false);
     const before = await readFile(path.join(f.dir, "state.json"), "utf8");
     f.incoming.push(f.envelope());
     await service.support.tick();
     assert.ok(f.sent.some(s => s.payload.support.replyTo));
     const snapshot = (await (service as any).supportSnapshot(false)) as SupportReport;
     assert.equal(snapshot.status.continuations, 0, "Persisted report completes a stale error status");
+    assert.equal(snapshot.updateDiagnostics?.quiescing,true);
+    assert.ok(snapshot.updateDiagnostics?.blockers.some(b=>b.operation==='remote_poll'));
     assert.equal(snapshot.continuations?.length, 1, "Old-pair attempts are excluded");
     assert.equal(snapshot.continuations?.[0].id, id);
     assert.equal(snapshot.continuations?.[0].completed, true);

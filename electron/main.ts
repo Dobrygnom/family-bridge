@@ -1,3 +1,4 @@
+import { UpdateActivity } from "./update-activity.js";
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
 import { conversationThreads } from "../src/core/conversation-threads.js";
 import electronUpdater from "electron-updater";
@@ -37,13 +38,17 @@ function publishUpdate(update: UpdateState) {
   service.diagnostics.record('updater.state', { version: update.version, ready: update.ready, downloading: update.downloading, installing: update.installing, waitingFor: update.waitingFor, current: update.progress });
 }
 let activeIpc = 0;
+const ipcActivity = new UpdateActivity();
+const activeChannels = new Map<symbol, { channel: string; startedAt: number }>();
 let preparingUpdate = false;
 let updateGate: AutomaticUpdate;
 function handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: any[]) => any) {
   ipcMain.handle(channel, async (event, ...args) => {
     if (updateInstallIsQuitting || preparingUpdate && channel !== "bridge:update-blocked") throw new Error("Приложение обновляется. Черновики сохранены.");
     activeIpc++;
-    try { return await listener(event, ...args); } finally { activeIpc--; }
+    const token = Symbol(), end = ipcActivity.begin("ipc");
+    activeChannels.set(token, { channel, startedAt: Date.now() });
+    try { return await listener(event, ...args); } finally { activeIpc--; end(); activeChannels.delete(token); }
   });
 }
 let windowsUpdateVersion: string | undefined;
@@ -200,6 +205,7 @@ app.whenReady().then(async () => {
     },
     {
       appVersion: app.getVersion(),
+      updateDiagnostics: () => ({ gate: updateGate?.snapshot(), ipc: [...activeChannels.values()].map(row => ({ ...row, elapsedMs: Math.max(0, Date.now() - row.startedAt) })), rendererBlocked: rendererUpdateBlocked, rendererReason: rendererUpdateReason }),
       conversationResetVersion: "0.3.25",
       experienceResetVersion: "natural-dialogues-v1",
       reportsExportDirectory: path.join(app.getPath("documents"), "Family Bridge Reports"),
@@ -220,7 +226,10 @@ app.whenReady().then(async () => {
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'before-start');
   await service.start();
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'after-start');
-  void startSupportControl(app.getPath("userData"), service.support)
+  void startSupportControl(app.getPath("userData"), service.support, {
+      diagnostics: () => ({ schema: 1, at: new Date().toISOString(), bootId: service.diagnostics.bootId, version: app.getVersion(), update: service.updateDiagnostics(), gate: updateGate?.snapshot(), ipc: [...activeChannels.values()].map(row => ({ ...row, elapsedMs: Math.max(0, Date.now() - row.startedAt) })), rendererBlocked: rendererUpdateBlocked, rendererReason: rendererUpdateReason }),
+      update: () => { if (!currentUpdate.ready) throw new Error("Update not ready"); updateGate.requestNow(); setTimeout(() => void updateGate.tick(), 0); return { accepted: true }; },
+    })
     .then(server => app.once("will-quit", () => { service.support.stop(); server.close(); }))
     .catch(() => service.diagnostics.record("support.failed"));
   updateGate = new AutomaticUpdate({
@@ -228,7 +237,6 @@ app.whenReady().then(async () => {
     prepare: async () => {
       preparingUpdate = true;
       const prepared = await service.prepareForUpdate();
-      if (!prepared) preparingUpdate = false;
       return prepared;
     },
     install: installPreparedUpdate,
@@ -350,7 +358,19 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   if (app.isPackaged) {
-    const automaticUpdateTimer = setInterval(() => void updateGate.tick(), 2_000);
+    let lastUpdateDiagnostic = 0, lastUpdateSignature = "";
+    const automaticUpdateTimer = setInterval(() => {
+      void updateGate.tick();
+      if (!currentUpdate.ready) return;
+      const snapshot = service.updateDiagnostics(), gate = updateGate.snapshot();
+      const blockers = [...snapshot.blockers, ...ipcActivity.snapshot()];
+      const signature = JSON.stringify([gate.phase, rendererUpdateBlocked, rendererUpdateReason, blockers.map(b => [b.operation, b.count, b.startedAt])]);
+      if (signature === lastUpdateSignature && Date.now() - lastUpdateDiagnostic < 30_000) return;
+      lastUpdateSignature = signature; lastUpdateDiagnostic = Date.now();
+      service.diagnostics.record("updater.gate", { stage: gate.phase, elapsedMs: gate.elapsedMs, current: blockers.length, ready: gate.pending });
+      for (const blocker of blockers) service.diagnostics.record("updater.blocker", { operation: blocker.operation, current: blocker.count, startedAt: blocker.startedAt, elapsedMs: blocker.elapsedMs });
+      for (const row of activeChannels.values()) service.diagnostics.record("updater.ipc", { channel: row.channel, startedAt: row.startedAt, elapsedMs: Math.max(0, Date.now() - row.startedAt) });
+    }, 2_000);
     automaticUpdateTimer.unref();
     autoUpdater.logger = null;
     if (process.platform === "darwin") {

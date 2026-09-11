@@ -11,7 +11,7 @@ export function supportLocatorFiles(userData: string) {
     path.join(os.tmpdir(), `family-bridge-support-${key}.json`)];
 }
 /** Local operator access without Electron Inspector or a second profile writer. */
-export async function startSupportControl(userData: string, support: RemoteSupport): Promise<Server> {
+export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; update: () => unknown }): Promise<Server> {
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   const server = createServer((req, res) => {
@@ -23,6 +23,8 @@ export async function startSupportControl(userData: string, support: RemoteSuppo
     }
     req.resume();
     void (async () => {
+      if (local && req.method === "GET" && req.url === "/local/diagnostics") return local.diagnostics();
+      if (local && req.method === "POST" && req.url === "/local/update") return local.update();
       if (req.method === "GET" && req.url === "/status") return support.status();
       if (req.method === "POST" && req.url === "/peer/snapshot") return support.request("snapshot");
       if (req.method === "POST" && req.url === "/peer/update") return support.request("update");

@@ -1,3 +1,4 @@
+import { UpdateActivity } from "./update-activity.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -128,6 +129,7 @@ export async function replaceStateFile(temporary: string, destination: string) {
 }
 
 export class AtomicStore {
+  readonly updateActivity = new UpdateActivity();
   private readonly file: string;
   private pending: Promise<void> = Promise.resolve();
 
@@ -167,7 +169,7 @@ export class AtomicStore {
       await replaceStateFile(temporary, this.file);
       return next;
     });
-    this.pending = operation.then(() => undefined, () => undefined);
+    this.pending = this.updateActivity.track("state_writes", operation).then(() => undefined, () => undefined);
     return operation;
   }
 }

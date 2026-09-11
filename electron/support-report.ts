@@ -1,3 +1,4 @@
+import { updateOperations, updateIpcChannels } from "./update-activity.js";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Diagnostics } from "./diagnostics.js";
 
@@ -10,7 +11,7 @@ const events = new Set([
   "process.before-quit", "process.will-quit", "process.quit", "process.child-gone", "process.uncaught-exception", "process.exit",
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
   "analysis.start", "analysis.progress", "analysis.ready", "analysis.failed", "health.failed",
-  "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
+  "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
   "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
   "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
   "conversation.repair-started", "conversation.repair-identifiers-migrated",
@@ -18,7 +19,7 @@ const events = new Set([
   "support.request", "support.received", "support.failed", "support.update-requested", "support.channel-failed", "support.channel-ready",
   "analysis.coverage-recovery", "topic.refinement.start", "topic.refinement.ready", "topic.refinement.failed",
 ]);
-const codes = new Set(["ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
+const codes = new Set(["CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
 export function supportErrorCode(error: unknown): string {
   const e = error as { code?: unknown; message?: unknown; cause?: { code?: unknown } } | null;
   for (const code of [e?.code, e?.cause?.code]) if (typeof code === "string" && codes.has(code)) return code;
@@ -30,13 +31,15 @@ export function supportErrorCode(error: unknown): string {
 }
 
 type Fields = Record<string, string | number | boolean>;
-const numeric = new Set(["people", "topics", "reports", "current", "total", "elapsedMs", "size", "uptimeSeconds", "workers", "pendingDeliveries", "continuations", "pendingQuestions", "pendingTopics", "progress", "healthAgeSeconds"]);
+const numeric = new Set(["exitCode","startedAt","people", "topics", "reports", "current", "total", "elapsedMs", "size", "uptimeSeconds", "workers", "pendingDeliveries", "continuations", "pendingQuestions", "pendingTopics", "progress", "healthAgeSeconds"]);
 const booleans = new Set(["onboarding", "sourceReady", "ready", "available", "checking", "downloading", "installing", "installRequested", "updatedLaunch", "agentLaunched", "running", "contextSyncing", "portraitsUpdating", "configured", "connected", "codexChecked", "codexInstalled", "codexAuthenticated", "error", "recoveryRoute"]);
 const enums: Record<string, readonly string[]> = {
+  analysisCode: [...codes],
+  operation: updateOperations, channel: updateIpcChannels,
   platform: ["win32", "darwin", "linux"], arch: ["x64", "arm64", "ia32"],
   analysisStatus: ["ready", "analyzing", "error", "other", "none"],
   fileKind: ["state", "source", "analysis"], waitingFor: ["activity", "dictation", "editing", "background"],
-  stage: ["extract", "select", "merge", "coverage", "before-start", "after-start", "renderer-snapshot", "support", "update", "application", "uncaughtException", "unhandledRejection", "GPU", "Utility"],
+  stage: ["idle", "preparing", "background", "activity", "installing", "retry", "complete","extract", "select", "merge", "coverage", "before-start", "after-start", "renderer-snapshot", "support", "update", "application", "uncaughtException", "unhandledRejection", "GPU", "Utility"],
 };
 export function sanitizeSupportFields(value: unknown): Fields {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -54,6 +57,7 @@ export function sanitizeSupportFields(value: unknown): Fields {
 export interface SupportReport {
   schema: 1; at: string; bootId: string; status: Fields; update: Fields;
   continuations?: Array<Fields>;
+  updateDiagnostics?: ReturnType<typeof sanitizeUpdateDiagnostics>;
   events: Array<{ at: string; event: string; fields: Fields }>;
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
@@ -71,10 +75,28 @@ function continuationDiagnostics(value: unknown): Fields[] {
     return [safe];
   });
 }
+export function sanitizeUpdateDiagnostics(value: unknown) {
+  const r = value as Record<string, any> | null;
+  if (!r || typeof r !== "object") return undefined;
+  const number = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  const gate: Fields = {};
+  for (const key of ["pending", "checking"]) if (typeof r.gate?.[key] === "boolean") gate[key] = r.gate[key];
+  for (const key of ["phaseStartedAt", "elapsedMs", "retryAfter"]) if (number(r.gate?.[key])) gate[key] = r.gate[key];
+  if (["idle", "activity", "preparing", "background", "installing", "retry", "complete"].includes(r.gate?.phase)) gate.phase = r.gate.phase;
+  const rows = (input: unknown, key: string, allowed: readonly string[]): Fields[] => (Array.isArray(input) ? input : []).slice(0, 80).flatMap(row => {
+    if (!row || !allowed.includes(row[key]) || !number(row.startedAt) || !number(row.elapsedMs)) return [];
+    return [{ [key]: row[key], startedAt: row.startedAt, elapsedMs: row.elapsedMs, ...(number(row.count) ? { count: row.count } : {}) }];
+  });
+  return { quiescing: r.quiescing === true, ...(number(r.drainStartedAt) ? { drainStartedAt: r.drainStartedAt } : {}),
+    gate, blockers: rows(r.blockers, "operation", updateOperations), ipc: rows(r.ipc, "channel", updateIpcChannels),
+    rendererBlocked: r.rendererBlocked === true,
+    ...(["activity", "editing", "dictation"].includes(r.rendererReason) ? { rendererReason: r.rendererReason as string } : {}) };
+}
 export function sanitizeSupportReport(value: unknown): SupportReport | undefined {
   const r = value as SupportReport | null;
   if (!r || r.schema !== 1 || !iso(r.at) || !supportId(r.bootId)) return;
   return { schema: 1, at: r.at, bootId: r.bootId, status: sanitizeSupportFields(r.status), update: sanitizeSupportFields(r.update),
+    ...(r.updateDiagnostics ? { updateDiagnostics: sanitizeUpdateDiagnostics(r.updateDiagnostics) } : {}),
     ...(Array.isArray(r.continuations) ? { continuations: continuationDiagnostics(r.continuations) } : {}),
     events: (Array.isArray(r.events) ? r.events : []).slice(-120).filter(e => e && iso(e.at) && events.has(e.event))
       .map(e => ({ at: e.at, event: e.event, fields: sanitizeSupportFields(e.fields) })) };

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {BackgroundService} from "../electron/background-service.js";
 import {AtomicStore} from "../electron/store.js";
+import {AutomaticUpdate} from "../electron/automatic-update.js";
 const answer={status:"continue",message_to_peer:"Prepared safe reply",owner_question:"",shared_summary:"",comparison_summary:"",topics:[],private_report:""};
 async function fixture(){
   const dir=await mkdtemp(path.join(os.tmpdir(),'fb-auto-recovery-'));
@@ -54,6 +55,44 @@ test("automatic update waits for active workers but does not need a conversation
     assert.equal(await f.service.prepareForUpdate(),true);
     assert.equal((await f.store.read()).conversationTranscripts.live.messages.length,1);
     f.service.cancelPreparedUpdate();
+  }finally{await rm(f.dir,{recursive:true,force:true});}
+});
+
+test("update claims a pause while polling is busy and prevents the next timer from starving installation", async()=>{
+  const f=await fixture(); let finish!:()=>void, reached!:()=>void, polls=0, installs=0;
+  const entered=new Promise<void>(resolve=>{reached=resolve;});
+  const response=new Promise<null>(resolve=>{finish=()=>resolve(null);});
+  const service=f.service as any;
+  service.options.backgroundTasks=true;
+  service.beginPeerVersionCheck=()=>{};
+  service.remote={...f.transport,claimNext:async()=>{polls++;reached();return response;}};
+  const gate=new AutomaticUpdate({canInstall:()=>true,prepare:()=>f.service.prepareForUpdate(),install:async()=>{installs++;},resume:()=>f.service.cancelPreparedUpdate(),failed:()=>assert.fail()});
+  try {
+    const first=service.pumpRemote(); await entered;
+    gate.ready(); await gate.tick();
+    assert.equal(installs,0);
+    assert.equal(f.service.updateDiagnostics().quiescing,true);
+    assert.ok(f.service.updateDiagnostics().blockers.some(b=>b.operation==='remote_poll'));
+    finish(); await first;
+    // Reproduce the production ordering: inbox timer fires BEFORE updater.
+    await service.pumpRemote(); await gate.tick();
+    assert.equal(polls,1,'No new poll after the update has requested a pause');
+    assert.equal(installs,1,'Installation completes without any quit or manual retry');
+    f.service.cancelPreparedUpdate();
+    await service.pumpRemote(); assert.equal(polls,2,'A cancelled update resumes polling');
+  } finally {finish();await rm(f.dir,{recursive:true,force:true});}
+});
+
+test("an inbox read that finishes after quiescing cannot start another model worker",async()=>{
+  const f=await fixture();
+  try {
+    await f.store.update({incomingDeliveries:{pending:{envelope:{id:'pending',conversation_id:'c',sequence_number:1} as any}}});
+    const service=f.service as any;
+    service.processIncomingDialogue=()=>assert.fail('No new generation during update');
+    const draining=service.drainRemoteInbox();
+    await f.service.prepareForUpdate();
+    await draining;
+    assert.equal(Object.keys((await f.store.read()).incomingDeliveries).length,1,'Deferred delivery stays durable');
   }finally{await rm(f.dir,{recursive:true,force:true});}
 });
 

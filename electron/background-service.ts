@@ -1,3 +1,4 @@
+import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -109,6 +110,7 @@ export interface ReportSummaryView {
 }
 
 interface BackgroundServiceOptions {
+  updateDiagnostics?: () => Record<string, unknown>;
   backgroundTasks?: boolean;
   appVersion?: string;
   conversationResetVersion?: string;
@@ -257,8 +259,11 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
 }
 
 export class BackgroundService {
+  private readonly updateActivity = new UpdateActivity();
   private updating = false;
-  private automaticBusy = false;
+  private updateDrainStartedAt?: number;
+  private get automaticBusy() { return this.updateActivity.flag("automatic_dispatch"); }
+  private set automaticBusy(value: boolean) { this.updateActivity.flag("automatic_dispatch", value); }
   private recoveredLegacyReplies = false;
   private legacyRecoveryRetryAt = 0;
 
@@ -281,17 +286,23 @@ export class BackgroundService {
     }
     this.recoveredLegacyReplies = true;
   }
-  private launchPromises = new Map<string, Promise<void>>();
+  private launchPromises = new ActivityMap<string, Promise<void>>(this.updateActivity, "topic_launches");
+
+  updateDiagnostics() {
+    return { quiescing: this.updating, drainStartedAt: this.updateDrainStartedAt,
+      blockers: [...this.updateActivity.snapshot(), ...this.store.updateActivity.snapshot()] };
+  }
 
   async prepareForUpdate() {
-    if (this.updating) return false;
-    if (this.running || this.automaticBusy || this.remoteBusy || this.remoteWorkers.size || this.launchPromises.size || this.continuing.size || this.answeringQuestions.size || this.contextSyncing || this.contextCheckBusy || this.portraitsUpdating) return false;
+    // Claim the pause BEFORE checking work. Otherwise the two-second inbox timer
+    // can win every two-second updater tick and installation starves forever.
     this.updating = true;
-    await Promise.all([this.topicEdits, this.analysisWrites, this.portraitUpdates]);
-    await this.store.read();
-    return true;
+    this.updateDrainStartedAt ??= Date.now();
+    if (this.updateActivity.snapshot().length || this.store.updateActivity.snapshot().length) return false;
+    await this.updateActivity.track("save_barrier", Promise.all([this.topicEdits, this.analysisWrites, this.portraitUpdates]).then(() => this.store.read()));
+    return this.updating;
   }
-  cancelPreparedUpdate() { this.updating = false; }
+  cancelPreparedUpdate() { this.updating = false; this.updateDrainStartedAt = undefined; }
 
   private async reconcileApprovedTopics() {
     const analysis = this.readContextAnalysis();
@@ -319,7 +330,7 @@ export class BackgroundService {
       const completed = new Set(readReportSummaries(state.reports).map(report => report.id));
       const automaticRepairIds = new Set([...completed].map(repairRequestId));
       for (const [id, continuation] of Object.entries(state.continuations)) {
-        if (this.continuing.size >= 3) break;
+        if (this.updating || this.continuing.size >= 3) break;
         if (continuation.pairId !== state.remote.pairId) continue;
         if (completed.has(id)) continue;
         const peerOnline = this.peerPresence?.pairId === state.remote.pairId && peerIsOnline(this.peerPresence.at);
@@ -333,11 +344,12 @@ export class BackgroundService {
         try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }, recoveryRetry); }
         catch { this.diagnostics.record("continuation.resume-deferred"); }
       }
+      if (this.updating) return;
       await this.repairLegacyConversations();
       const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && job.attempts < 3 && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
       const pending = state.pendingTopics.filter(topic=>state.topicSources[topic]?.includes("local") && !state.activeTopics.includes(topic) && !state.blockedTopics.some(blocked=>topic.toLowerCase().includes(blocked.toLowerCase())) && !Object.values(state.topicLaunches).some(job=>job.pairId===state.remote!.pairId && topicKey(job.topic)===topicKey(topic)));
       for (const topic of mergeTopicCatalog(retry, pending)) {
-        if (this.launchPromises.size >= 3) break;
+        if (this.updating || this.launchPromises.size >= 3) break;
         if (this.launchPromises.has(topicKey(topic))) continue;
         void this.startRemoteConversation(topic).catch(error=>this.emit({ type:"error", error:error instanceof Error ? error.message : String(error) }));
       }
@@ -407,32 +419,37 @@ export class BackgroundService {
 
   private serializeTopicEdit<T>(action: () => Promise<T>): Promise<T> {
     const operation = this.topicEdits.then(action);
-    this.topicEdits = operation.catch(() => undefined);
+    this.topicEdits = this.updateActivity.track("topic_edits", operation).catch(() => undefined);
     return operation;
   }
   private portraitUpdates: Promise<void> = Promise.resolve();
-  private portraitsUpdating = false;
+  private get portraitsUpdating() { return this.updateActivity.flag("portraits"); }
+  private set portraitsUpdating(value: boolean) { this.updateActivity.flag("portraits", value); }
   private syncOperation?: Promise<Awaited<ReturnType<BackgroundService["state"]>>>;
-  private readonly continuing = new Set<string>();
-  private running = false;
+  private readonly continuing = new ActivitySet<string>(this.updateActivity, "continuations");
+  private get running() { return this.updateActivity.flag("conversation"); }
+  private set running(value: boolean) { this.updateActivity.flag("conversation", value); }
   private remote?: SupabaseTransport;
   private remoteTimer?: NodeJS.Timeout;
   private contextTimer?: NodeJS.Timeout;
-  private contextSyncing = false;
+  private get contextSyncing() { return this.updateActivity.flag("context_sync"); }
+  private set contextSyncing(value: boolean) { this.updateActivity.flag("context_sync", value); }
   private contextSyncProgress = 0;
-  private contextCheckBusy = false;
+  private get contextCheckBusy() { return this.updateActivity.flag("context_check"); }
+  private set contextCheckBusy(value: boolean) { this.updateActivity.flag("context_check", value); }
   private lastContextCheckAt = 0;
   private syncedTopicsForPair?: string;
   private versionProbePair?: string;
   private versionProbe?: { topic: string; pairId: string; automatic?: boolean; state: PeerVersionCheck };
   private peerPresence?: { pairId: string; at: string };
   private versionProbeTimer?: NodeJS.Timeout;
-  private remoteBusy = false;
-  private remoteWorkers = new Map<string, Promise<void>>();
+  private get remoteBusy() { return this.updateActivity.flag("remote_poll"); }
+  private set remoteBusy(value: boolean) { this.updateActivity.flag("remote_poll", value); }
+  private remoteWorkers = new ActivityMap<string, Promise<void>>(this.updateActivity, "remote_workers");
   private incomingRetryAt = new Map<string, number>();
   private readonly remoteAgents = new Map<string, AgentRuntime>();
   private readonly remoteMessages = new Map<string, SharedMessage[]>();
-  private readonly answeringQuestions = new Set<string>();
+  private readonly answeringQuestions = new ActivitySet<string>(this.updateActivity, "owner_answers");
   private updateState: UpdateState = { available: false, downloading: false };
 
   private static readonly supabaseUrl = "https://knqaygvvqrwmtyqucbsz.supabase.co";
@@ -449,7 +466,6 @@ export class BackgroundService {
     this.diagnostics = new Diagnostics(userData);
     this.support = new RemoteSupport(path.join(userData, "diagnostics", "support"), {
       context: async () => {
-        if (this.updating) return undefined;
         const state = await this.store.read(), transport = this.remote;
         if (!state.remote || !transport) return undefined;
         const pair = await transport.pairState(state.remote.pairId), me = await transport.identity();
@@ -477,7 +493,7 @@ export class BackgroundService {
     return sanitizeSupportReport({ schema: 1, at: new Date().toISOString(), bootId: this.diagnostics.bootId,
       status: { version: this.options.appVersion, platform: process.platform, arch: process.arch,
         uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000), onboarding: state.onboardingComplete,
-        sourceReady: this.readContextSource()?.status === "ready", analysisStatus: analysis?.status ?? "none",
+        sourceReady: this.readContextSource()?.status === "ready", analysisStatus: analysis?.status ?? "none", analysisCode: analysis?.errorCode,
         topics: analysis?.topics.length ?? 0, people: analysis?.people.length ?? 0, reports: state.reports.length,
         running: this.running, workers: this.remoteWorkers.size, pendingDeliveries: Object.keys(state.incomingDeliveries).length,
         pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
@@ -488,6 +504,7 @@ export class BackgroundService {
         codexChecked: Boolean(this.healthCheckedAt), codexInstalled: this.health.installed, codexAuthenticated: this.health.authenticated,
         codexVersion: this.health.version, healthAgeSeconds: this.healthCheckedAt ? Math.floor((Date.now() - this.healthCheckedAt) / 1000) : undefined },
       update: { ...this.updateState, error: Boolean(this.updateState.error) },
+      updateDiagnostics: { ...this.updateDiagnostics(), ...this.options.updateDiagnostics?.() },
       continuations: Object.entries(state.continuations).filter(([, c]) => c.pairId === state.remote?.pairId).map(([id, c]) => ({
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
         attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
@@ -751,11 +768,12 @@ export class BackgroundService {
       await replaceStateFile(temporary, file);
       return saved;
     });
-    this.analysisWrites = operation.then(() => undefined, () => undefined);
+    this.analysisWrites = this.updateActivity.track("analysis_writes", operation).then(() => undefined, () => undefined);
     return operation;
   }
 
   private async analyzeContext(sourceId: string, sourceHash: string, messages: AnalysisMessage[], previous?: ContextAnalysis) {
+    const analysisStartedAt = Date.now();
     this.diagnostics.record("analysis.start", { people: previous?.people.length ?? 0, topics: previous?.topics.length ?? 0 });
     const analyzing: ContextAnalysis = { analysisVersion: CONTEXT_ANALYSIS_VERSION, sourceId, sourceHash, analyzedAt: new Date().toISOString(), status: "analyzing", people: previous?.people ?? [], portraits: previous?.portraits ?? [], topics: previous?.topics ?? [], coverageRecoveryAttempted: previous?.coverageRecoveryAttempted };
     await this.writeContextAnalysis(analyzing, true);
@@ -782,8 +800,8 @@ export class BackgroundService {
       this.emit({ type: "context-analysis", analysis: saved });
       return saved;
     } catch (error) {
-      this.diagnostics.record("analysis.failed");
-      const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error), errorCode: (error as {code?: string})?.code === 'TOPIC_COVERAGE_INVALID' ? 'TOPIC_COVERAGE_INVALID' : undefined };
+      this.diagnostics.record("analysis.failed", { code: supportErrorCode(error), elapsedMs: Date.now() - analysisStartedAt, exitCode: (error as { exitCode?: number })?.exitCode });
+      const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error), errorCode: supportErrorCode(error) };
       const saved = await this.writeContextAnalysis(failed, true);
       this.emit({ type: "context-analysis", analysis: saved });
       throw error;
@@ -1767,7 +1785,9 @@ export class BackgroundService {
   }
 
   private async drainRemoteInbox() {
+    if (this.updating) return;
     const stored = await this.store.read();
+    if (this.updating) return;
     const work: Promise<void>[] = [];
     const considered = new Set<string>();
     for (const { envelope } of Object.values(stored.incomingDeliveries).sort((a, b) => a.envelope.sequence_number - b.envelope.sequence_number)) {
@@ -2117,7 +2137,7 @@ export class BackgroundService {
         this.emit({ type: "portraits-updating", updating: false });
       }
     });
-    this.portraitUpdates = operation.catch(() => undefined);
+    this.portraitUpdates = this.updateActivity.track("portrait_queue", operation).catch(() => undefined);
   }
 
   async addTopic(topic: string) {

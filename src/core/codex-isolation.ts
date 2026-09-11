@@ -23,5 +23,5 @@ export function codexTaskFailure(task: string, code: number | null, output: stri
   if (/unexpected argument.*--ignore-user-config|unrecognized.*ignore-user-config/is.test(output)) {
     return Object.assign(new Error("Для безопасной фоновой обработки обновите Codex. Этот клиент не поддерживает изолированный запуск; обработка остановлена."), { code: "CODEX_ISOLATION_UNSUPPORTED" });
   }
-  return Object.assign(new Error(`${task} не завершён${code === null ? "" : ` (код ${code})`}. Сохранённые данные остаются на месте. Проверку можно повторить.`), { code: "CODEX_PROCESS_EXIT" });
+  return Object.assign(new Error(`${task} не завершён${code === null ? "" : ` (код ${code})`}. Сохранённые данные остаются на месте. Проверку можно повторить.`), { code: "CODEX_PROCESS_EXIT", exitCode: code ?? undefined });
 }

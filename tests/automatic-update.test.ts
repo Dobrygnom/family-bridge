@@ -32,6 +32,16 @@ test("input becoming busy during the save barrier cancels the restart",async()=>
   updater.ready(); await updater.tick(); assert.equal(resumes,1);
 });
 
+test("editing after a background wait releases the pause; cancellation during saving never installs",async()=>{
+  let safe=true, paused=false, finish!:(ready:boolean)=>void;
+  const gate=new AutomaticUpdate({canInstall:()=>safe,prepare:async()=>{paused=true;return false;},install:async()=>assert.fail(),resume:()=>{paused=false;},failed:()=>assert.fail()});
+  gate.ready(); await gate.tick(); assert.equal(paused,true);
+  safe=false; await gate.tick(); assert.equal(paused,false);
+  const saving=new AutomaticUpdate({canInstall:()=>true,prepare:()=>new Promise(resolve=>{finish=resolve;}),install:async()=>assert.fail(),resume:()=>{},failed:()=>assert.fail()});
+  saving.ready(); const task=saving.tick(); saving.cancel(); finish(true); await task;
+  assert.equal(saving.snapshot().phase,'idle');
+});
+
 test("update now rejects an undownloaded update and bypasses retry cooldown after a failure", async () => {
   let attempts=0;
   const gate=new AutomaticUpdate({canInstall:()=>true,prepare:async()=>true,install:async()=>{if(++attempts===1)throw Error('retry');},resume:()=>{},failed:()=>{}},()=>0);
