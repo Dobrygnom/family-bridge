@@ -59,8 +59,8 @@ process.stdin.on("data", (chunk) => input += chunk);
 process.stdin.on("end", () => {
   const reviewing = input.includes("обязательно пересмотри необходимость паузы");
   const args = process.argv.slice(2);
-  const modelAt = reviewing ? 2 : 1;
-  if (args[0] !== "exec" || (reviewing && args[1] !== "resume") || args[modelAt] !== "--model" || args[modelAt + 1] !== "gpt-6-astra") process.exit(3);
+  const modelAt = args.indexOf("--model");
+  if (args[0] !== "exec" || !args.includes("--ignore-user-config") || (reviewing && !args.includes("resume")) || modelAt < 0 || args[modelAt + 1] !== "gpt-6-astra") process.exit(3);
   if (args[modelAt + 2] !== "-c" || args[modelAt + 3].replaceAll('"', '') !== "model_reasoning_effort=medium") process.exit(4);
   if (!reviewing) console.log(JSON.stringify({ type: "thread.started", thread_id: "autonomy-test-session" }));
   const response = reviewing

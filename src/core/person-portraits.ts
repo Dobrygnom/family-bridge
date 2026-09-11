@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
+import { isolatedCodexInvocation, codexTaskFailure } from "./codex-isolation.js";
 
 export type PortraitObservationKind = "fact" | "view" | "preference" | "pattern" | "uncertainty";
 export type PortraitSourceType = "source_chat" | "conversation";
@@ -207,7 +208,7 @@ ${transcript}
   private async run(prompt: string): Promise<RawPortraitUpdates> {
     const args = ["exec", ...await preferredModelArgs(this.command), ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
-      const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
+      const child = spawn(this.command, isolatedCodexInvocation(args), { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.end(prompt);
       const timeout = setTimeout(() => { child.kill(); reject(new Error("Codex portrait update timed out")); }, 15 * 60_000);
       let stdout = "";
@@ -217,7 +218,7 @@ ${transcript}
       child.once("error", (error) => { clearTimeout(timeout); reject(error); });
       child.on("close", (code) => {
         clearTimeout(timeout);
-        if (code !== 0) { reject(new Error(`Codex portrait update exited with ${code}: ${stderr || stdout}`)); return; }
+        if (code !== 0) { reject(codexTaskFailure("Разбор сведений о людях", code, stderr || stdout)); return; }
         try {
           let finalText = "";
           for (const line of stdout.split(/\r?\n/)) {

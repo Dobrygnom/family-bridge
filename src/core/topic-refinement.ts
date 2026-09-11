@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import type { TopicBrief } from "./conversation-quality.js";
 import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
+import { isolatedCodexInvocation, codexTaskFailure } from "./codex-isolation.js";
 import { naturalTopicRules } from "./topic-discovery-prompts.js";
 import { TOPIC_BRIEF_LIMIT, TOPIC_TITLE_LIMIT } from "./topic-limits.js";
 
@@ -91,7 +92,7 @@ export class CodexTopicRefiner implements TopicRefiner {
     const args = ["exec", ...await preferredModelArgs(this.command), ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     const prompt = buildTopicRefinementPrompt(input);
     return new Promise((resolve, reject) => {
-      const child = spawn(this.command, args, { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
+      const child = spawn(this.command, isolatedCodexInvocation(args), { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
       child.stdin.end(prompt);
       const timeout = setTimeout(() => { child.kill(); reject(new Error("Уточнение темы заняло слишком много времени")); }, 10 * 60_000);
@@ -102,7 +103,7 @@ export class CodexTopicRefiner implements TopicRefiner {
       child.once("error", (error) => { clearTimeout(timeout); reject(error); });
       child.on("close", (code) => {
         clearTimeout(timeout);
-        if (code !== 0) { reject(new Error(`Не удалось уточнить тему: ${stderr || stdout}`)); return; }
+        if (code !== 0) { reject(codexTaskFailure("Разбор уточнения темы", code, stderr || stdout)); return; }
         try {
           let finalText = "";
           for (const line of stdout.split(/\r?\n/)) {

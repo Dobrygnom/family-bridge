@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentId, AgentResponse, AgentRuntime } from "./types.js";
 import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
+import { isolatedCodexInvocation, codexTaskFailure } from "./codex-isolation.js";
 import { agentKnowledgeRules, naturalDialogueStyleRules } from "./agent-context-rules.js";
 
 interface CodexJsonEvent {
@@ -212,7 +213,7 @@ export class CodexCliAgent implements AgentRuntime {
     const selectedArgs = await this.modelArgs;
     return new Promise((resolve, reject) => {
       const commandEnd = args[1] === "resume" ? 2 : 1;
-      const child = spawn(command, [...args.slice(0, commandEnd), ...selectedArgs, ...CODEX_REASONING_ARGS, ...args.slice(commandEnd)], {
+      const child = spawn(command, isolatedCodexInvocation([...args.slice(0, commandEnd), ...selectedArgs, ...CODEX_REASONING_ARGS, ...args.slice(commandEnd)]), {
         cwd: this.options.workspace,
         windowsHide: true,
         shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),
@@ -237,7 +238,7 @@ export class CodexCliAgent implements AgentRuntime {
       child.on("close", (code) => {
         clearTimeout(timeout);
         if (code !== 0) {
-          reject(new Error(`Codex exited with ${code}: ${stderr || stdout}`));
+          reject(codexTaskFailure("Ответ агента", code, stderr || stdout));
           return;
         }
         try {
