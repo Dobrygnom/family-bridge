@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, rmSync, re
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
+import { RuntimeDiagnostics } from "./runtime-diagnostics.js";
 
 interface DiagnosticFields {
   exitCode?: number; operation?: string; channel?: string; startedAt?: number;
@@ -16,6 +17,7 @@ const errorCode = (error: unknown) => String((error as NodeJS.ErrnoException)?.c
 
 /** Metadata only. Never accepts exception messages, prompts, names or credentials. */
 export class Diagnostics {
+  readonly runtime = new RuntimeDiagnostics(Date.now, (event, elapsedMs) => this.record(`power.${event}`, { elapsedMs }));
   readonly bootId = randomUUID();
   readonly file: string;
   readonly fallbackFile: string;

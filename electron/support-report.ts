@@ -1,11 +1,13 @@
 import { updateOperations, updateIpcChannels } from "./update-activity.js";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Diagnostics } from "./diagnostics.js";
+import { powerEvents, runtimeStages } from "./runtime-diagnostics.js";
 
 // This is a separate, stricter boundary than the LOCAL lifecycle log. Never
 // serialize local paths, arbitrary exception text or crash dumps. Conversation
 // identifiers are allowed only in the dedicated technical continuation schema.
 const events = new Set([
+  ...powerEvents.map(event => `power.${event}`),
   "action.failed", "startup.begin", "startup.ready", "startup.saved-state", "startup.failed", "process.runtime", "storage.file",
   "crash-capture.started", "crash-capture.failed", "process.previous-unfinished", "process.marker-write-failed",
   "process.before-quit", "process.will-quit", "process.quit", "process.child-gone", "process.uncaught-exception", "process.exit",
@@ -19,11 +21,14 @@ const events = new Set([
   "support.request", "support.received", "support.failed", "support.update-requested", "support.channel-failed", "support.channel-ready",
   "analysis.coverage-recovery", "topic.refinement.start", "topic.refinement.ready", "topic.refinement.failed",
 ]);
-const codes = new Set(["COVERAGE_STRUCTURE", "COVERAGE_CANDIDATES", "COVERAGE_DUPLICATE_TOPIC", "COVERAGE_TOPIC_CONTENT", "COVERAGE_NO_EVIDENCE", "COVERAGE_NO_REASON", "COVERAGE_UNKNOWN_TOPIC", "COVERAGE_SPLIT_TOPIC", "COVERAGE_RECIPIENT_CHANGED", "CODEX_DESKTOP_UNAVAILABLE", "CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT", "CODEX_DESKTOP_PROTOCOL", "CODEX_HISTORY_READ_FAILED", "CHATGPT_SOURCE_UNAVAILABLE","CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "23505", "23503", "42501", "22023", "57014", "PGRST116", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
+const codes = new Set(["COVERAGE_STRUCTURE", "COVERAGE_CANDIDATES", "COVERAGE_DUPLICATE_TOPIC", "COVERAGE_TOPIC_CONTENT", "COVERAGE_NO_EVIDENCE", "COVERAGE_NO_REASON", "COVERAGE_UNKNOWN_TOPIC", "COVERAGE_SPLIT_TOPIC", "COVERAGE_RECIPIENT_CHANGED", "CODEX_DESKTOP_UNAVAILABLE", "CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT", "CODEX_DESKTOP_PROTOCOL", "CODEX_HISTORY_READ_FAILED", "CHATGPT_SOURCE_UNAVAILABLE","CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "23505", "23503", "42501", "22023", "57014", "PGRST116", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "ABORTED", "UNKNOWN"]);
 export function supportErrorCode(error: unknown): string {
+  if ((error as { name?: string } | null)?.name === "TimeoutError") return "ETIMEDOUT";
+  if ((error as { name?: string } | null)?.name === "AbortError") return "ABORTED";
   const e = error as { code?: unknown; message?: unknown; cause?: { code?: unknown } } | null;
   for (const code of [e?.code, e?.cause?.code]) if (typeof code === "string" && codes.has(code)) return code;
   const message = typeof e?.message === "string" ? e.message : "";
+  if (/timeout|timed out/i.test(message)) return "ETIMEDOUT";
   if (/авторизац|auth|refresh.*token|jwt/i.test(message)) return "AUTH";
   if (/saved pair|сохранённой паре|pair.*access/i.test(message)) return "PAIR_ACCESS";
   if (/fetch|network|сети|connect/i.test(message)) return "NETWORK";
@@ -59,6 +64,7 @@ export interface SupportReport {
   continuations?: Array<Fields>;
   updateDiagnostics?: ReturnType<typeof sanitizeUpdateDiagnostics>;
   dialogueDiagnostics?: ReturnType<typeof sanitizeDialogueDiagnostics>;
+  runtimeDiagnostics?: ReturnType<typeof sanitizeRuntimeDiagnostics>;
   events: Array<{ at: string; event: string; fields: Fields }>;
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
@@ -130,9 +136,30 @@ export function sanitizeSupportReport(value: unknown): SupportReport | undefined
   return { schema: 1, at: r.at, bootId: r.bootId, status: sanitizeSupportFields(r.status), update: sanitizeSupportFields(r.update),
     ...(r.updateDiagnostics ? { updateDiagnostics: sanitizeUpdateDiagnostics(r.updateDiagnostics) } : {}),
     ...(r.dialogueDiagnostics ? { dialogueDiagnostics: sanitizeDialogueDiagnostics(r.dialogueDiagnostics) } : {}),
+    ...(r.runtimeDiagnostics ? { runtimeDiagnostics: sanitizeRuntimeDiagnostics(r.runtimeDiagnostics) } : {}),
     ...(Array.isArray(r.continuations) ? { continuations: continuationDiagnostics(r.continuations) } : {}),
     events: (Array.isArray(r.events) ? r.events : []).slice(-120).filter(e => e && iso(e.at) && events.has(e.event))
       .map(e => ({ at: e.at, event: e.event, fields: sanitizeSupportFields(e.fields) })) };
+}
+
+export function sanitizeRuntimeDiagnostics(value: unknown) {
+  const r = value as Record<string, any> | null;
+  if (!r || typeof r !== "object") return undefined;
+  const number = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  return { powerState: ["unknown", "suspended", "resumed"].includes(r.powerState) ? r.powerState as string : "unknown",
+    ...(number(r.lastTickAt) ? { lastTickAt: r.lastTickAt } : {}),
+    events: (Array.isArray(r.events) ? r.events : []).slice(-24).flatMap((e: any): Fields[] => {
+      if (!e || !powerEvents.includes(e.event) || !number(e.at)) return [];
+      return [{ event: e.event, at: e.at, ...(number(e.elapsedMs) ? { elapsedMs: e.elapsedMs } : {}) }];
+    }),
+    operations: (Array.isArray(r.operations) ? r.operations : []).slice(0, 2).flatMap((op: any): Fields[] => {
+      if (!op || !["dialogue", "support"].includes(op.lane) || !runtimeStages.includes(op.stage)) return [];
+      const safe: Fields = { lane: op.lane, stage: op.stage, busy: op.busy === true };
+      for (const key of ["startedAt", "stageStartedAt", "lastFinishedAt", "lastDurationMs", "lastFailureAt", "elapsedMs", "stageElapsedMs"]) if (number(op[key])) safe[key] = op[key];
+      if (runtimeStages.includes(op.failureStage)) safe.failureStage = op.failureStage;
+      if (codes.has(op.code)) safe.code = op.code;
+      return [safe];
+    }) };
 }
 
 function tail(file: string): unknown[] {

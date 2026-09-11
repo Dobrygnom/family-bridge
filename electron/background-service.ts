@@ -480,6 +480,7 @@ export class BackgroundService {
   ) {
     this.diagnostics = new Diagnostics(userData);
     this.support = new RemoteSupport(path.join(userData, "diagnostics", "support"), {
+      runtime: this.diagnostics.runtime,
       context: async () => {
         const state = await this.store.read(), transport = this.remote;
         if (!state.remote || !transport) return undefined;
@@ -521,6 +522,7 @@ export class BackgroundService {
       update: { ...this.updateState, error: Boolean(this.updateState.error) },
       updateDiagnostics: { ...this.updateDiagnostics(), ...this.options.updateDiagnostics?.() },
       dialogueDiagnostics: this.dialogueDiagnostics(state),
+      runtimeDiagnostics: this.diagnostics.runtime.snapshot(),
       continuations: Object.entries(state.continuations).filter(([, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId).map(([id, c]) => ({
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
         attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
@@ -1740,9 +1742,11 @@ export class BackgroundService {
   private async pumpRemote() {
     if (this.updating || this.remoteBusy || !this.remote) return;
     this.remoteBusy = true;
+    this.diagnostics.runtime.begin("dialogue", "store");
     try {
       const stored = await this.store.read();
       if (!stored.remote) return;
+      this.diagnostics.runtime.stage("dialogue", "pair");
       const pair = await this.remote.pairState(stored.remote.pairId);
       if (!pair.partner_id) return;
       const topicSyncKey = `${pair.id}:${pair.partner_id}`;
@@ -1757,6 +1761,7 @@ export class BackgroundService {
         this.beginPeerVersionCheck(stored, true);
       }
       if (this.syncedTopicsForPair !== topicSyncKey) {
+        this.diagnostics.runtime.stage("dialogue", "topics");
         for (const topic of stored.pendingTopics.filter((item) => stored.topicSources[item]?.includes("local"))) {
           await this.shareTopicToPair(topic, stored, pair);
         }
@@ -1766,19 +1771,22 @@ export class BackgroundService {
       // each old version probe. Always drain durable replies after service work.
       const seen = new Set<string>(), batchStartedAt = Date.now();
       for (let count = 0; count < 16 && !this.updating && Date.now() - batchStartedAt < 2_000; count++) {
+        this.diagnostics.runtime.stage("dialogue", "receive");
         const envelope = await this.remote.claimNext(stored.remote.pairId) as RemoteEnvelope<TopicPayload | DialoguePayload> | null;
         if (!envelope || seen.has(envelope.id)) break;
         seen.add(envelope.id);
+        this.diagnostics.runtime.stage("dialogue", "dispatch");
         await this.receiveRemoteEnvelope(envelope, stored, pair);
       }
       return this.drainRemoteInbox();
     } catch (error) {
       const code = supportErrorCode(error);
+      this.diagnostics.runtime.fail("dialogue", code);
       if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
       this.lastPollCode = code;
       this.emit({ type: "error", error: errorMessage(error) });
     }
-    finally { this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
+    finally { this.diagnostics.runtime.end("dialogue"); this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
   }
 
   private async receiveRemoteEnvelope(envelope: RemoteEnvelope<TopicPayload | DialoguePayload>, stored: StoredState, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>) {

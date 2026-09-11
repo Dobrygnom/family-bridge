@@ -270,6 +270,14 @@ app.whenReady().then(async () => {
     conversationNotifications.set(threadId, Date.now());
     notification.show();
   });
+  service.diagnostics.runtime.start();
+  powerMonitor.on("suspend", () => service.diagnostics.runtime.power("suspend"));
+  powerMonitor.on("resume", () => service.diagnostics.runtime.power("resume"));
+  powerMonitor.on("lock-screen", () => service.diagnostics.runtime.power("lock-screen"));
+  powerMonitor.on("unlock-screen", () => service.diagnostics.runtime.power("unlock-screen"));
+  powerMonitor.on("on-ac", () => service.diagnostics.runtime.power("on-ac"));
+  powerMonitor.on("on-battery", () => service.diagnostics.runtime.power("on-battery"));
+  app.on("will-quit", () => service.diagnostics.runtime.stop());
   powerMonitor.on("resume", () => {
     void service.checkContextForUpdates();
     void checkForUpdates();

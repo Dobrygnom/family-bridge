@@ -7,6 +7,7 @@ import { VERSION_PROBE_PREFIX, validPeerVersion } from "../src/core/peer-version
 import { replaceStateFile } from "./store.js";
 import { sanitizeSupportReport, supportErrorCode, supportId, type SupportReport } from "./support-report.js";
 import type { SupportChannel, SupportOffer } from "./support-channel.js";
+import type { RuntimeDiagnostics } from "./runtime-diagnostics.js";
 
 export type SupportAction = "snapshot" | "update";
 interface SupportWire {
@@ -47,6 +48,7 @@ export class RemoteSupport {
   private lastError?: string;
   private sending = false;
   constructor(private readonly directory: string, private readonly hooks: {
+    runtime?: RuntimeDiagnostics;
     context: () => Promise<SupportContext | undefined>;
     snapshot: (logs: boolean) => Promise<SupportReport>;
     update: () => void;
@@ -163,9 +165,11 @@ export class RemoteSupport {
   async tick() {
     if (this.busy) return;
     this.busy = true;
+    this.hooks.runtime?.begin("support", "store");
     try {
       await this.load();
       await this.save("local.json", await this.hooks.snapshot(false));
+      this.hooks.runtime?.stage("support", "context");
       const c = await this.resolveContext();
       if (!c) { this.context = undefined; return; }
       if (this.context?.pairId !== c.pairId || this.context.peer !== c.peer) {
@@ -173,8 +177,11 @@ export class RemoteSupport {
         if (c.independent) this.hooks.record("support.channel-ready");
       }
       this.context = c;
+      this.hooks.runtime?.stage("support", "receive");
       const incoming = await c.transport.readSupportMessages(c.pairId, new Date(this.now() - 5 * 60_000).toISOString());
+      this.hooks.runtime?.stage("support", "dispatch");
       for (const envelope of incoming) await this.receive(c, envelope);
+      this.hooks.runtime?.stage("support", "send");
       if (!c.independent && supportsRemoteSupport(c.peerVersion) && this.now() - this.lastOffer >= 60_000) {
         const offer = await this.channel?.offer(c);
         if (offer) await this.send(c, { protocol: 1, type: "offer", id: randomUUID(), sentAt: new Date(this.now()).toISOString(), offer });
@@ -187,8 +194,9 @@ export class RemoteSupport {
       this.lastError = undefined;
     } catch (error) {
       this.lastError = supportErrorCode(error);
+      this.hooks.runtime?.fail("support", this.lastError);
       this.hooks.record("support.failed", this.lastError);
-    } finally { this.busy = false; }
+    } finally { this.hooks.runtime?.end("support"); this.busy = false; }
   }
 
   private async receive(c: SupportContext, envelope: RemoteEnvelope) {
