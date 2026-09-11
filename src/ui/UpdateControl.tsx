@@ -23,6 +23,7 @@ export function UpdateControl({ update, version, language, onCheck, onInstall, c
     finally { setBusy(false); }
   }
   if (compact) {
+    if (!update.available && !update.ready && !update.downloading && !update.installing) return null;
     const pending = busy || update.checking || update.downloading || update.installing;
     const caption = update.installing ? t.installing : update.downloading ? `${t.download} · ${Math.round(update.progress ?? 0)}%`
       : update.checking ? t.checking : update.ready ? t.install
@@ -45,6 +46,6 @@ export function UpdateControl({ update, version, language, onCheck, onInstall, c
       <button className="primary" disabled={busy || update.installing} aria-busy={busy || update.installing} onClick={() => void act(onInstall)}>{(busy || update.installing) && <LoaderCircle className="spin" size={16}/>} {update.installing ? t.installing : t.install}</button>
     </div></div>}
     {(error || update.error) && <p className="analysis-error" role="alert">{error || update.error}</p>}
-    {!update.ready && <button disabled={busy || update.checking || update.downloading} onClick={() => void act(onCheck)}>{t.check}</button>}
+    {update.available && !update.ready && !update.downloading && <button disabled={busy || update.checking} onClick={() => void act(onCheck)}>{t.install}</button>}
   </div>;
 }

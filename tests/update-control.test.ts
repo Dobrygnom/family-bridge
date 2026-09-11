@@ -7,9 +7,11 @@ import { UpdateControl } from "../src/ui/UpdateControl.js";
 import type { AppState } from "../src/global.js";
 
 const render=(update:AppState['update'])=>renderToStaticMarkup(createElement(UpdateControl,{update,version:'1.2.12',language:'ru',onCheck:async()=>{},onInstall:async()=>{}}));
-test('sidebar update is always visible and highlights a ready update with install action',()=>{
+test('sidebar update is absent without an update and highlights a ready update',()=>{
   const compact=(update:AppState['update'])=>renderToStaticMarkup(createElement(UpdateControl,{compact:true,update,version:'1.2.25',language:'ru',onCheck:async()=>{},onInstall:async()=>{}}));
-  assert.match(compact({available:false,downloading:false}), /Обновить приложение/);
+  assert.equal(compact({available:false,downloading:false}), '');
+  assert.equal(compact({available:false,downloading:false,checking:true}), '');
+  assert.equal(compact({available:false,downloading:false,error:'Network unavailable'}), '');
   const ready=compact({available:true,downloading:false,ready:true,version:'1.2.26'});
   assert.match(ready,/update-available/); assert.match(ready,/Обновить сейчас/); assert.doesNotMatch(ready,/disabled/);
   const downloading=compact({available:true,downloading:true,version:'1.2.26',progress:52});
@@ -33,6 +35,6 @@ test('download, install, and safety-block states are distinct; no unverified lat
   const installing=render({available:true,downloading:false,ready:true,installing:true});
   assert.match(installing,/Устанавливаем обновление/);assert.match(installing,/disabled/);
   const idle=render({available:false,downloading:false});
-  assert.match(idle,/Проверить обновления/);assert.doesNotMatch(idle,/последняя версия|Обновить сейчас/);
+  assert.doesNotMatch(idle,/<button|Проверить обновления|последняя версия|Обновить сейчас/);
   assert.match(render({available:true,downloading:true,progress:52}),/52%/);
 });

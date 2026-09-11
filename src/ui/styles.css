@@ -170,12 +170,11 @@ section[id] { scroll-margin-top: 24px; }
 .report-list div { padding-bottom: 8px; border-bottom: 1px solid #20333d; }
 .onboarding-main { display: flex; flex-direction: column; overflow: hidden; }
 .onboarding-main > header { flex: 0 0 auto; }
-.context-main { display: flex; flex-direction: column; overflow: hidden; }
-.context-main > header { flex: 0 0 auto; }
-.context-main .single-screen { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.context-main .context-panel { flex: 0 0 auto; }
-.context-main .analysis-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.context-main .analysis-panel .topic-registry, .context-main .analysis-panel .topic-rows { flex: 1 1 auto; min-height: 0; max-height: none; }
+/* Context cards grow with their content; the page owns vertical scrolling. */
+.context-main { overflow-y: auto; }
+.context-main .analysis-panel { overflow: visible; }
+.context-main .analysis-panel .topic-registry { display: block; }
+.context-main .analysis-panel .topic-rows { max-height: none; overflow: visible; }
 .onboarding-panel { padding: 18px; min-height: 0; overflow: hidden; display: flex; flex: 1 1 auto; flex-direction: column; }
 .onboarding-intro { max-width: 900px; }.onboarding-intro > p:last-child { color: #93a8ad; line-height: 1.5; margin-bottom: 0; }
 .onboarding-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0 14px; flex: 0 0 auto; }
