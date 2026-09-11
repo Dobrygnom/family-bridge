@@ -14,7 +14,7 @@ const events = new Set([
   "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
   "dialogue.received", "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
   "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
-  "conversation.repair-started", "conversation.repair-identifiers-migrated",
+  "conversation.repair-started", "conversation.repair-identifiers-migrated", "conversation.repair-owner-reconciled",
   "peer-version.sent", "peer-version.received", "peer-version.timeout", "peer-version.error",
   "support.request", "support.received", "support.failed", "support.update-requested", "support.channel-failed", "support.channel-ready",
   "analysis.coverage-recovery", "topic.refinement.start", "topic.refinement.ready", "topic.refinement.failed",
@@ -63,7 +63,13 @@ export interface SupportReport {
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
 export const supportId = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
-export function sanitizeDialogueDiagnostics(value: unknown) {
+interface DialogueDiagnostics {
+  owner?: string; pairId?: string; peerVersion?: string; compatible?: boolean; probeStatus?: string;
+  probeAgeMs?: number; received?: number; service?: number; dialogue?: number; staleService?: number;
+  lastReceivedAt?: number; lastDialogueAt?: number;
+  repairs: Fields[]; conversations: Fields[];
+}
+export function sanitizeDialogueDiagnostics(value: unknown): DialogueDiagnostics | undefined {
   const r = value as Record<string, any> | null;
   if (!r || typeof r !== "object") return undefined;
   const identifier = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);

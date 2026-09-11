@@ -359,6 +359,16 @@ export class BackgroundService {
     } finally { this.automaticBusy = false; }
   }
   private conversationRevision = 0;
+  private startsRepair(candidate: ReturnType<typeof repairCandidates>[number], state: StoredState) {
+    if (candidate.initiator === state.owner) return true;
+    const peer = this.support.peerReport()?.dialogueDiagnostics;
+    // Older reports can disagree about who opened the SAME conversation. If
+    // both authenticated installations explicitly wait for the other, elect
+    // the pair's "dima" role once. Never rewrite the old history or race two
+    // senders, and never infer this deadlock from a stale/offline report.
+    return state.owner === "dima" && peer?.owner === "katya" && peer.pairId === state.remote?.pairId && peer.compatible === true
+      && peer.repairs.some(row => row.id === candidate.rootId && row.reason === "peer");
+  }
   private async repairLegacyConversations() {
     if (!supportsRestart(this.options.appVersion) || this.continuing.size >= 3) return;
     let state = await this.store.read();
@@ -367,7 +377,7 @@ export class BackgroundService {
     if (!state.remote) return;
     const reports = this.historyReports(state), completed = new Set(reports.map(report => report.id));
     const candidates = repairCandidates(reports, state.roleRepairCutoffAt).filter(candidate =>
-      candidate.initiator === state.owner && !state.continuations[repairRequestId(candidate.rootId)]
+      this.startsRepair(candidate, state) && !state.continuations[repairRequestId(candidate.rootId)]
       && !Object.entries(state.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(state.conversationParents[id])));
     if (!candidates.length) return;
     const probe = this.versionProbe;
@@ -380,6 +390,7 @@ export class BackgroundService {
       if (Object.keys(state.conversationTranscripts).some(id => !completed.has(id) && (candidate.ids.has(id) || candidate.ids.has(state.conversationParents[id])))
         || state.pendingOwnerQuestions.some(question => !completed.has(question.conversationId) && candidate.ids.has(question.conversationId))) continue;
       try {
+        if (candidate.initiator !== state.owner) this.diagnostics.record("conversation.repair-owner-reconciled");
         await this.restartReport({ reportId: candidate.reportId, requestId: repairRequestId(candidate.rootId) });
         this.diagnostics.record("conversation.repair-started");
         break; // Bounded work; the next tick can start another eligible topic.
@@ -561,7 +572,7 @@ export class BackgroundService {
     const repairs = supportsRestart(this.options.appVersion) ? repairCandidates([...history.values()], stored.roleRepairCutoffAt)
       .filter(candidate => !Object.entries(stored.conversationModes).some(([id, mode]) => mode === "restart" && candidate.ids.has(stored.conversationParents[id]) && (stored.conversationTranscripts[id] || completed.has(id)))) : [];
     const repairWaiting = Object.fromEntries(repairs.map(candidate => [candidate.rootId,
-      candidate.initiator !== stored.owner ? "peer" : !supportsRestart(stored.remote?.peerVersion) ? "version"
+      !this.startsRepair(candidate, stored) ? "peer" : !supportsRestart(stored.remote?.peerVersion) ? "version"
       : Object.keys(stored.conversationTranscripts).some(id => !completed.has(id) && (candidate.ids.has(id) || candidate.ids.has(stored.conversationParents[id]))) ? "active" : "queued"
     ])) as NonNullable<ConversationSnapshot["repairWaiting"]>;
     const liveConversations: LiveConversation[] = Object.entries(stored.conversationTranscripts).filter(([id, transcript]) => !completed.has(id) && !transcript.topic.startsWith(VERSION_PROBE_PREFIX)).map(([id, transcript]) => {
@@ -594,7 +605,7 @@ export class BackgroundService {
         const id = repairRequestId(candidate.rootId), request = state.continuations[id];
         const restarted = Object.entries(state.conversationModes).some(([child, mode]) => mode === "restart" && candidate.ids.has(state.conversationParents[child]) && (state.conversationTranscripts[child] || completed.has(child)));
         return { id: candidate.rootId, requestId: id, initiator: candidate.initiator,
-          reason: restarted ? "restarted" : candidate.initiator !== state.owner ? "peer" : request ? request.status
+          reason: restarted ? "restarted" : !this.startsRepair(candidate, state) ? "peer" : request ? request.status
             : Object.keys(state.conversationTranscripts).some(child => !completed.has(child) && (candidate.ids.has(child) || candidate.ids.has(state.conversationParents[child]))) ? "active"
             : this.versionProbe?.state.status !== "received" ? "probe" : "queued" };
       }),

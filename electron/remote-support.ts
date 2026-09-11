@@ -61,6 +61,12 @@ export class RemoteSupport {
   }
   stop() { clearInterval(this.timer); this.timer = undefined; this.channel?.dispose(); }
 
+  /** Only authenticated, current peer evidence may affect automatic recovery. */
+  peerReport(): SupportReport | undefined {
+    return this.latest?.pairId === this.context?.pairId && this.latest && fresh(this.latest.report.at, this.now(), 90_000)
+      ? this.latest.report : undefined;
+  }
+
   private async resolveContext() {
     // A broken support credential must not hide a still-working primary path.
     try { const independent = await this.channel?.context(); if (independent) return independent; }

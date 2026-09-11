@@ -208,6 +208,38 @@ test("automatic repair waits for a fresh compatible peer and runs only on the or
   } finally { await rm(f.dir,{recursive:true,force:true}); }
 });
 
+test("opposite saved initiators cannot leave both peers waiting and only one starts the repair", async () => {
+  const a = await fixture(), b = await fixture();
+  const root = "a41172a2-026a-44b7-a428-bd9fb2987ed9";
+  const original = new Map<string,string>();
+  try {
+    for (const [f, owner, initiator] of [[a,"dima","katya"],[b,"katya","dima"]] as const) {
+      const raw = JSON.parse(await readFile(f.report,"utf8")); raw.conversationId = root;
+      raw.messages = [{ from: initiator, text: "Исходный вопрос" }, { from: owner, text: "Мы говорим как агенты." }];
+      original.set(f.dir, JSON.stringify(raw)); await writeFile(f.report, original.get(f.dir)!);
+      await f.store.mutate(s => ({ owner, remote: { ...s.remote!, peerVersion: "1.2.28" } }));
+      (f.service as any).options.appVersion = "1.2.30";
+      (f.service as any).versionProbe = { pairId:"pair", state:{ status:"received", requestedAt:new Date().toISOString() } };
+      (f.service as any).localRemoteAgent = () => ({ start: async () => response("Начнём с исходного вопроса.") });
+      await (f.service as any).repairLegacyConversations();
+      assert.equal(f.sent.length, 0, "No guess about the absent peer's waiting state");
+    }
+    (a.service.support as any).peerReport = () => ({ dialogueDiagnostics: { owner:"katya", pairId:"another-pair", compatible:true, repairs:[{id:root,reason:"peer"}] } });
+    await (a.service as any).repairLegacyConversations(); assert.equal(a.sent.length,0);
+    (a.service.support as any).peerReport = () => ({ dialogueDiagnostics: { owner:"katya", pairId:"pair", compatible:true, repairs:[{id:root,reason:"peer"}] } });
+    (b.service.support as any).peerReport = () => ({ dialogueDiagnostics: { owner:"dima", pairId:"pair", compatible:true, repairs:[{id:root,reason:"peer"}] } });
+    await (a.service as any).repairLegacyConversations();
+    await (b.service as any).repairLegacyConversations();
+    await until(async () => (await a.store.read()).continuations[repairRequestId(root)]?.status === "waiting");
+    await (a.service as any).repairLegacyConversations();
+    await (b.service as any).repairLegacyConversations();
+    assert.equal(a.sent.length,1); assert.equal(b.sent.length,0);
+    assert.equal(a.sent[0].payload.continuation.parentReportId,root);
+    assert.deepEqual(a.sent[0].payload.continuation.history,[]);
+    for (const f of [a,b]) assert.equal(await readFile(f.report,"utf8"),original.get(f.dir),"Old reports stay byte-for-byte intact");
+  } finally { await rm(a.dir,{recursive:true,force:true}); await rm(b.dir,{recursive:true,force:true}); }
+});
+
 test("mixed 0.3.7 reports and divergent active histories do not block finished conversations or erase either history", async () => {
   const f=await fixture();
   try {

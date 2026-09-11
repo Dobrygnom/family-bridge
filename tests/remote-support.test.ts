@@ -35,6 +35,17 @@ async function fixture() {
     cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
+test("repair decisions never use stale or differently bound peer reports", async () => {
+  const f=await fixture();
+  try {
+    f.incoming.push(f.envelope("snapshot",{type:"report",report:report()}));
+    await f.support.tick(); assert.ok(f.support.peerReport());
+    f.context.pairId="other"; await f.support.tick(); assert.equal(f.support.peerReport(),undefined);
+    f.context.pairId="pair"; await f.support.tick(); assert.ok(f.support.peerReport());
+    f.advance(90_001); assert.equal(f.support.peerReport(),undefined);
+  } finally {await f.cleanup();}
+});
+
 test("support exports only typed technical fields, including logs from the independent fallback", async () => {
   const f = await fixture();
   try {
