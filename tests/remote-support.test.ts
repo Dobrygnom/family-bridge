@@ -42,6 +42,7 @@ test("support exports only typed technical fields, including logs from the indep
     d.record("updater.state", { version: "1.2.20", waitingFor: "editing", filePath: "C:/private/name", topicId: "private-topic", code: "SECRET", prompt: "private-text" } as any);
     d.record("private-event-name", { version: "1.2.20" });
     d.record("analysis.progress", { current: 2, total: 4, stage: "private-chat" });
+    d.record("analysis.coverage-invalid", { current: 1, total: 2, stage: "grouping", code: "COVERAGE_TOPIC_CONTENT" });
     await rm(d.file);
     const safe = sanitizeSupportReport({ ...report(), status: { version: "private-chat", token: "secret", topics: NaN, onboarding: true },
       events: [...supportEvents(d), { at: new Date(now).toISOString(), event: "analysis.progress", fields: { total: Infinity, stage: "private-chat" } }] });
@@ -50,6 +51,8 @@ test("support exports only typed technical fields, including logs from the indep
     assert.doesNotMatch(json, /private|secret|SECRET|Infinity|NaN|filePath|topicId/);
     assert.match(json, /editing/);
     assert.equal(safe.events.find(e => e.event === "analysis.progress")?.fields.current, 2);
+    assert.deepEqual(safe.events.find(e => e.event === "analysis.coverage-invalid")?.fields,
+      { current: 1, total: 2, stage: "grouping", code: "COVERAGE_TOPIC_CONTENT" });
     assert.equal(supportErrorCode({ code: "PGRST301", message: "private-text" }), "PGRST301");
     assert.equal(supportErrorCode(new Error("Не удалось восстановить авторизацию подключения")), "AUTH");
     const id = randomUUID(), parentId = randomUUID();

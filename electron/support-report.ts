@@ -19,7 +19,7 @@ const events = new Set([
   "support.request", "support.received", "support.failed", "support.update-requested", "support.channel-failed", "support.channel-ready",
   "analysis.coverage-recovery", "topic.refinement.start", "topic.refinement.ready", "topic.refinement.failed",
 ]);
-const codes = new Set(["CODEX_DESKTOP_UNAVAILABLE", "CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT", "CODEX_DESKTOP_PROTOCOL", "CODEX_HISTORY_READ_FAILED", "CHATGPT_SOURCE_UNAVAILABLE","CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
+const codes = new Set(["COVERAGE_STRUCTURE", "COVERAGE_CANDIDATES", "COVERAGE_DUPLICATE_TOPIC", "COVERAGE_TOPIC_CONTENT", "COVERAGE_NO_EVIDENCE", "COVERAGE_NO_REASON", "COVERAGE_UNKNOWN_TOPIC", "COVERAGE_SPLIT_TOPIC", "COVERAGE_RECIPIENT_CHANGED", "CODEX_DESKTOP_UNAVAILABLE", "CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT", "CODEX_DESKTOP_PROTOCOL", "CODEX_HISTORY_READ_FAILED", "CHATGPT_SOURCE_UNAVAILABLE","CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
 export function supportErrorCode(error: unknown): string {
   const e = error as { code?: unknown; message?: unknown; cause?: { code?: unknown } } | null;
   for (const code of [e?.code, e?.cause?.code]) if (typeof code === "string" && codes.has(code)) return code;
@@ -39,7 +39,7 @@ const enums: Record<string, readonly string[]> = {
   platform: ["win32", "darwin", "linux"], arch: ["x64", "arm64", "ia32"],
   analysisStatus: ["ready", "analyzing", "error", "other", "none"],
   fileKind: ["state", "source", "analysis"], waitingFor: ["activity", "dictation", "editing", "background"],
-  stage: ["idle", "preparing", "background", "activity", "installing", "retry", "complete","extract", "select", "merge", "coverage", "before-start", "after-start", "renderer-snapshot", "support", "update", "application", "uncaughtException", "unhandledRejection", "GPU", "Utility"],
+  stage: ["selection", "grouping", "idle", "preparing", "background", "activity", "installing", "retry", "complete","extract", "select", "merge", "coverage", "before-start", "after-start", "renderer-snapshot", "support", "update", "application", "uncaughtException", "unhandledRejection", "GPU", "Utility"],
 };
 export function sanitizeSupportFields(value: unknown): Fields {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
