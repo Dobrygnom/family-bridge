@@ -157,9 +157,9 @@ test("local control requires its secret, rejects browser origins and exposes onl
 });
 
 test("local blocker diagnostics remain readable when normal state reporting is stuck",async()=>{
-  const f=await fixture(); let installs=0;
+  const f=await fixture(); let installs=0,refreshes=0;
   f.support.status=()=>new Promise(()=>{});
-  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),update:()=>{installs++;return {accepted:true};}});
+  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};}});
   try {
     const locator=JSON.parse(await readFile(supportLocatorFiles(f.dir)[0],'utf8'));
     const url=`http://127.0.0.1:${locator.port}`, headers={Authorization:`Bearer ${locator.token}`};
@@ -169,6 +169,10 @@ test("local blocker diagnostics remain readable when normal state reporting is s
     assert.equal(installs,0);
     assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers})).status,200);
     assert.equal(installs,1);
+    assert.equal((await fetch(`${url}/local/refresh-context`,{method:'POST',headers:{...headers,Origin:'https://evil.test'}})).status,403);
+    assert.equal(refreshes,0);
+    assert.equal((await fetch(`${url}/local/refresh-context`,{method:'POST',headers})).status,200);
+    assert.equal(refreshes,1);
   }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(supportLocatorFiles(f.dir)[1],{force:true});await f.cleanup();}
 });
 

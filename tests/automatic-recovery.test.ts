@@ -96,6 +96,29 @@ test("an inbox read that finishes after quiescing cannot start another model wor
   }finally{await rm(f.dir,{recursive:true,force:true});}
 });
 
+test("explicit refresh reads the selected chat directly without listing unrelated tasks",async()=>{
+  const f=await fixture();let syncs=0;
+  try{
+    const service=f.service as any;
+    await service.writeContextSource({id:'selected-chat',source:'chatgpt',status:'error',messageCount:578,lastSyncedAt:new Date().toISOString()});
+    service.listContextThreads=()=>assert.fail('Refreshing a known chat must not enumerate every task');
+    service.syncContext=async()=>{syncs++;};
+    await f.service.checkContextForUpdates(true);assert.equal(syncs,1);
+  }finally{await rm(f.dir,{recursive:true,force:true});}
+});
+
+test("an empty read never overwrites previously saved source messages",async()=>{
+  const f=await fixture();
+  try{
+    const service=f.service as any;
+    await service.writeContextSource({id:'selected-chat',source:'chatgpt',status:'ready',messageCount:578,lastSyncedAt:new Date().toISOString()});
+    service.readChatGptMessages=async()=>[];
+    await assert.rejects(f.service.syncContext(),{code:'CODEX_DESKTOP_PROTOCOL'});
+    assert.equal(service.readContextSource().messageCount,578);
+    assert.equal(service.contextSyncing,false);
+  }finally{await rm(f.dir,{recursive:true,force:true});}
+});
+
 test("automatic work starts only our selected topics and does not duplicate a running launch", async()=>{
   const f=await fixture();
   try {

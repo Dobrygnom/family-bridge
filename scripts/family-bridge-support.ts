@@ -4,8 +4,8 @@ import os from "node:os";
 import { supportLocatorFiles } from "../electron/support-control.js";
 
 const [command = "status", ...args] = process.argv.slice(2);
-const commands = { diagnostics: ["GET", "/local/diagnostics"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], update: ["POST", "/peer/update"] } as const;
-if (!(command in commands) || args.length > 1) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts status|diagnostics|local-update|snapshot|update [profile-directory]");
+const commands = { "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], update: ["POST", "/peer/update"] } as const;
+if (!(command in commands) || args.length > 1) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts status|diagnostics|local-update|refresh-context|snapshot|update [profile-directory]");
 const profile = args[0] || (process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "family-bridge")
   : process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "family-bridge") : path.join(os.homedir(), ".config", "family-bridge"));
 let success = false;
@@ -16,7 +16,7 @@ for (const file of supportLocatorFiles(profile)) {
   // Authenticate the discovered process with a read before sending a command.
   const headers = { Authorization: `Bearer ${locator.token}` };
   try {
-    const probeRoute = command === "diagnostics" || command === "local-update" ? "/local/diagnostics" : "/status";
+    const probeRoute = command === "diagnostics" || command === "local-update" || command === "refresh-context" ? "/local/diagnostics" : "/status";
     const probe = await fetch(`http://127.0.0.1:${locator.port}${probeRoute}`, { headers, signal: AbortSignal.timeout(5_000) });
     if (!probe.ok) continue;
     const local = await probe.json();

@@ -228,6 +228,7 @@ app.whenReady().then(async () => {
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'after-start');
   void startSupportControl(app.getPath("userData"), service.support, {
       diagnostics: () => ({ schema: 1, at: new Date().toISOString(), bootId: service.diagnostics.bootId, version: app.getVersion(), update: service.updateDiagnostics(), gate: updateGate?.snapshot(), ipc: [...activeChannels.values()].map(row => ({ ...row, elapsedMs: Math.max(0, Date.now() - row.startedAt) })), rendererBlocked: rendererUpdateBlocked, rendererReason: rendererUpdateReason }),
+      refreshContext: () => { if (preparingUpdate || updateInstallIsQuitting) throw new Error("Update in progress"); void service.refreshContextNow().catch(() => service.diagnostics.record("context.read-failed")); return { accepted: true }; },
       update: () => { if (!currentUpdate.ready) throw new Error("Update not ready"); updateGate.requestNow(); setTimeout(() => void updateGate.tick(), 0); return { accepted: true }; },
     })
     .then(server => app.once("will-quit", () => { service.support.stop(); server.close(); }))

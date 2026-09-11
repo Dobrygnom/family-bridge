@@ -620,7 +620,7 @@ export class BackgroundService {
     const callingThreadId = localThreads[0]?.id;
     if (!callingThreadId) return localThreads;
     try {
-      const chatGptThreads = await new CodexAppHistoryClient(callingThreadId).listThreads();
+      const chatGptThreads = await new CodexAppHistoryClient(callingThreadId, { onDiagnostic: code => this.diagnostics.record("context.read-failed", { code }), onPage: pages => this.diagnostics.record("context.read-progress", { current: pages }) }).listThreads();
       return [...chatGptThreads, ...localThreads];
     } catch {
       return localThreads;
@@ -650,7 +650,7 @@ export class BackgroundService {
   private async performContextSync(latestThread?: ContextThread) {
     const selected = this.readContextSource();
     if (!selected?.id) throw new Error("Сначала выберите базовый чат");
-    const refreshingReadyContext = selected.status === "ready" && Boolean(selected.lastSyncedAt);
+    const refreshingReadyContext = Boolean(selected.lastSyncedAt);
     if (refreshingReadyContext) {
       this.updateContextSync(true, 5);
     }
@@ -658,6 +658,8 @@ export class BackgroundService {
       const messages = selected.source === "chatgpt"
         ? await this.readChatGptMessages(selected.id)
         : await new CodexHistoryClient(defaultCodexCommand()).readUserMessages(selected.id);
+      if (!messages.length && (selected.messageCount ?? 0) > 0) throw Object.assign(new Error("Codex вернул пустую историю. Сохранённый контекст не изменён."), { code: "CODEX_DESKTOP_PROTOCOL" });
+      this.diagnostics.record("context.read-ready", { current: messages.length });
       if (refreshingReadyContext) this.updateContextSync(true, 35);
       const memoryRoot = path.join(this.userData, "psychologist-memory");
       await mkdir(memoryRoot, { recursive: true });
@@ -698,7 +700,7 @@ export class BackgroundService {
     const localThreads = await new CodexHistoryClient(defaultCodexCommand()).listThreads();
     const callingThreadId = localThreads[0]?.id;
     if (!callingThreadId) throw new Error("Codex Desktop не нашёл локальную задачу для доступа к чатам ChatGPT");
-    return new CodexAppHistoryClient(callingThreadId).readUserMessages(threadId);
+    return new CodexAppHistoryClient(callingThreadId, { onDiagnostic: code => this.diagnostics.record("context.read-failed", { code }), onPage: pages => this.diagnostics.record("context.read-progress", { current: pages }) }).readUserMessages(threadId);
   }
 
   private contextSourcePath() {
@@ -1144,6 +1146,7 @@ export class BackgroundService {
         } finally { this.updateContextSync(false,0); }
         return;
       }
+      if (force) { await this.syncContext(); return; }
       const threads = await this.listContextThreads();
       const latest = threads.find((thread) => thread.id === selected.id);
       const analysis = this.readContextAnalysis();

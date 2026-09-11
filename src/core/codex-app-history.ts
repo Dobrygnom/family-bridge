@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import net from "node:net";
@@ -92,13 +93,12 @@ export function extractChatGptUserMessages(pages: unknown[]): ContextMessage[] {
   return messages;
 }
 
-class NativePipeClient {
+export class NativePipeClient {
   private socket?: net.Socket;
-  private nextId = 1;
   private buffer = Buffer.alloc(0);
-  private readonly pending = new Map<number, { resolve: (value: JsonObject) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  private readonly pending = new Map<string, { resolve: (value: JsonObject) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
 
-  constructor(private readonly pipePath: string) {}
+  constructor(private readonly pipePath: string, private readonly requestTimeoutMs = 60_000) {}
 
   async connect(timeoutMs = 1_500) {
     await new Promise<void>((resolve, reject) => {
@@ -120,13 +120,22 @@ class NativePipeClient {
   }
 
   close() {
-    this.socket?.destroy();
+    for (const id of this.pending.keys()) this.cancel(id);
+    this.fail(new CodexAppHistoryError("CODEX_DESKTOP_UNAVAILABLE"));
+    this.socket?.end();
     this.socket = undefined;
+  }
+
+  private cancel(id: string) {
+    if (!this.socket || this.socket.destroyed) return;
+    const payload = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/cancel" }));
+    const frame = Buffer.alloc(4 + payload.length); frame.writeUInt32LE(payload.length); payload.copy(frame, 4);
+    this.socket.write(frame);
   }
 
   request(method: string, params?: JsonObject): Promise<JsonObject> {
     if (!this.socket) return Promise.reject(new Error("Codex Desktop pipe is not connected"));
-    const id = this.nextId++;
+    const id = randomUUID();
     const payload = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) }), "utf8");
     if (payload.length > maxFrameBytes) return Promise.reject(new Error("Codex Desktop request is too large"));
     const frame = Buffer.alloc(4 + payload.length);
@@ -134,9 +143,10 @@ class NativePipeClient {
     payload.copy(frame, 4);
     return new Promise<JsonObject>((resolve, reject) => {
       const timer = setTimeout(() => {
+        this.cancel(id);
         this.pending.delete(id);
-        reject(new Error(`Codex Desktop timed out while running ${method}`));
-      }, 60_000);
+        reject(new CodexAppHistoryError("CODEX_DESKTOP_TIMEOUT"));
+      }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.socket!.write(frame, (error) => {
         if (!error) return;
@@ -157,8 +167,8 @@ class NativePipeClient {
       const payload = this.buffer.subarray(4, length + 4);
       this.buffer = this.buffer.subarray(length + 4);
       try {
-        const response = JSON.parse(payload.toString("utf8")) as { id?: number; result?: JsonObject; error?: { message?: string } };
-        if (typeof response.id !== "number") continue;
+        const response = JSON.parse(payload.toString("utf8")) as { id?: string; result?: JsonObject; error?: { message?: string } };
+        if (typeof response.id !== "string") continue;
         const waiting = this.pending.get(response.id);
         if (!waiting) continue;
         this.pending.delete(response.id);
@@ -181,15 +191,34 @@ class NativePipeClient {
   }
 }
 
+export class CodexAppHistoryError extends Error {
+  constructor(readonly code: "CODEX_DESKTOP_UNAVAILABLE" | "CODEX_DESKTOP_BUSY" | "CODEX_DESKTOP_TIMEOUT" | "CODEX_DESKTOP_PROTOCOL" | "CODEX_HISTORY_READ_FAILED" | "CHATGPT_SOURCE_UNAVAILABLE") {
+    super({
+      CODEX_DESKTOP_UNAVAILABLE: "Подключение к Codex Desktop для чтения чата сейчас недоступно. Сохранённый контекст остаётся на месте.",
+      CODEX_DESKTOP_BUSY: "Codex временно перегружен запросами. Не удалось завершить чтение чата; сохранённый контекст остаётся на месте.",
+      CODEX_DESKTOP_TIMEOUT: "Codex не завершил чтение чата вовремя. Сохранённый контекст остаётся на месте.",
+      CODEX_DESKTOP_PROTOCOL: "Не удалось согласовать формат чтения чата с Codex Desktop. Сохранённый контекст остаётся на месте.",
+      CODEX_HISTORY_READ_FAILED: "Codex не смог прочитать выбранный чат. Сохранённый контекст остаётся на месте.",
+      CHATGPT_SOURCE_UNAVAILABLE: "Codex Desktop временно не может получить чаты ChatGPT. Сохранённый контекст остаётся на месте.",
+    }[code]);
+  }
+}
+
+interface AppHistoryOptions {
+  transports?: () => string[];
+  pause?: (ms: number) => Promise<void>;
+  onDiagnostic?: (code: string) => void;
+  onPage?: (pages: number) => void;
+}
+
 export class CodexAppHistoryClient {
-  constructor(private readonly callingThreadId: string) {}
+  constructor(private readonly callingThreadId: string, private readonly options: AppHistoryOptions = {}) {}
 
   async listThreads(): Promise<ContextThread[]> {
     return this.withClient(async (client) => {
-      const [threads, projects] = await Promise.all([
-        this.callTool(client, "list_threads", { limit: 50 }),
-        this.callTool(client, "list_projects", {}),
-      ]);
+      const threads = await this.callTool(client, "list_threads", { limit: 50 });
+      if (values(object(threads).unavailableSources).some(source => JSON.stringify(source).toLowerCase().includes("chatgpt"))) throw new CodexAppHistoryError("CHATGPT_SOURCE_UNAVAILABLE");
+      const projects = await this.callTool(client, "list_projects", {});
       return parseChatGptThreads(threads, projects);
     });
   }
@@ -198,6 +227,7 @@ export class CodexAppHistoryClient {
     return this.withClient(async (client) => {
       const pages: unknown[] = [];
       let cursor: string | undefined;
+      const seen = new Set<string>();
       do {
         const page = await this.callTool(client, "read_thread", {
           threadId,
@@ -206,47 +236,60 @@ export class CodexAppHistoryClient {
           maxOutputCharsPerItem: 20_000,
           ...(cursor ? { cursor } : {}),
         });
+        if (!Array.isArray(object(page).turns) || typeof object(object(page).page).hasMore !== "boolean") throw new CodexAppHistoryError("CODEX_DESKTOP_PROTOCOL");
         pages.push(page);
+        this.options.onPage?.(pages.length);
         const paging = object(object(page).page);
-        cursor = paging.hasMore === true && typeof paging.nextCursor === "string" ? paging.nextCursor : undefined;
+        if (paging.hasMore === true && (typeof paging.nextCursor !== "string" || !paging.nextCursor)) throw new CodexAppHistoryError("CODEX_DESKTOP_PROTOCOL");
+        cursor = paging.hasMore === true ? paging.nextCursor as string : undefined;
+        if (cursor && seen.has(cursor)) throw new CodexAppHistoryError("CODEX_DESKTOP_PROTOCOL");
+        if (cursor) seen.add(cursor);
       } while (cursor);
       return extractChatGptUserMessages(pages);
     });
   }
 
   private async withClient<T>(operation: (client: NativePipeClient) => Promise<T>): Promise<T> {
-    let lastError: Error | undefined;
-    const transports = listCodexAppTransportCandidates();
+    const discovered = (this.options.transports ?? listCodexAppTransportCandidates)();
+    const preferred = process.env.CODEX_APP_TOOLS_PIPE_PATH;
+    const transports = [...new Set([...(preferred && discovered.includes(preferred) ? [preferred] : []), ...discovered])];
     for (const transport of transports) {
       const client = new NativePipeClient(transport);
       try {
         await client.connect();
         const listed = object(await client.request("tools/list", { threadStartKind: "all" }));
-        const names = values(listed.tools).map((tool) => tool.name);
-        if (!names.includes("list_threads") || !names.includes("read_thread") || !names.includes("list_projects")) throw new Error("Required Codex Desktop tools are unavailable");
-        const result = await operation(client);
-        client.close();
-        return result;
-      } catch (error) {
-        client.close();
-        lastError = error instanceof Error ? error : new Error(String(error));
-      }
+        const names = values(listed.tools).filter(tool => !tool.namespace || tool.namespace === "codex_app").map(tool => tool.name);
+        if (!["list_threads", "read_thread", "list_projects"].every(name => names.includes(name))) { client.close(); continue; }
+      } catch { client.close(); continue; }
+      // Once capabilities match, a reading failure belongs to this application.
+      // Browser endpoints with similar pipe names must not replace its cause.
+      try { return await operation(client); }
+      finally { client.close(); }
     }
-    throw new Error(`Не удалось прочитать чаты ChatGPT через Codex Desktop. Откройте Codex и попробуйте снова.${lastError ? ` ${lastError.message}` : ""}`);
+    throw new CodexAppHistoryError("CODEX_DESKTOP_UNAVAILABLE");
   }
 
   private async callTool(client: NativePipeClient, tool: string, args: JsonObject): Promise<unknown> {
-    const result = object(await client.request("tools/call", {
-      arguments: args,
-      callId: randomUUID(),
-      namespace: "codex_app",
-      threadId: this.callingThreadId,
-      tool,
-      turnId: randomUUID(),
-    }));
-    if (result.success !== true) throw new Error(`Codex Desktop could not run ${tool}`);
-    const text = values(result.contentItems).find((item) => item.type === "inputText" && typeof item.text === "string")?.text;
-    if (typeof text !== "string") throw new Error(`Codex Desktop returned no data for ${tool}`);
-    return JSON.parse(text) as unknown;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = object(await client.request("tools/call", {
+          arguments: args, callId: randomUUID(), namespace: "codex_app",
+          threadId: this.callingThreadId, tool, turnId: randomUUID(),
+        }));
+        const text = values(result.contentItems).find(item => item.type === "inputText" && typeof item.text === "string")?.text;
+        if (result.success !== true) {
+          const busy = typeof text === "string" && /too many concurrent requests|concurrency limit|rate.?limit|overloaded|429/i.test(text);
+          throw new CodexAppHistoryError(busy ? "CODEX_DESKTOP_BUSY" : "CODEX_HISTORY_READ_FAILED");
+        }
+        if (typeof text !== "string") throw new CodexAppHistoryError("CODEX_DESKTOP_PROTOCOL");
+        try { return JSON.parse(text) as unknown; }
+        catch { throw new CodexAppHistoryError("CODEX_DESKTOP_PROTOCOL"); }
+      } catch (error) {
+        const failure = error instanceof CodexAppHistoryError ? error : new CodexAppHistoryError("CODEX_HISTORY_READ_FAILED");
+        this.options.onDiagnostic?.(failure.code);
+        if (attempt >= 3 || !["CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT"].includes(failure.code)) throw failure;
+        await (this.options.pause ?? delay)([2000, 5000, 10000][attempt]);
+      }
+    }
   }
 }
