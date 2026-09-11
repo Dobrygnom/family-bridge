@@ -40,7 +40,7 @@ export interface PendingOwnerQuestion {
 }
 
 export interface StoredState {
-  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number }>;
+  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number }>;
   owner: OwnerId;
   onboardingComplete: boolean;
   identityConfigured: boolean;

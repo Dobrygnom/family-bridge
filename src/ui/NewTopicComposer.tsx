@@ -37,7 +37,7 @@ export function NewTopicComposer({ state, language, onState, onActive }: {
 }) {
   const t = labels[language], pairId = state.remote.pairId || "unpaired";
   const sharedLabel = { ru: "Контекст для собеседника", en: "Context for your partner", cs: "Kontext pro partnera", fr: "Contexte pour le partenaire" }[language];
-  const sharedHint = { ru: "Контекст и реплика отправятся вместе, двумя блоками одного сообщения.", en: "Context and message are sent together as two blocks of one message.", cs: "Kontext a zpráva se odešlou společně jako dva bloky jedné zprávy.", fr: "Le contexte et le message seront envoyés ensemble en deux blocs." }[language];
+  const sharedHint = { ru: "Контекст передаётся отдельно агенту собеседника. В разговоре появится только реплика.", en: "Context is sent separately to your partner’s agent. Only the message appears in the conversation.", cs: "Kontext se předá agentovi partnera zvlášť. V rozhovoru se zobrazí pouze zpráva.", fr: "Le contexte est transmis séparément à l’agent du partenaire. Seul le message apparaît dans la conversation." }[language];
   const key = `family-bridge-topic-composer:${pairId}`;
   const [saved, setSaved] = useState(() => load(key));
   const [open, setOpen] = useState(Boolean(saved.agent.description || saved.direct.message || saved.direct.context));

@@ -11,6 +11,7 @@ export interface LiveConversation {
 }
 
 export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates" | "repairPendingIds" | "repairWaiting"> & {
+  topicBriefs?: AppState["topicBriefs"];
   conversationRevision: number;
   liveConversations: LiveConversation[];
 };
@@ -27,6 +28,7 @@ export function applyConversationUpdate(state: AppState, event: ConversationUpda
 export function keepNewerConversations(current: AppState, incoming: AppState): AppState {
   if ((incoming.conversationRevision ?? 0) >= (current.conversationRevision ?? 0)) return incoming;
   return { ...incoming, repairPendingIds: current.repairPendingIds, repairWaiting: current.repairWaiting, conversationRevision: current.conversationRevision, liveConversations: current.liveConversations,
+    topicBriefs: current.topicBriefs,
     reports: current.reports, reportSummaries: current.reportSummaries, continuationStates: current.continuationStates };
 }
 

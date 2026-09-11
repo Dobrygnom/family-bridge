@@ -38,6 +38,8 @@ export function ConversationThreads(props: Props) {
 
 function ThreadCard({ state, language, selectedReportId, onState, activeDictation, onDictationBusy, reading, onRead, revealToken, thread }: Props & { thread: ConversationThread }) {
   const t = labels[language], attention = attentionLabels[language];
+  const brief = state.topicBriefs?.[thread.topic];
+  const briefLabels = { ru: ["О чём речь", "Что хочется понять"], en: ["Context", "What we want to understand"], cs: ["O co jde", "Co chceme pochopit"], fr: ["Contexte", "Ce que nous voulons comprendre"] }[language];
   const unread = unreadMessages(thread, reading);
   const unreadRef = useRef(unread); unreadRef.current = unread;
   const [open, setOpen] = useState(false), [boundary, setBoundary] = useState<string>();
@@ -67,6 +69,7 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
             {!repairPending && <small>{thread.messageCount} {t.messages}</small>}
           </span></summary>
           {authors.length > 0 && <div className="report-source">{proposedLabel}: <strong>{authors.join(" + ")}</strong></div>}
+          {(brief?.context || brief?.goal) && <details className="report-position-details"><summary>{briefLabels[0]}</summary>{brief.context && <p style={{ whiteSpace: "pre-wrap" }}>{brief.context}</p>}{brief.goal && <><strong>{briefLabels[1]}</strong><p>{brief.goal}</p></>}</details>}
           {repairPending && <p className="muted" role="status">{state.repairWaiting?.[thread.id] ? status : repairHint}</p>}
           {!repairPending && thread.currentStages.map((stage, index) => <section id={`report-${stage.id}`} className="conversation-stage" key={stage.id}>
             {(index > 0 || stage.restarted) && <div className="conversation-updates-heading"><strong>{stage.restarted ? restartLabel : t.next}</strong><small>{stage.live ? stage.activity ? activityLabels[language][stage.activity] : t.live : stage.report?.completedAt ? new Date(stage.report.completedAt).toLocaleString(language) : ""}</small></div>}

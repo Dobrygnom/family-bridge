@@ -69,10 +69,10 @@ export function shareableTopicBrief(topic: RoutedTopic | undefined): TopicBrief 
   return Object.keys(brief).length ? brief : undefined;
 }
 
-export function sanitizeTopicBrief(value: unknown): TopicBrief | undefined {
+export function sanitizeTopicBrief(value: unknown, maximum = TOPIC_BRIEF_LIMIT): TopicBrief | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const input = value as Record<string, unknown>;
-  const clean = (candidate: unknown) => typeof candidate === "string" && candidate.trim() && candidate.length <= TOPIC_BRIEF_LIMIT ? candidate.trim() : undefined;
+  const clean = (candidate: unknown) => typeof candidate === "string" && candidate.trim() && candidate.length <= maximum ? candidate.trim() : undefined;
   const context = clean(input.context);
   const goal = clean(input.goal);
   const openingQuestion = clean(input.openingQuestion);

@@ -1,5 +1,5 @@
 import { errorMessage } from "../src/core/error-message.js";
-import { newTopicText, normalizeNewTopic, newTopicPrompt, newTopicWireText, NEW_TOPIC_DESCRIPTION_LIMIT, type NewTopicPreview, type NewTopicRequest } from "../src/core/new-topic.js";
+import { newTopicText, normalizeNewTopic, newTopicPrompt, legacyNewTopicWireText, supportsSeparateTopicBrief, NEW_TOPIC_CONTEXT_LIMIT, NEW_TOPIC_DESCRIPTION_LIMIT, type NewTopicPreview, type NewTopicRequest } from "../src/core/new-topic.js";
 import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -65,6 +65,7 @@ interface TopicPayload {
 }
 
 interface DialoguePayload {
+  brief?: TopicBrief;
   origin?: import("../src/core/continuation.js").MessageOrigin;
   kind?: "dialogue";
   text: string;
@@ -594,7 +595,7 @@ export class BackgroundService {
           speaker: message.from === stored.owner ? stored.displayName || "Вы" : stored.remote?.peerName || "Партнёр" })),
       };
     });
-    return { conversationRevision: this.conversationRevision, reports: stored.reports, reportSummaries, liveConversations,
+    return { conversationRevision: this.conversationRevision, topicBriefs: stored.topicBriefs, reports: stored.reports, reportSummaries, liveConversations,
       repairPendingIds: repairs.map(candidate => candidate.rootId), repairWaiting,
       continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, mode: value.mode, status: completed.has(id) ? "complete" as const : value.status })) };
   }
@@ -1517,6 +1518,8 @@ export class BackgroundService {
     const job = { ...previous?.[1], topic, pairId:stored.remote.pairId, status:"preparing" as const, attempts:(previous?.[1].attempts ?? 0) + 1, preparedMessage:previous?.[1].preparedMessage };
     await this.store.mutate(current=>({ topicLaunches:{...current.topicLaunches,[conversationId]:job}, pendingTopics:current.pendingTopics.filter(t=>topicKey(t)!==topicKey(topic)) }));
     try {
+    if (job.openingBrief?.context && !supportsSeparateTopicBrief(stored.remote.peerVersion))
+      throw new Error("Ждём обновления приложения собеседника: контекст должен передаваться отдельно от реплики. Отправка продолжится автоматически.");
     const pair = await this.remote.pairState(stored.remote.pairId);
     const me = await this.remote.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
@@ -1544,7 +1547,7 @@ export class BackgroundService {
     this.remoteMessages.set(conversationId, messages);
     await this.persistTranscript(conversationId, topic, messages);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text, origin, topic, status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { kind: "dialogue", text, origin, topic, ...(job.openingBrief ? { brief: job.openingBrief } : {}), status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     const next = await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "waiting"}}, activeTopics:mergeTopicCatalog(current.activeTopics,[topic])}));
     this.emitTopicState(next);
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text, turn: 1 });
@@ -1564,6 +1567,9 @@ export class BackgroundService {
   private async shareTopicToPair(topic: string, stored: Awaited<ReturnType<AtomicStore["read"]>>, pair: Awaited<ReturnType<SupabaseTransport["pairState"]>>, versionOnly = false, requestUpdateCheck = false, requestVersion = false) {
     if (topic.startsWith(VERSION_PROBE_PREFIX)) versionOnly = true;
     if (!this.remote) return;
+    // Reviewed openings carry their brief atomically with the first reply.
+    // A separate topic announcement could start the peer before that reply arrives.
+    if (!versionOnly && Object.values(stored.topicLaunches).some(job => job.pairId === stored.remote?.pairId && job.openingBrief && topicKey(job.topic) === topicKey(topic))) return;
     if (!versionOnly && this.options.experienceResetVersion && stored.remote?.peerExperienceVersion !== this.options.experienceResetVersion) return;
     const me = await this.remote.identity();
     const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
@@ -1669,7 +1675,7 @@ export class BackgroundService {
 
   private savedTopicBrief(briefs: Record<string, TopicBrief>, topic: string) {
     const key = Object.keys(briefs).find((candidate) => topicKey(candidate) === topicKey(topic));
-    return key ? sanitizeTopicBrief(briefs[key]) : undefined;
+    return key ? sanitizeTopicBrief(briefs[key], NEW_TOPIC_CONTEXT_LIMIT) : undefined;
   }
 
   private privateSourceExcerpts(query: string) {
@@ -1710,7 +1716,7 @@ export class BackgroundService {
       const analysis = this.readContextAnalysis();
       const matchedTopic = findTopicContext(analysis, topic);
       const localTopic = matchedTopic?.approved && (!counterpartPersonId || matchedTopic.discussWithPersonId === counterpartPersonId) ? matchedTopic : undefined;
-      const brief = shareableTopicBrief(localTopic) ?? sharedBrief;
+      const brief = sharedBrief ?? shareableTopicBrief(localTopic);
       const approvedRelatedContext = (analysis?.topics ?? [])
         .filter((item) => item.approved && counterpartPersonId && item.discussWithPersonId === counterpartPersonId && item.id !== localTopic?.id)
         .map((item) => `- ${item.title}: ${item.reason}`)
@@ -1929,6 +1935,11 @@ export class BackgroundService {
         }
       }
       const currentTopics = await this.store.read();
+      const incomingBrief = envelope.sequence_number === 1 ? sanitizeTopicBrief(dialogue.brief, NEW_TOPIC_CONTEXT_LIMIT) : undefined;
+      if (incomingBrief) {
+        await this.store.mutate(current => ({ topicBriefs: { ...current.topicBriefs, [dialogue.topic]: incomingBrief } }));
+        currentTopics.topicBriefs = { ...currentTopics.topicBriefs, [dialogue.topic]: incomingBrief };
+      }
       const pendingTopics = currentTopics.pendingTopics.filter((item) => item !== dialogue.topic);
       const activeState = await this.store.mutate((current) => ({
         pendingTopics: current.pendingTopics.filter((item) => item !== dialogue.topic),
@@ -2228,8 +2239,10 @@ export class BackgroundService {
     const request: NewTopicRequest = { pairId: stored.remote.pairId, description: newTopicText(value.description, NEW_TOPIC_DESCRIPTION_LIMIT),
       instruction: value.instruction ? newTopicText(value.instruction, 4_000) : undefined,
       preview: value.preview ? normalizeNewTopic(value.preview) : undefined };
+    let communicationExamples = "";
+    try { communicationExamples = selectCommunicationExamples(readFileSync(path.join(this.userData, "psychologist-memory", "style-samples.jsonl"), "utf8")); } catch { /* optional */ }
     const prompt = newTopicPrompt(request, stored.displayName, stored.remote.peerName ?? "Партнёр", stored.language,
-      this.privateSourceExcerpts(request.description));
+      this.privateSourceExcerpts(request.description), communicationExamples);
     const compose = this.options.newTopicComposer ?? ((text: string) => new CodexTopicRefiner(defaultCodexCommand(),
       path.join(this.userData, "new-topic"), path.join(this.resourcesPath, "schemas", "new-topic.schema.json")).generate(text, normalizeNewTopic));
     return this.updateActivity.track("topic_edits", compose(prompt).then(normalizeNewTopic));
@@ -2243,10 +2256,11 @@ export class BackgroundService {
     const id = value.id, origin = value.mode === "direct" ? "owner-answer" as const : "agent" as const;
     const next = await this.store.mutate(current => {
       if (!current.identityConfigured || !current.remote || current.remote.pairId !== value.pairId) throw new Error("Получатель изменился. Проверьте подключение");
-      const text = newTopicWireText(preview, current.language);
       const existing = current.topicLaunches[id];
+      const text = existing && !existing.openingBrief ? legacyNewTopicWireText(preview, current.language) : preview.message;
       if (existing) {
-        if (existing.pairId !== value.pairId || existing.topic !== preview.title || existing.preparedMessage !== text || existing.openingOrigin !== origin)
+        if (existing.pairId !== value.pairId || existing.topic !== preview.title || existing.preparedMessage !== text || existing.openingOrigin !== origin
+          || existing.openingBrief && (existing.openingBrief.context ?? "") !== preview.context)
           throw new Error("Этот черновик уже передан в очередь. Создайте новую тему");
         return existing.status === "error" ? { topicLaunches: { ...current.topicLaunches, [id]: { ...existing, status: "preparing", attempts: 0, retryAt: undefined } } } : {};
       }
@@ -2257,7 +2271,8 @@ export class BackgroundService {
         ...readReportSummaries(current.reports).map(r => r.topic)].some(t => topicKey(t) === key)) throw new Error("Тема с таким названием уже есть. Укажите новое название");
       if (current.blockedTopics.some(t => preview.title.toLowerCase().includes(t.toLowerCase()))) throw new Error("Эта тема заблокирована");
       return { topicLaunches: { ...current.topicLaunches, [id]: { topic: preview.title, pairId: current.remote.pairId,
-        status: "preparing", attempts: 0, preparedMessage: text, approvedOpening: true, openingOrigin: origin } },
+        status: "preparing", attempts: 0, preparedMessage: text, openingBrief: { context: preview.context, openingQuestion: preview.message }, approvedOpening: true, openingOrigin: origin } },
+        topicBriefs: { ...current.topicBriefs, [preview.title]: { context: preview.context, openingQuestion: preview.message } },
         pairTopics: mergeTopicCatalog(current.pairTopics, [preview.title]), topicSources: markTopicSource(current.topicSources, preview.title, "local") };
     });
     this.emitTopicState(next);
