@@ -80,7 +80,7 @@ export function NewTopicComposer({ state, language, onState, onActive }: {
   }
   const stale = mode === "agent" && (draft.preparedFor !== draft.description || Boolean(draft.instruction.trim()));
   return <section className="new-topic-composer">
-    <div className="composer-heading"><h3>{t.heading}</h3><button type="button" className="ghost" disabled={locked} onClick={() => { setNotice(""); setOpen(!open); }}>{open ? <X size={17} /> : <Plus size={17} />}{open ? t.close : t.add}</button></div>
+    <div className="composer-heading"><h3>{t.heading}</h3><button type="button" className={open ? "ghost" : "primary composer-create"} disabled={locked} onClick={() => { setNotice(""); setOpen(!open); }}>{open ? <X size={17} /> : <Plus size={22} strokeWidth={2.5} />}{open ? t.close : t.add}</button></div>
     {notice && <p role="status" className="composer-success">{notice}</p>}
     {error && <p role="alert" className="composer-error">{error}</p>}
     {open && <>

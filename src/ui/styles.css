@@ -287,6 +287,9 @@ button[aria-busy="true"] { cursor: progress; }
 .composer-recipient strong { color: #e3f3ee; }
 .composer-modes { justify-content: flex-start; margin-bottom: 18px; }
 .composer-modes button, .new-topic-composer button { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 10px 15px; border-radius: 9px; }
+.composer-heading .composer-create { min-height: 52px; min-width: 220px; justify-content: center; padding: 14px 24px; background: #80d6b7; color: #102e28; border: 1px solid #b1f3dc; font-size: 16px; font-weight: 750; box-shadow: 0 3px 14px #80d6b724; }
+.composer-heading .composer-create:hover:not(:disabled) { background: #a0ebcf; border-color: #d0ffe9; }
+.composer-heading .composer-create:focus-visible { outline: 3px solid #d0ffe9; outline-offset: 4px; }
 .composer-modes button[aria-selected="true"] { background: #244940; color: #a7f0d4; border-color: #79ceae; }
 .new-topic-composer fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 14px; min-width: 0; }
 .new-topic-composer label { display: grid; gap: 8px; color: #c8dfd8; font-size: 14px; font-weight: 600; }
