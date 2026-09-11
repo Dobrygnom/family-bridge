@@ -10,8 +10,8 @@ const labels = {
   fr: { current:"Version installée", check:"Vérifier les mises à jour", checking:"Recherche de mises à jour…", download:"Téléchargement de la version", ready:"Version prête", install:"Mettre à jour maintenant", installing:"Installation de la mise à jour…", requested:"Installation immédiate demandée", auto:"La mise à jour sera automatique. Vous pouvez l’installer maintenant.", restart:"L’application redémarrera. Les conversations et les brouillons enregistrés resteront.", dictation:"Terminez ou annulez l’enregistrement vocal pour installer la mise à jour.", editing:"Enregistrez ou annulez vos modifications pour poursuivre la mise à jour.", activity:"En attente de la fin de l’action dans l’application. L’installation reprendra automatiquement.", background:"En attente de l’enregistrement des données et de la fin du travail de l’agent. L’installation reprendra automatiquement.", error:"Échec de la mise à jour. Réessayez." },
 };
 
-export function UpdateControl({ update, version, language, onCheck, onInstall }: {
-  update: AppState["update"]; version: string; language: Language; onCheck: () => Promise<unknown>; onInstall: () => Promise<unknown>;
+export function UpdateControl({ update, version, language, onCheck, onInstall, compact = false }: {
+  update: AppState["update"]; version: string; language: Language; onCheck: () => Promise<unknown>; onInstall: () => Promise<unknown>; compact?: boolean;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const t = labels[language];
@@ -21,6 +21,20 @@ export function UpdateControl({ update, version, language, onCheck, onInstall }:
     try { await action(); }
     catch (reason) { setError(reason instanceof Error ? reason.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : t.error); }
     finally { setBusy(false); }
+  }
+  if (compact) {
+    const pending = busy || update.checking || update.downloading || update.installing;
+    const caption = update.installing ? t.installing : update.downloading ? `${t.download} · ${Math.round(update.progress ?? 0)}%`
+      : update.checking ? t.checking : update.ready ? t.install
+      : { ru: "Обновить приложение", en: "Update app", cs: "Aktualizovat aplikaci", fr: "Mettre à jour l’application" }[language];
+    return <div className={`sidebar-update ${update.available || update.ready ? "update-available" : ""}`} aria-live="polite">
+      {update.version && (update.available || update.ready) && <strong>{update.ready ? t.ready : { ru: "Доступна версия", en: "Version available", cs: "Dostupná verze", fr: "Version disponible" }[language]} {update.version}</strong>}
+      <button disabled={pending} aria-busy={pending} onClick={() => void act(update.ready ? onInstall : onCheck)}>
+        {pending ? <LoaderCircle className="spin" size={17}/> : <Download size={17}/>}<span>{caption}</span>
+      </button>
+      {update.waitingFor && <small>{t[update.waitingFor]}</small>}
+      {(error || update.error) && <small role="alert">{error || update.error}</small>}
+    </div>;
   }
   return <div className="update-card" aria-live="polite">
     <small>{t.current} {version}</small>

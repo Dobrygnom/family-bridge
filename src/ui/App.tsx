@@ -23,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import type { AppState } from "../global.js";
+import { suggestedTopics, topicAlreadyStarted } from "../core/topic-suggestions.js";
 import { languageNames, translations, type Language } from "./i18n.js";
 import { DictationControl } from "./DictationControl.js";
 import { PeerVersionControl } from "./PeerVersionControl.js";
@@ -102,7 +103,7 @@ export function App() {
   const [showContextPicker, setShowContextPicker] = useState(false);
   const [counterpartPersonId, setCounterpartPersonId] = useState("");
   const [reviewPersonId, setReviewPersonId] = useState("");
-  const [topicFilter, setTopicFilter] = useState<"all" | "review" | "approved">("all");
+  const [topicFilter, setTopicFilter] = useState<"all" | "review" | "approved" | "dismissed">("all");
   const [topicSearch, setTopicSearch] = useState("");
   const [expandedTopicIds, setExpandedTopicIds] = useState<Set<string>>(() => new Set());
   const [editingTopicId, setEditingTopicId] = useState("");
@@ -175,6 +176,12 @@ export function App() {
     en: { eyebrow: "FIRST RUN", title: "First, prepare your context", lead: "Choose one chat as your agent's private foundation. Raw messages remain on this computer.", chooseTitle: "1. Choose a base chat", chooseHint: "We'll open your Codex projects and chats.", confirmHint: "This chat was selected before. Use it again or choose another.", useSaved: "Use this chat", processingTitle: "Preparing context", resumeTitle: "Updating your saved context", export: "Reading your messages", people: "Identifying people", topics: "Preparing possible conversations", finalizing: "Assembling recommendations", waiting: "This can take a few minutes. You may leave the app open.", resumeWaiting: "Existing people and topics are preserved. Only changes from the chat are being added.", reviewTitle: "Choose conversations", reviewHint: "Choose a person first. Each topic shows the situation, the goal, and a possible opening. Nothing is shared without your approval.", finish: "Prepare selected conversations", noPeople: "No people were identified. Refresh the export or choose another chat." },
     cs: { eyebrow: "PRVNÍ SPUŠTĚNÍ", title: "Nejprve připravíme váš kontext", lead: "Vyberte jeden chat jako soukromý základ agenta. Původní zprávy zůstanou v tomto počítači.", chooseTitle: "1. Vyberte základní chat", chooseHint: "Otevřeme seznam vašich projektů a chatů Codex.", confirmHint: "Tento chat už byl vybrán. Můžete jej použít znovu nebo zvolit jiný.", useSaved: "Použít tento chat", processingTitle: "Připravujeme kontext", resumeTitle: "Doplňujeme uložený kontext", export: "Načítáme vaše zprávy", people: "Rozpoznáváme osoby", topics: "Připravujeme možné rozhovory", finalizing: "Sestavujeme doporučení", waiting: "Může to trvat několik minut. Aplikaci můžete nechat otevřenou.", resumeWaiting: "Nalezené osoby a témata zůstávají zachována. Přidáváme jen změny z chatu.", reviewTitle: "Vyberte rozhovory", reviewHint: "Nejprve vyberte osobu. U každého tématu uvidíte situaci, cíl a možný začátek. Bez vašeho svolení se nic nesdílí.", finish: "Připravit vybrané rozhovory", noPeople: "Nebyly rozpoznány žádné osoby. Obnovte export nebo vyberte jiný chat." },
     fr: { eyebrow: "PREMIER DÉMARRAGE", title: "Préparons d'abord votre contexte", lead: "Choisissez un chat comme base privée de votre agent. Les messages bruts restent sur cet ordinateur.", chooseTitle: "1. Choisissez un chat de base", chooseHint: "Nous ouvrirons vos projets et chats Codex.", confirmHint: "Ce chat a déjà été choisi. Vous pouvez le réutiliser ou en choisir un autre.", useSaved: "Utiliser ce chat", processingTitle: "Préparation du contexte", resumeTitle: "Mise à jour du contexte enregistré", export: "Lecture de vos messages", people: "Identification des personnes", topics: "Préparation des conversations possibles", finalizing: "Assemblage des recommandations", waiting: "Cela peut prendre quelques minutes. Vous pouvez laisser l'application ouverte.", resumeWaiting: "Les personnes et sujets existants sont conservés. Seuls les changements du chat sont ajoutés.", reviewTitle: "Choisissez les conversations", reviewHint: "Choisissez d’abord une personne. Chaque sujet affiche la situation, l’objectif et une ouverture possible. Rien n'est partagé sans votre accord.", finish: "Préparer les conversations choisies", noPeople: "Aucune personne n'a été identifiée. Actualisez l'export ou choisissez un autre chat." },
+  }[language];
+  const suggestionText = {
+    ru: { hint: 'Здесь только ещё не начатые темы. Начатые и завершённые — в «Разговорах».', removed: 'Убранные', remove: 'Не обсуждать', restore: 'Вернуть в предложения' },
+    en: { hint: 'Only topics not started yet. Started and completed topics are in Conversations.', removed: 'Removed', remove: 'Do not discuss', restore: 'Restore suggestion' },
+    cs: { hint: 'Zde jsou jen dosud nezahájená témata. Zahájená a dokončená najdete v Rozhovorech.', removed: 'Odebraná', remove: 'Neprobírat', restore: 'Vrátit do návrhů' },
+    fr: { hint: 'Ici, uniquement les sujets non commencés. Les autres se trouvent dans Conversations.', removed: 'Retirés', remove: 'Ne pas discuter', restore: 'Rétablir la suggestion' },
   }[language];
   const registryText = {
     ru: { topicsFor: "Разговоры с", needReview: "нужно проверить", all: "Все", review: "Проверить", approved: "Выбраны", allowedOf: "выбрано из", allowSafe: "Выбрать безопасные", search: "Найти разговор", collapse: "Свернуть", expand: "Показать подробности", noFilteredTopics: "В этом фильтре тем нет.", context: "О чём речь", goal: "Что хочется понять", opening: "Как может начаться разговор", more: "Показать остальные", less: "Свернуть список", refine: "Уточнить тему", topicLabel: "Название разговора", save: "Сохранить уточнение", retry: "Попробовать ещё раз", cancel: "Отмена", editHint: "Сохранение не отправляет тему. Для передачи её нужно отдельно выбрать галочкой.", selectedHint: "Тема уже выбрана. Снимите выбор, чтобы уточнить её.", instruction: "Что здесь непонятно или какого контекста не хватает?", instructionPlaceholder: "Расскажите агенту, о чём на самом деле речь, или попросите объяснить тему яснее", prepare: "Уточнить тему", preparing: "Агент уточняет тему…", preview: "Теперь тема будет выглядеть так", previewHint: "Это точный текст для передачи. Ваше пояснение останется только у вашего агента.", prepared: "Тема уточнена" },
@@ -515,7 +522,7 @@ export function App() {
     finally { setVersionCheckBusy(false); }
   }
 
-  async function updateContextTopic(topicId: string, update: { aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }) {
+  async function updateContextTopic(topicId: string, update: { aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; dismissed?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }) {
     if (!api) return;
     setError("");
     try { setState(await api.updateContextTopic({ topicId, ...update })); }
@@ -594,7 +601,7 @@ export function App() {
 
   async function approveSafeTopics(personId: string) {
     if (!api || !state.contextAnalysis) return;
-    const topicIds = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === personId && !topicNeedsReview(item)).map((item) => item.id);
+    const topicIds = suggestedTopics(state.contextAnalysis.topics, state).filter((item) => item.discussWithPersonId === personId && !topicNeedsReview(item)).map((item) => item.id);
     if (!topicIds.length) return;
     setError("");
     try { setState(await api.updateContextTopics({ topicIds, approved: true })); }
@@ -616,34 +623,36 @@ export function App() {
 
   function topicRegistry() {
     if (!state.contextAnalysis?.people.length) return <div className="empty">{onboardingText.noPeople}</div>;
-    const topicPeople = state.contextAnalysis.people.filter((person) => state.contextAnalysis!.topics.some((topic) => topic.discussWithPersonId === person.id));
+    const unstarted = state.contextAnalysis.topics.filter(topic => !topicAlreadyStarted(topic, state));
+    const registryTopics = unstarted.filter(topic => Boolean(topic.dismissed) === (topicFilter === "dismissed"));
+    const topicPeople = state.contextAnalysis.people.filter((person) => unstarted.some((topic) => topic.discussWithPersonId === person.id));
     if (!topicPeople.length) return <div className="empty">{registryText.noFilteredTopics}</div>;
     const selectedPerson = topicPeople.find((person) => person.id === reviewPersonId)
       ?? topicPeople.find((person) => person.id === state.preferredCounterpartPersonId)
       ?? topicPeople.find((person) => person.id === state.remote.counterpartPersonId)
       ?? topicPeople[0];
-    const allForPerson = state.contextAnalysis.topics.filter((item) => item.discussWithPersonId === selectedPerson.id);
+    const allForPerson = registryTopics.filter((item) => item.discussWithPersonId === selectedPerson.id);
     const selectedPersonTopics = allForPerson
-      .filter((item) => topicFilter === "all" || topicFilter === "approved" && item.approved || topicFilter === "review" && topicNeedsReview(item))
+      .filter((item) => topicFilter === "all" || topicFilter === "dismissed" || topicFilter === "approved" && item.approved || topicFilter === "review" && topicNeedsReview(item))
       // Preserve the model's importance order; do not alphabetize the agenda.
       .filter((item) => !topicSearch.trim() || `${item.title} ${item.reason}`.toLocaleLowerCase(language).includes(topicSearch.trim().toLocaleLowerCase(language)));
     const visibleTopics = showAllReviewTopics || topicSearch.trim() || topicFilter !== "all" ? selectedPersonTopics : selectedPersonTopics.slice(0, 6);
     const reviewCount = allForPerson.filter(topicNeedsReview).length;
     const approvedCount = allForPerson.filter((item) => item.approved).length;
     return <div className="topic-registry">
-      <div className="person-tabs" role="tablist">{topicPeople.map((person) => {
-        const count = state.contextAnalysis!.topics.filter((item) => item.discussWithPersonId === person.id).length;
+      <p className="registry-hint">{suggestionText.hint}</p><div className="person-tabs" role="tablist">{topicPeople.map((person) => {
+        const count = registryTopics.filter((item) => item.discussWithPersonId === person.id).length;
         return <button type="button" role="tab" aria-selected={person.id === selectedPerson.id} className={person.id === selectedPerson.id ? "active" : ""} key={person.id} onClick={() => { setReviewPersonId(person.id); setShowAllReviewTopics(false); }}>{personLabel(person.id)} <span>{count}</span></button>;
       })}</div>
-      <div className="registry-heading"><div><h4>{registryText.topicsFor}: {personLabel(selectedPerson.id)}</h4><p>{allForPerson.length} · {reviewCount} {registryText.needReview}</p></div><div className="registry-controls"><input value={topicSearch} onChange={(event) => setTopicSearch(event.target.value)} placeholder={registryText.search} aria-label={registryText.search} /><div className="registry-filters"><button className={topicFilter === "all" ? "active" : ""} onClick={() => setTopicFilter("all")}>{registryText.all}</button><button className={topicFilter === "review" ? "active" : ""} onClick={() => setTopicFilter("review")}>{registryText.review}</button><button className={topicFilter === "approved" ? "active" : ""} onClick={() => setTopicFilter("approved")}>{registryText.approved}</button></div></div></div>
-      <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span><button className="ghost" onClick={() => void approveSafeTopics(selectedPerson.id)}>{registryText.allowSafe}</button></div>
+      <div className="registry-heading"><div><h4>{registryText.topicsFor}: {personLabel(selectedPerson.id)}</h4><p>{allForPerson.length} · {reviewCount} {registryText.needReview}</p></div><div className="registry-controls"><input value={topicSearch} onChange={(event) => setTopicSearch(event.target.value)} placeholder={registryText.search} aria-label={registryText.search} /><div className="registry-filters"><button className={topicFilter === "all" ? "active" : ""} onClick={() => setTopicFilter("all")}>{registryText.all}</button><button className={topicFilter === "review" ? "active" : ""} onClick={() => setTopicFilter("review")}>{registryText.review}</button><button className={topicFilter === "approved" ? "active" : ""} onClick={() => setTopicFilter("approved")}>{registryText.approved}</button><button className={topicFilter === "dismissed" ? "active" : ""} onClick={() => setTopicFilter("dismissed")}>{suggestionText.removed}</button></div></div></div>
+      <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span>{topicFilter !== "dismissed" && <button className="ghost" onClick={() => void approveSafeTopics(selectedPerson.id)}>{registryText.allowSafe}</button>}</div>
       <div className="topic-rows">{visibleTopics.map((item) => {
         const expanded = expandedTopicIds.has(item.id);
         const editing = editingTopicId === item.id;
         const about = item.aboutPersonIds.map(personLabel).join(", ") || "—";
         const brief = shareableTopicBrief(item);
         return <div className={`topic-row ${item.sensitivity} ${expanded ? "expanded" : ""}`} key={item.id}>
-          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} disabled={editing || savingTopicId === item.id} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}{item.relevance === "check_relevance" ? ` · ${topicRelevanceLabel(language)}` : ""}</span><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
+          <div className="topic-row-main"><label className="topic-approval"><input type="checkbox" checked={item.approved} disabled={item.dismissed || editing || savingTopicId === item.id} onChange={(event) => void updateContextTopic(item.id, { approved: event.target.checked })} /><span className="topic-approval-copy"><strong>{item.title}</strong>{brief?.context && <small>{brief.context}</small>}</span></label><span className="topic-about">{workflowText.about}: {about}{item.sensitivity !== "direct" ? ` · ${registryText.review}` : ""}{item.relevance === "check_relevance" ? ` · ${topicRelevanceLabel(language)}` : ""}</span><button className="topic-dismiss" disabled={editing || Boolean(refiningTopicId || savingTopicId)} aria-label={`${item.dismissed ? suggestionText.restore : suggestionText.remove}: ${item.title}`} title={item.dismissed ? suggestionText.restore : suggestionText.remove} onClick={() => void updateContextTopic(item.id, { dismissed: !item.dismissed })}>{item.dismissed ? <RefreshCw size={16} /> : <Trash2 size={16} />}</button><button className="topic-expand" aria-label={expanded ? registryText.collapse : registryText.expand} aria-expanded={expanded} onClick={() => toggleTopicDetails(item.id)}><ChevronDown size={17} /></button></div>
           {expanded && <div className="topic-row-detail">
             {editing ? <div className="topic-edit">
               <TopicRefinementRequest language={language} text={registryText} instruction={topicRefinementInstruction} pending={refiningTopicId === item.id} ready={topicRefinementReady} onChange={(value) => { setTopicRefinementInstruction(value); setTopicRefinementReady(false); }} onRefine={() => void refineTopicEdit(item.id)} onCancel={cancelTopicEdit} />
@@ -662,7 +671,7 @@ export function App() {
             </div> : <div className="topic-brief-grid">{brief?.context && <div><small>{registryText.context}</small><p>{brief.context}</p></div>}{brief?.goal && <div><small>{registryText.goal}</small><p>{brief.goal}</p></div>}{brief?.openingQuestion && <div className="topic-opening"><small>{registryText.opening}</small><p>«{brief.openingQuestion}»</p></div>}</div>}
             <div className="route-fields"><label>{workflowText.about}<select disabled={editing} value={item.aboutPersonIds[0] || ""} onChange={(event) => void updateContextTopic(item.id, { aboutPersonIds: [event.target.value] })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label><label>{workflowText.with}<select disabled={editing} value={item.discussWithPersonId} onChange={(event) => void updateContextTopic(item.id, { discussWithPersonId: event.target.value })}>{state.contextAnalysis!.people.map((person) => <option value={person.id} key={person.id}>{personLabel(person.id)}</option>)}</select></label></div>
             {item.sensitivity === "cross_person" && <small className="route-warning">{workflowText.cross}</small>}{item.sensitivity === "unclear" && <small className="route-warning">{workflowText.unclear}</small>}
-            {!editing && <div className="topic-refine">{item.approved ? <small>{registryText.selectedHint}</small> : <button className="ghost" disabled={Boolean(refiningTopicId || savingTopicId)} title={refiningTopicId ? registryText.preparing : undefined} onClick={() => beginTopicEdit(item)}>{registryText.refine}</button>}</div>}
+            {!editing && !item.dismissed && <div className="topic-refine">{item.approved ? <small>{registryText.selectedHint}</small> : <button className="ghost" disabled={Boolean(refiningTopicId || savingTopicId)} title={refiningTopicId ? registryText.preparing : undefined} onClick={() => beginTopicEdit(item)}>{registryText.refine}</button>}</div>}
           </div>}
         </div>;
       })}{!selectedPersonTopics.length && <div className="empty">{registryText.noFilteredTopics}</div>}</div>
@@ -694,10 +703,10 @@ export function App() {
           <button className={activeSection === "reports" ? "active" : ""} onClick={() => goTo("reports")}><ScrollText size={18} />{navigationText.reports}{reading.unreadCount > 0 && <b className="nav-badge unread-nav">{reading.unreadCount}</b>}</button>
           <button className={activeSection === "settings" ? "active" : ""} onClick={() => goTo("settings")}><Settings2 size={18} />{navigationText.settings}</button>
         </nav>
-        <div className="sidebar-status">
+        <div className="sidebar-footer"><div className="sidebar-status">
           <span className={health ? "status-dot online" : "status-dot"} />
           <div><strong>{health ? t.ready : t.setup}</strong><small>Family Bridge v{state.appVersion}</small><small>{state.codex.version}</small></div>
-        </div>
+        </div><UpdateControl compact update={state.update} version={state.appVersion} language={language} onCheck={async () => api?.checkForUpdates()} onInstall={async () => api?.installUpdate()} /></div>
       </aside>
 
       <main id="overview" className={`${!state.onboardingComplete && activeSection === "overview" ? "onboarding-main" : ""} ${activeSection === "context" ? "context-main" : ""}`.trim()}>

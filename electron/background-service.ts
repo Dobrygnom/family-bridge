@@ -10,6 +10,7 @@ import type { UpdateState } from "./mac-updater.js";
 import { CodexCliAgent, defaultCodexCommand, hasRoleVoiceViolation } from "../src/core/codex-runtime.js";
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
+import { dismissedTopicKeys } from "../src/core/topic-suggestions.js";
 import { CONTEXT_ANALYSIS_VERSION, COVERAGE_RECOVERY_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
@@ -310,7 +311,8 @@ export class BackgroundService {
     const next = await this.store.mutate(current => {
       const approved = topicsForCounterpart(analysis, current.remote?.counterpartPersonId);
       const protectedTitles = [...current.activeTopics, ...readReportSummaries(current.reports).map(report=>report.topic), ...Object.values(current.conversationTranscripts).map(t=>t.topic), ...current.pendingOwnerQuestions.map(q=>q.topic)];
-      const pendingTopics = reconcileTopicQueue(current.pendingTopics, approved, protectedTitles);
+      const dismissed = dismissedTopicKeys(analysis.topics, current.remote?.counterpartPersonId);
+      const pendingTopics = reconcileTopicQueue(current.pendingTopics.filter(title => !dismissed.has(topicKey(title))), approved, protectedTitles);
       let topicSources = current.topicSources;
       const topicBriefs = { ...current.topicBriefs };
       for (const topic of approved) { topicSources = markTopicSource(topicSources, topic.title, "local"); const brief = shareableTopicBrief(topic); if (brief) topicBriefs[topic.title] = brief; }
@@ -816,7 +818,7 @@ export class BackgroundService {
   }
 
   private async updateContextTopicNow(input: unknown) {
-    const value = input && typeof input === "object" ? input as { topicId?: unknown; aboutPersonIds?: unknown; discussWithPersonId?: unknown; approved?: unknown; title?: unknown; context?: unknown; goal?: unknown; openingQuestion?: unknown } : {};
+    const value = input && typeof input === "object" ? input as { topicId?: unknown; aboutPersonIds?: unknown; discussWithPersonId?: unknown; approved?: unknown; dismissed?: unknown; title?: unknown; context?: unknown; goal?: unknown; openingQuestion?: unknown } : {};
     if (typeof value.topicId !== "string") throw new Error("Тема не найдена");
     let analysis = this.readContextAnalysis();
     if (!analysis) throw new Error("Сначала проанализируйте базовый чат");
@@ -855,7 +857,8 @@ export class BackgroundService {
       topic.aboutPersonIds = [...new Set(aboutPersonIds)];
     }
     topic.sensitivity = routeSensitivity(topic.aboutPersonIds, topic.discussWithPersonId);
-    if (typeof value.approved === "boolean") topic.approved = value.approved;
+    if (typeof value.dismissed === "boolean") { topic.dismissed = value.dismissed; topic.approved = false; }
+    if (typeof value.approved === "boolean" && !topic.dismissed) topic.approved = value.approved;
     analysis = await this.writeContextAnalysis(analysis, false, [topic.id]);
     this.emit({ type: "context-analysis", analysis });
     const stored = await this.store.read();
@@ -923,7 +926,7 @@ export class BackgroundService {
     const topicIds = new Set(value.topicIds.filter((item): item is string => typeof item === "string"));
     let analysis = this.readContextAnalysis();
     if (!analysis) throw new Error("Сначала проанализируйте базовый чат");
-    const changed = analysis.topics.filter((topic) => topicIds.has(topic.id));
+    const changed = analysis.topics.filter((topic) => topicIds.has(topic.id) && !topic.dismissed);
     for (const topic of changed) topic.approved = value.approved;
     analysis = await this.writeContextAnalysis(analysis, false, [...topicIds]);
     this.emit({ type: "context-analysis", analysis });
@@ -1464,6 +1467,7 @@ export class BackgroundService {
       throw new Error(`Тема заблокирована локальной политикой: ${topic}`);
     }
     const previous = Object.entries(stored.topicLaunches).find(([,job])=>job.pairId === stored.remote!.pairId && topicKey(job.topic) === topicKey(topic));
+    if (!previous && dismissedTopicKeys(this.readContextAnalysis()?.topics ?? [], stored.remote.counterpartPersonId).has(topicKey(topic))) return;
     if (previous && ["waiting", "complete"].includes(previous[1].status)) return;
     if (previous && (stored.conversationTranscripts[previous[0]]?.messages.length ?? 0) > 1) {
       await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[previous[0]]:{...current.topicLaunches[previous[0]],status:"waiting"}}}));

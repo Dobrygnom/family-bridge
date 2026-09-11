@@ -7,6 +7,14 @@ import { UpdateControl } from "../src/ui/UpdateControl.js";
 import type { AppState } from "../src/global.js";
 
 const render=(update:AppState['update'])=>renderToStaticMarkup(createElement(UpdateControl,{update,version:'1.2.12',language:'ru',onCheck:async()=>{},onInstall:async()=>{}}));
+test('sidebar update is always visible and highlights a ready update with install action',()=>{
+  const compact=(update:AppState['update'])=>renderToStaticMarkup(createElement(UpdateControl,{compact:true,update,version:'1.2.25',language:'ru',onCheck:async()=>{},onInstall:async()=>{}}));
+  assert.match(compact({available:false,downloading:false}), /Обновить приложение/);
+  const ready=compact({available:true,downloading:false,ready:true,version:'1.2.26'});
+  assert.match(ready,/update-available/); assert.match(ready,/Обновить сейчас/); assert.doesNotMatch(ready,/disabled/);
+  const downloading=compact({available:true,downloading:true,version:'1.2.26',progress:52});
+  assert.match(downloading,/52%/); assert.match(downloading,/disabled/); assert.doesNotMatch(downloading,/Готова версия/);
+});
 test('live update events retain installation and waiting fields in the app',()=>{
   const source=readFileSync(new URL('../src/ui/App.tsx',import.meta.url),'utf8');
   const handler=source.slice(source.indexOf('if (event.type === "update")'),source.indexOf('return () => {',source.indexOf('if (event.type === "update")')));

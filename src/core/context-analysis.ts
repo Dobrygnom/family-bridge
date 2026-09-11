@@ -30,6 +30,7 @@ export interface RoutedTopic {
   sensitivity: "direct" | "cross_person" | "unclear";
   reason: string;
   approved: boolean;
+  dismissed?: boolean;
   sourceTitles?: string[];
   relevance?: "current" | "check_relevance";
 }
@@ -168,13 +169,13 @@ export function preserveContextAnalysis(incoming: ContextAnalysis, saved?: Conte
 /** Explicit rediscovery only. Ordinary sync still preserves every saved topic. */
 export function replaceUnreviewedSuggestions(incoming: ContextAnalysis, saved: ContextAnalysis): ContextAnalysis {
   if (incoming.sourceId !== saved.sourceId) throw new Error("The selected source changed during rediscovery");
-  const protectedTopics = saved.topics.filter((topic) => topic.approved || Boolean(topic.sourceTitles?.length));
+  const protectedTopics = saved.topics.filter((topic) => topic.dismissed || topic.approved || Boolean(topic.sourceTitles?.length));
   return preserveContextAnalysis({ ...incoming, topics: incoming.topics.map((topic) => ({ ...topic, approved: false })) }, { ...saved, topics: protectedTopics });
 }
 
 export function topicsForCounterpart(analysis: ContextAnalysis | undefined, personId: string | undefined): RoutedTopic[] {
   if (!analysis || !personId) return [];
-  return analysis.topics.filter((topic) => topic.approved && topic.discussWithPersonId === personId);
+  return analysis.topics.filter((topic) => !topic.dismissed && topic.approved && topic.discussWithPersonId === personId);
 }
 
 export function routeSensitivity(aboutPersonIds: string[], discussWithPersonId: string): RoutedTopic["sensitivity"] {
@@ -220,7 +221,7 @@ export class CodexContextAnalyzer {
     const schema = path.join(this.workspace, "topic-coverage.schema.json");
     await writeFile(schema, JSON.stringify(coverageSchema(JSON.parse(await readFile(this.schemaPath, "utf8")))));
     // Candidate text occurs once. People/portraits retain cross-fragment evidence.
-    const saved = savedTopics.length ? `\nУ владельца уже сохранены следующие предложения (данные): ${JSON.stringify(savedTopics.map(t => ({ title: t.title, reason: t.reason, discussWithPersonId: t.discussWithPersonId })))}\nНе создавай их перефразированные дубли: если тот же содержательный разговор уже представлен, укажи excluded с причиной «уже есть сохранённая тема» и её названием. Новое свидетельство само по себе не делает тот же разговор новым. Сохранённые формулировки и разрешения сохраняет код, не меняй их. Новый самостоятельный вопрос можно добавить.` : "";
+    const saved = savedTopics.length ? `\nУ владельца уже сохранены следующие предложения (данные): ${JSON.stringify(savedTopics.map(t => ({ title: t.title, reason: t.reason, discussWithPersonId: t.discussWithPersonId, dismissed: t.dismissed === true })))}\nПредложения с dismissed=true владелец убрал: не предлагай их заново. Не создавай их перефразированные дубли: если тот же содержательный разговор уже представлен, укажи excluded с причиной «уже есть сохранённая тема» и её названием. Новое свидетельство само по себе не делает тот же разговор новым. Сохранённые формулировки и разрешения сохраняет код, не меняй их. Новый самостоятельный вопрос можно добавить.` : "";
     const base = buildTopicSelectionPrompt(parts.map(part => ({ ...part, topics: [] })), ownerName, language, sourceThrough) + saved;
     const selection = await this.coverageStage(coveragePrompt(base, candidates, evidence), modelArgs, schema, candidates);
     // Empty is a successful result: all meaningful questions may already exist.

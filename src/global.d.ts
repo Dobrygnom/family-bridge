@@ -20,6 +20,7 @@ export interface AppState {
   topicSources: Record<string, Array<"local" | "peer" | "unknown">>;
   topicBriefs: Record<string, TopicBrief>;
   activeTopics: string[];
+  topicLaunches?: Record<string, { topic: string; pairId: string }>;
   blockedTopics: string[];
   reports: string[];
   reportSummaries: Array<{ id: string; parentReportId?: string; restarted?: boolean; inheritedMessageCount?: number; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completionState?: "completed" | "needs_follow_up"; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./core/continuation.js").MessageOrigin }> }>;
@@ -76,7 +77,7 @@ declare global {
       openReports(): Promise<void>;
       createPair(counterpartPersonId: string): Promise<AppState>;
       joinPair(invite: string, counterpartPersonId: string): Promise<AppState>;
-      updateContextTopic(input: { topicId: string; aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }): Promise<AppState>;
+      updateContextTopic(input: { topicId: string; aboutPersonIds?: string[]; discussWithPersonId?: string; approved?: boolean; dismissed?: boolean; title?: string; context?: string; goal?: string; openingQuestion?: string }): Promise<AppState>;
       refineContextTopic(input: { topicId: string; instruction: string; preview?: { title: string; context: string; goal: string; openingQuestion: string } }): Promise<{ title: string; context: string; goal: string; openingQuestion: string }>;
       updateContextTopics(input: { topicIds: string[]; approved: boolean }): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
