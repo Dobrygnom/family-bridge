@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("familyBridge", {
   runConversation: (topic: string, realCodex: boolean) =>
     ipcRenderer.invoke("bridge:run-conversation", { topic, realCodex }),
   addTopic: (topic: string) => ipcRenderer.invoke("bridge:add-topic", topic),
+  prepareNewTopic: (input: unknown) => ipcRenderer.invoke("bridge:prepare-new-topic", input),
+  sendNewTopic: (input: unknown) => ipcRenderer.invoke("bridge:send-new-topic", input),
   blockTopic: (topic: string) => ipcRenderer.invoke("bridge:block-topic", topic),
   setAutoStart: (enabled: boolean) => ipcRenderer.invoke("bridge:set-autostart", enabled),
   setDisplayName: (name: string) => ipcRenderer.invoke("bridge:set-display-name", name),

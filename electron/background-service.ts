@@ -1,4 +1,5 @@
 import { errorMessage } from "../src/core/error-message.js";
+import { newTopicText, normalizeNewTopic, newTopicPrompt, newTopicWireText, NEW_TOPIC_DESCRIPTION_LIMIT, type NewTopicPreview, type NewTopicRequest } from "../src/core/new-topic.js";
 import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -121,6 +122,7 @@ interface BackgroundServiceOptions {
   requestUpdateCheck?: () => void;
   requestSupportUpdate?: () => void;
   topicRefiner?: TopicRefiner;
+  newTopicComposer?: (prompt: string) => Promise<NewTopicPreview>;
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
@@ -349,7 +351,7 @@ export class BackgroundService {
       }
       if (this.updating) return;
       await this.repairLegacyConversations();
-      const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && job.attempts < 3 && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
+      const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && (job.approvedOpening || job.attempts < 3) && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
       const pending = state.pendingTopics.filter(topic=>state.topicSources[topic]?.includes("local") && !state.activeTopics.includes(topic) && !state.blockedTopics.some(blocked=>topic.toLowerCase().includes(blocked.toLowerCase())) && !Object.values(state.topicLaunches).some(job=>job.pairId===state.remote!.pairId && topicKey(job.topic)===topicKey(topic)));
       for (const topic of mergeTopicCatalog(retry, pending)) {
         if (this.updating || this.launchPromises.size >= 3) break;
@@ -1512,7 +1514,7 @@ export class BackgroundService {
     }
     if (!previous && (Object.values(stored.conversationTranscripts).some(t=>topicKey(t.topic) === topicKey(topic)) || readReportSummaries(stored.reports).some(r=>topicKey(r.topic) === topicKey(topic)))) return;
     const conversationId = previous?.[0] ?? randomUUID();
-    const job = { topic, pairId:stored.remote.pairId, status:"preparing" as const, attempts:(previous?.[1].attempts ?? 0) + 1, preparedMessage:previous?.[1].preparedMessage };
+    const job = { ...previous?.[1], topic, pairId:stored.remote.pairId, status:"preparing" as const, attempts:(previous?.[1].attempts ?? 0) + 1, preparedMessage:previous?.[1].preparedMessage };
     await this.store.mutate(current=>({ topicLaunches:{...current.topicLaunches,[conversationId]:job}, pendingTopics:current.pendingTopics.filter(t=>topicKey(t)!==topicKey(topic)) }));
     try {
     const pair = await this.remote.pairState(stored.remote.pairId);
@@ -1537,11 +1539,12 @@ export class BackgroundService {
     if (!text) throw new Error("Агент не подготовил реплику");
     await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],preparedMessage:text}}}));
     }
-    const messages: SharedMessage[] = [{ from: stored.owner, text, origin: "agent" }];
+    const origin = job.openingOrigin ?? "agent";
+    const messages: SharedMessage[] = [{ from: stored.owner, text, origin }];
     this.remoteMessages.set(conversationId, messages);
     await this.persistTranscript(conversationId, topic, messages);
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text, origin: "agent", topic, status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { kind: "dialogue", text, origin, topic, status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     const next = await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "waiting"}}, activeTopics:mergeTopicCatalog(current.activeTopics,[topic])}));
     this.emitTopicState(next);
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text, turn: 1 });
@@ -2216,6 +2219,51 @@ export class BackgroundService {
       }
     });
     this.portraitUpdates = this.updateActivity.track("portrait_queue", operation).catch(() => undefined);
+  }
+
+  async prepareNewTopic(input: unknown): Promise<NewTopicPreview> {
+    const value = input as Partial<NewTopicRequest> | null;
+    const stored = await this.store.read();
+    if (!stored.remote || value?.pairId !== stored.remote.pairId) throw new Error("Получатель изменился. Откройте новую тему заново");
+    const request: NewTopicRequest = { pairId: stored.remote.pairId, description: newTopicText(value.description, NEW_TOPIC_DESCRIPTION_LIMIT),
+      instruction: value.instruction ? newTopicText(value.instruction, 4_000) : undefined,
+      preview: value.preview ? normalizeNewTopic(value.preview) : undefined };
+    const prompt = newTopicPrompt(request, stored.displayName, stored.remote.peerName ?? "Партнёр", stored.language,
+      this.privateSourceExcerpts(request.description));
+    const compose = this.options.newTopicComposer ?? ((text: string) => new CodexTopicRefiner(defaultCodexCommand(),
+      path.join(this.userData, "new-topic"), path.join(this.resourcesPath, "schemas", "new-topic.schema.json")).generate(text, normalizeNewTopic));
+    return this.updateActivity.track("topic_edits", compose(prompt).then(normalizeNewTopic));
+  }
+
+  async sendNewTopic(input: unknown) {
+    const value = input as Record<string, unknown> | null;
+    const preview = normalizeNewTopic(value);
+    if (!value || typeof value.id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value.id)
+      || !["agent", "direct"].includes(String(value.mode))) throw new Error("Некорректный черновик темы");
+    const id = value.id, origin = value.mode === "direct" ? "owner-answer" as const : "agent" as const;
+    const next = await this.store.mutate(current => {
+      if (!current.identityConfigured || !current.remote || current.remote.pairId !== value.pairId) throw new Error("Получатель изменился. Проверьте подключение");
+      const text = newTopicWireText(preview, current.language);
+      const existing = current.topicLaunches[id];
+      if (existing) {
+        if (existing.pairId !== value.pairId || existing.topic !== preview.title || existing.preparedMessage !== text || existing.openingOrigin !== origin)
+          throw new Error("Этот черновик уже передан в очередь. Создайте новую тему");
+        return existing.status === "error" ? { topicLaunches: { ...current.topicLaunches, [id]: { ...existing, status: "preparing", attempts: 0, retryAt: undefined } } } : {};
+      }
+      const key = topicKey(preview.title);
+      if (current.conversationTranscripts[id] || current.continuations[id] || readReportSummaries(current.reports).some(r => r.id === id)) throw new Error("Этот разговор уже существует. Создайте новую тему");
+      if ([...current.pairTopics, ...current.pendingTopics, ...current.activeTopics,
+        ...Object.values(current.topicLaunches).map(j => j.topic), ...Object.values(current.conversationTranscripts).map(t => t.topic),
+        ...readReportSummaries(current.reports).map(r => r.topic)].some(t => topicKey(t) === key)) throw new Error("Тема с таким названием уже есть. Укажите новое название");
+      if (current.blockedTopics.some(t => preview.title.toLowerCase().includes(t.toLowerCase()))) throw new Error("Эта тема заблокирована");
+      return { topicLaunches: { ...current.topicLaunches, [id]: { topic: preview.title, pairId: current.remote.pairId,
+        status: "preparing", attempts: 0, preparedMessage: text, approvedOpening: true, openingOrigin: origin } },
+        pairTopics: mergeTopicCatalog(current.pairTopics, [preview.title]), topicSources: markTopicSource(current.topicSources, preview.title, "local") };
+    });
+    this.emitTopicState(next);
+    // Approval is durable before automatic delivery starts. Never send the private description or regenerate the opening.
+    if (this.options.backgroundTasks !== false) void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending"));
+    return this.state();
   }
 
   async addTopic(topic: string) {

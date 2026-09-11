@@ -280,3 +280,25 @@ button[aria-busy="true"] { cursor: progress; }
 .sidebar-update > button svg { flex: 0 0 auto; }
 .sidebar-update.update-available > button { background: #ffdb85; color: #202019; border-color: #ffdb85; box-shadow: 0 0 18px #ffdb8524; }
 .sidebar-update > small { color: #a7bdc0; font-size: 10px; line-height: 1.4; }
+.new-topic-composer { margin-top: 24px; border-top: 1px solid #36514f; padding-top: 20px; min-width: 0; }
+.composer-heading, .composer-modes, .composer-send { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.composer-heading h3 { margin: 0; font-size: 18px; }
+.composer-recipient { color: #9bb7b6; margin: 16px 0 12px; }
+.composer-recipient strong { color: #e3f3ee; }
+.composer-modes { justify-content: flex-start; margin-bottom: 18px; }
+.composer-modes button, .new-topic-composer button { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 10px 15px; border-radius: 9px; }
+.composer-modes button[aria-selected="true"] { background: #244940; color: #a7f0d4; border-color: #79ceae; }
+.new-topic-composer fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 14px; min-width: 0; }
+.new-topic-composer label { display: grid; gap: 8px; color: #c8dfd8; font-size: 14px; font-weight: 600; }
+.new-topic-composer input, .new-topic-composer textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 12px 14px; color: #edf5f2; background: #0d1921; border: 1px solid #405b61; border-radius: 10px; font: inherit; font-size: 15px; font-weight: 400; line-height: 1.55; }
+.new-topic-composer textarea { resize: vertical; min-height: 110px; max-height: none; }
+.new-topic-composer .composer-message { min-height: 220px; }
+.new-topic-composer input:focus, .new-topic-composer textarea:focus { outline: 2px solid #80d6b7; outline-offset: 2px; }
+.new-topic-composer small { color: #93abae; line-height: 1.5; }
+.new-topic-composer p { line-height: 1.55; }
+.composer-preview { display: grid; gap: 16px; padding: 18px; border: 1px solid #446760; border-radius: 12px; background: #13262b; min-width: 0; }
+.composer-preview h4 { margin: 0; font-size: 17px; color: #b0eed7; }
+.composer-send { border-top: 1px solid #34504f; padding-top: 16px; }
+.composer-send small { flex: 1 1 200px; }
+.composer-error { color: #ffb5b5; }.composer-success { color: #9be2c4; }
+@media (max-width: 700px) { .composer-preview { padding: 12px; }.composer-send button { width: 100%; justify-content: center; } }

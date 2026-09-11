@@ -88,9 +88,12 @@ export class CodexTopicRefiner implements TopicRefiner {
   constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string) {}
 
   async refine(input: TopicRefinementInput): Promise<TopicRefinement> {
+    return this.generate(buildTopicRefinementPrompt(input), normalizeTopicRefinement);
+  }
+
+  async generate<T>(prompt: string, normalize: (value: unknown) => T): Promise<T> {
     await mkdir(this.workspace, { recursive: true });
     const args = ["exec", ...await preferredModelArgs(this.command), ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
-    const prompt = buildTopicRefinementPrompt(input);
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, isolatedCodexInvocation(args), { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });
       child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
@@ -113,7 +116,7 @@ export class CodexTopicRefiner implements TopicRefiner {
             if (event.type === "error") throw new Error(event.message ?? "Codex не смог уточнить тему");
           }
           if (!finalText) throw new Error(`Codex не вернул уточнённую тему. ${stderr}`);
-          resolve(normalizeTopicRefinement(JSON.parse(finalText)));
+          resolve(normalize(JSON.parse(finalText)));
         } catch (error) { reject(error); }
       });
     });

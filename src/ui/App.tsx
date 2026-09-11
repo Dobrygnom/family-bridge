@@ -1,3 +1,4 @@
+import { NewTopicComposer } from "./NewTopicComposer.js";
 import { errorMessage } from "../core/error-message.js";
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { UpdateControl } from "./UpdateControl.js";
@@ -90,7 +91,7 @@ export function App() {
   const [revealToken, setRevealToken] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const [reload, setReload] = useState(0);
-  const [topic, setTopic] = useState(() => { try { return localStorage.getItem("family-bridge-new-topic-draft") || ""; } catch { return ""; } });
+  const [newTopicActive, setNewTopicActive] = useState(false);
   const [blocked, setBlocked] = useState("");
   const [busy, setBusy] = useState(false);
   const [connectionAction, setConnectionAction] = useState<"create" | "join" | "">("");
@@ -290,13 +291,10 @@ export function App() {
     try { localStorage.setItem(OWNER_DRAFTS_KEY, JSON.stringify(ownerAnswers)); }
     catch { setError(attentionText.draftError); }
   }, [ownerAnswers, attentionText.draftError]);
+
   useEffect(() => {
-    try { localStorage.setItem("family-bridge-new-topic-draft", topic); }
-    catch { void api?.setUpdateBlocked?.(true); }
-  }, [topic]);
-  useEffect(() => {
-    void api?.setUpdateBlocked?.(Boolean(activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim()), activeDictation ? "dictation" : editingTopicId || inviteCode.trim() ? "editing" : "activity").catch(() => undefined);
-  }, [activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode]);
+    void api?.setUpdateBlocked?.(Boolean(newTopicActive || activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim()), activeDictation ? "dictation" : editingTopicId || inviteCode.trim() ? "editing" : "activity").catch(() => undefined);
+  }, [newTopicActive, activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode]);
   useEffect(() => {
     let active = true;
     let sequence = 0;
@@ -399,16 +397,6 @@ export function App() {
     () => state.codex.installed && state.codex.authenticated,
     [state.codex],
   );
-
-  async function addTopic() {
-    if (!topic.trim() || activeDictation) return;
-    setError("");
-    try {
-      if (api) setState(await api.addTopic(topic));
-      else setState((current) => ({ ...current, pendingTopics: [...current.pendingTopics, topic] }));
-      setTopic("");
-    } catch (reason) { setError(errorMessage(reason)); }
-  }
 
   async function blockTopic() {
     if (!blocked.trim()) return;
@@ -815,6 +803,7 @@ export function App() {
             <p className="topic-explanation">{workflowText.topicHint}</p>
             {!state.remote.connected && selectedPairPersonId && <p className="topic-preview-note">{workflowText.localPreview}</p>}
             {state.remote.connected && state.remote.dialogueCompatible === false && <div className="notice">{compatibilityText}</div>}
+            <NewTopicComposer key={state.remote.pairId || "unpaired"} state={state} language={language} onState={setState} onActive={setNewTopicActive} />
             <div className="topic-list">{visiblePairTopics.map((item) => {
               const report = state.reportSummaries.find((candidate) => candidate.topic === item);
               const active = state.activeTopics.includes(item);
@@ -824,8 +813,7 @@ export function App() {
               return <div className="topic pair-topic" key={item}><div className="topic-copy"><span>{item}</span>{(brief?.context || brief?.goal) && <p className="topic-context">{brief.context || brief.goal}</p>}<small>{topicSourceLabel(item)}</small></div><button className={`topic-state ${report ? "complete" : active ? "active" : ""}`} disabled={!report} onClick={() => { if (report) { setSelectedReportId(report.id); goTo("reports"); } }}>{status}</button></div>;
             })}{!displayedPairTopics.length && <div className="empty">{workflowText.noTopics}</div>}</div>
             {displayedPairTopics.length > 6 && <button className="topic-list-toggle" onClick={() => setShowAllPairTopics((value) => !value)}>{showAllPairTopics ? pairListText.less : `${pairListText.more} · ${displayedPairTopics.length - 6}`}</button>}
-            <div className="input-row"><input aria-label={workflowText.addTopic} disabled={!state.remote.counterpartPersonId} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={workflowText.addTopic} onKeyDown={(e) => e.key === "Enter" && void addTopic()} /><button disabled={!state.remote.counterpartPersonId || !topic.trim() || Boolean(activeDictation)} onClick={() => void addTopic()}>{t.add}</button></div>
-            <DictationControl language={language} disabled={!state.remote.counterpartPersonId || Boolean(activeDictation && activeDictation !== "new-topic")} onText={(text) => setTopic((current) => appendDictation(current, text))} onBusyChange={(value) => setActiveDictation((current) => value ? "new-topic" : current === "new-topic" ? "" : current)} />
+
             <div className="actions"><button className="primary" aria-busy={state.running || busy && !connectionAction} disabled={busy || state.running || !state.remote.connected || state.remote.dialogueCompatible === false || !state.pendingTopics.length} onClick={() => void discussAllTopics()}>{state.running || busy && !connectionAction ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}{state.running || busy && !connectionAction ? workflowText.discussing : workflowText.discuss}</button></div>
             {(state.running || busy && !connectionAction) && <PendingStatus language={language}>{workflowText.discussing}</PendingStatus>}
           </section>}

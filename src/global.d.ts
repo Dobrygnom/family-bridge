@@ -64,6 +64,8 @@ declare global {
       getLocalContextState(): Promise<Pick<AppState, "context" | "contextAnalysis">>;
       runConversation(topic: string, realCodex: boolean): Promise<ConversationReport>;
       addTopic(topic: string): Promise<AppState>;
+      prepareNewTopic(input: import("./core/new-topic.js").NewTopicRequest): Promise<import("./core/new-topic.js").NewTopicPreview>;
+      sendNewTopic(input: import("./core/new-topic.js").NewTopicSend): Promise<AppState>;
       blockTopic(topic: string): Promise<AppState>;
       setAutoStart(enabled: boolean): Promise<AppState>;
       setDisplayName(name: string): Promise<AppState>;

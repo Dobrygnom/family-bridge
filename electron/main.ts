@@ -301,6 +301,8 @@ app.whenReady().then(async () => {
   });
   handle("bridge:get-local-context-state", () => service.localContextState());
   handle("bridge:add-topic", (_event, topic: string) => service.addTopic(topic));
+  handle("bridge:prepare-new-topic", (_event, input: unknown) => service.prepareNewTopic(input));
+  handle("bridge:send-new-topic", (_event, input: unknown) => service.sendNewTopic(input));
   handle("bridge:block-topic", (_event, topic: string) => service.blockTopic(topic));
   handle("bridge:run-conversation", async (_event, input: { topic: string; realCodex: boolean }) => {
     const report = await service.run(input.topic, input.realCodex);
