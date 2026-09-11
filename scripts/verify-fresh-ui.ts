@@ -30,7 +30,7 @@ async function evaluate<T>(expression: string): Promise<T> {
 const state = await evaluate<{ onboardingComplete: boolean; hasContext: boolean; hasAnalysis: boolean }>(`window.familyBridge.getState().then((state) => ({ onboardingComplete: state.onboardingComplete, hasContext: Boolean(state.context), hasAnalysis: Boolean(state.contextAnalysis) }))`);
 assert.deepEqual(state, { onboardingComplete: false, hasContext: false, hasAnalysis: false });
 const navigation = await evaluate<string[]>(`[...document.querySelectorAll('nav button')].map((button) => button.textContent?.trim() ?? '')`);
-assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Итоги разговоров", "Имя и автозапуск"]);
+assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Итоги разговоров", "Настройки"]);
 const mainText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
 assert.match(mainText, /Подготовка к первому разговору/);
 assert.match(mainText, /1\. Выберите базовый чат/);
@@ -39,7 +39,7 @@ assert.doesNotMatch(mainText, /Темы проверены — перейти к
 const overflow = await evaluate<{ pageX: number; mainY: number }>(`({ pageX: document.documentElement.scrollWidth - document.documentElement.clientWidth, mainY: (() => { const main = document.querySelector('main'); return main ? main.scrollHeight - main.clientHeight : 1; })() })`);
 assert.ok(overflow.pageX <= 1, `Fresh first run has horizontal overflow: ${overflow.pageX}px`);
 assert.ok(overflow.mainY <= 1, `Fresh first run scrolls as a whole: ${overflow.mainY}px`);
-const openedSettings = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Имя и автозапуск'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
+const openedSettings = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Настройки'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 assert.equal(openedSettings, true, "Could not open update settings");
 const updateText = await evaluate<string>(`document.querySelector('.update-card')?.textContent ?? ''`);
 assert.match(updateText, /Установлена последняя версия/);

@@ -49,7 +49,8 @@ export function NewTopicComposer({ state, language, onState, onActive }: {
   const pending = useRef(false), alive = useRef(true);
   const mode = saved.mode, draft = saved[mode];
   const locked = Boolean(busy || dictating), configured = Boolean(state.remote.configured && state.remote.pairId);
-  useEffect(() => { onActive(open || locked || !persisted); return () => onActive(false); }, [open, locked, persisted, onActive]);
+  // Edits are saved synchronously; an open, saved draft can survive an update.
+  useEffect(() => { onActive(locked || !persisted); return () => onActive(false); }, [locked, persisted, onActive]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   function commit(next: Saved) {
     setSaved(next);

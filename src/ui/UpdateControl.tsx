@@ -24,9 +24,10 @@ export function UpdateControl({ update, version, language, onCheck, onInstall, c
   }
   if (compact) {
     if (!update.available && !update.ready && !update.downloading && !update.installing) return null;
-    const pending = busy || update.checking || update.downloading || update.installing;
+    const installPending = update.ready && (busy || update.installRequested) && !error && !update.error;
+    const pending = busy || update.checking || update.downloading || update.installing || installPending;
     const caption = update.installing ? t.installing : update.downloading ? `${t.download} · ${Math.round(update.progress ?? 0)}%`
-      : update.checking ? t.checking : update.ready ? t.install
+      : update.checking ? t.checking : installPending ? t.requested : update.ready ? t.install
       : { ru: "Обновить приложение", en: "Update app", cs: "Aktualizovat aplikaci", fr: "Mettre à jour l’application" }[language];
     return <div className={`sidebar-update ${update.available || update.ready ? "update-available" : ""}`} aria-live="polite">
       {update.version && (update.available || update.ready) && <strong>{update.ready ? t.ready : { ru: "Доступна версия", en: "Version available", cs: "Dostupná verze", fr: "Version disponible" }[language]} {update.version}</strong>}

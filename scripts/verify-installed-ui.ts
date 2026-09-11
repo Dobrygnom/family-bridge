@@ -31,7 +31,7 @@ async function evaluate<T>(expression: string): Promise<T> {
 
 const navigation = await evaluate<string[]>(`[...document.querySelectorAll('nav button')].map((button) => button.textContent?.trim() ?? '')`);
 assert.ok(navigation.includes("Исходный чат и темы"), "Source chat and topics is not a separate navigation item");
-assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Что знает мой агент", "Итоги разговоров", "Имя и автозапуск"]);
+assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Что знает мой агент", "Итоги разговоров", "Настройки"]);
 const overviewText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
 assert.match(overviewText, /Подготовка к первому разговору/);
 assert.match(overviewText, /Выберите разговоры/);
