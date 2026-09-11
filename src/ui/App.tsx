@@ -1,3 +1,4 @@
+import { errorMessage } from "../core/error-message.js";
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { UpdateControl } from "./UpdateControl.js";
 import {
@@ -333,7 +334,7 @@ export function App() {
       const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; updating?: boolean; progress?: number };
       if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
-      if (event.type === "error" && event.error) setError(event.error);
+      if (event.type === "error" && event.error) setError(errorMessage(event.error));
       if (event.type === "context-analysis" && event.analysis) {
         setState((current) => ({ ...current, contextAnalysis: event.analysis }));
         setCounterpartPersonId((current) => current || event.analysis?.people[0]?.id || "");
@@ -406,7 +407,7 @@ export function App() {
       if (api) setState(await api.addTopic(topic));
       else setState((current) => ({ ...current, pendingTopics: [...current.pendingTopics, topic] }));
       setTopic("");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
   }
 
   async function blockTopic() {
@@ -420,7 +421,7 @@ export function App() {
     if (!api || !state.pendingTopics.length) return;
     setBusy(true); setError("");
     try { setState(await api.discussAllTopics()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
   }
 
@@ -431,7 +432,7 @@ export function App() {
       const answer = ownerAnswers[id]?.trim() || "";
       setState(await api.answerOwnerQuestion({ id, disposition, answer }));
       setOwnerAnswers((current) => { const next = { ...current }; delete next[id]; return next; });
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
     finally { setAnsweringQuestionId(""); }
   }
 
@@ -445,7 +446,7 @@ export function App() {
       const selected = preferred ?? threads[0];
       setSelectedContextProject(selected?.project ?? "");
       setSelectedContextId(selected?.id ?? "");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
     finally { setContextLoading(false); }
   }
 
@@ -470,7 +471,7 @@ export function App() {
     setContextLoading(true); setError("");
     setState((current) => ({ ...current, contextAnalysis: undefined }));
     try { setState(await api.selectContextThread(selectedContextId)); setShowContextPicker(false); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
     finally { setContextLoading(false); }
   }
 
@@ -479,7 +480,7 @@ export function App() {
     setContextLoading(true); setError("");
     setState((current) => ({ ...current, context: current.context ? { ...current.context, status: "syncing" } : current.context, contextAnalysis: undefined }));
     try { setState(await api.selectContextThread(state.context.id)); setShowContextPicker(false); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
     finally { setContextLoading(false); }
   }
 
@@ -487,7 +488,7 @@ export function App() {
     if (!api) return;
     setContextLoading(true); setError("");
     try { setState(await api.refreshContextNow()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
     finally { setContextLoading(false); }
   }
 
@@ -495,7 +496,7 @@ export function App() {
     if (!api || !selectedPairPersonId || connectionAction) return;
     setConnectionAction("create"); setBusy(true); setError(""); setInviteCopied(false);
     try { setState(await api.createPair(selectedPairPersonId)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
     finally { setConnectionAction(""); setBusy(false); }
   }
 
@@ -503,7 +504,7 @@ export function App() {
     if (!api || !selectedPairPersonId || !inviteCode.trim() || connectionAction) return;
     setConnectionAction("join"); setBusy(true); setError("");
     try { setState(await api.joinPair(inviteCode, selectedPairPersonId)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
     finally { setConnectionAction(""); setBusy(false); }
   }
 
@@ -518,7 +519,7 @@ export function App() {
     setVersionCheckBusy(true); setError("");
     try {
       setState(await api.checkPairVersions());
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
     finally { setVersionCheckBusy(false); }
   }
 
@@ -526,7 +527,7 @@ export function App() {
     if (!api) return;
     setError("");
     try { setState(await api.updateContextTopic({ topicId, ...update })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
   }
 
   function beginTopicEdit(item: NonNullable<AppState["contextAnalysis"]>["topics"][number]) {
@@ -559,7 +560,7 @@ export function App() {
       if (session !== topicEditSession.current) return;
       setTopicDraft(result);
       setTopicRefinementReady(true);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
     finally { setRefiningTopicId(""); }
   }
 
@@ -571,7 +572,7 @@ export function App() {
       setState(await api.updateContextTopic({ topicId, ...topicDraft }));
       setShowAllReviewTopics(true);
       cancelTopicEdit();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
     finally { setSavingTopicId(""); }
   }
 
@@ -582,21 +583,21 @@ export function App() {
       setState(await api.updatePortraitObservation({ personId, observationId, text: observationDraft }));
       setEditingObservationId("");
       setObservationDraft("");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) { setError(errorMessage(reason)); }
   }
 
   async function removePortraitObservation(personId: string, observationId: string) {
     if (!api || !window.confirm(portraitText.removeConfirm)) return;
     setError("");
     try { setState(await api.updatePortraitObservation({ personId, observationId, remove: true })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
   }
 
   async function completeOnboarding(personId: string) {
     if (!api) return;
     setError("");
     try { setState(await api.completeOnboarding(personId)); setCounterpartPersonId(personId); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
   }
 
   async function approveSafeTopics(personId: string) {
@@ -605,7 +606,7 @@ export function App() {
     if (!topicIds.length) return;
     setError("");
     try { setState(await api.updateContextTopics({ topicIds, approved: true })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(errorMessage(reason)); }
   }
 
   function toggleTopicDetails(topicId: string) {

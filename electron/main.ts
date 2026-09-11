@@ -16,6 +16,8 @@ import { AutomaticUpdate } from "./automatic-update.js";
 import { Diagnostics } from "./diagnostics.js";
 import { installCrashDiagnostics } from "./crash-diagnostics.js";
 import { startSupportControl } from "./support-control.js";
+import { errorMessage } from "../src/core/error-message.js";
+import { supportErrorCode } from "./support-report.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -48,7 +50,11 @@ function handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: 
     activeIpc++;
     const token = Symbol(), end = ipcActivity.begin("ipc");
     activeChannels.set(token, { channel, startedAt: Date.now() });
-    try { return await listener(event, ...args); } finally { activeIpc--; end(); activeChannels.delete(token); }
+    try { return await listener(event, ...args); }
+    catch (error) {
+      service?.diagnostics.record("action.failed", { channel, code: supportErrorCode(error) });
+      throw new Error(errorMessage(error));
+    } finally { activeIpc--; end(); activeChannels.delete(token); }
   });
 }
 let windowsUpdateVersion: string | undefined;
@@ -183,7 +189,7 @@ function checkForUpdates() {
     try {
       await autoUpdater.checkForUpdatesAndNotify();
     } catch (error) {
-      publishUpdate({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
+      publishUpdate({ available: false, downloading: false, error: errorMessage(error) });
     }
   })().finally(() => { updateCheckOperation = undefined; });
   return updateCheckOperation;
@@ -242,7 +248,7 @@ app.whenReady().then(async () => {
     },
     install: installPreparedUpdate,
     resume: () => { preparingUpdate = false; updateInstallIsQuitting = false; isQuitting = false; service.cancelPreparedUpdate(); },
-    failed: error => publishUpdate({ ...currentUpdate, available:true, downloading:false, ready:true, installing:false, error:error instanceof Error ? error.message : String(error) }),
+    failed: error => publishUpdate({ ...currentUpdate, available:true, downloading:false, ready:true, installing:false, error:errorMessage(error) }),
     waiting: reason => {
       const waitingFor = reason === "activity" && rendererUpdateBlocked ? rendererUpdateReason : reason;
       if (currentUpdate.waitingFor !== waitingFor) publishUpdate({ ...currentUpdate, installing: false, waitingFor });
@@ -440,7 +446,7 @@ app.on("before-quit", (event) => {
   }).catch((error) => {
     updateInstallIsQuitting = false;
     isQuitting = false;
-    publishUpdate({ ...currentUpdate, available: true, downloading: false, ready: true, installing: false, error: error instanceof Error ? error.message : String(error) });
+    publishUpdate({ ...currentUpdate, available: true, downloading: false, ready: true, installing: false, error: errorMessage(error) });
     showMainWindow();
   });
 });

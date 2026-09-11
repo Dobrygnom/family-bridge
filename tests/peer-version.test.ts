@@ -85,6 +85,18 @@ test("dialogue diagnostics retain waiting reasons without text or credentials", 
   assert.doesNotMatch(JSON.stringify(safe), /secret|private/);
 });
 
+test("plain server errors reach the toast as text and keep their diagnostic code", async () => {
+  const f = await fixture();
+  try {
+    f.transport.pairState = async () => { throw { code: "42501", message: "Нет доступа к подключению", details: "private details" }; };
+    await (f.service as any).pumpRemote();
+    assert.equal(f.events.find(e => e.type === "error")?.error, "Нет доступа к подключению");
+    const log = await readFile(f.service.diagnostics.file, "utf8");
+    assert.match(log, /42501/);
+    assert.doesNotMatch(log, /object Object|private details/);
+  } finally { await f.cleanup(); }
+});
+
 test("version probes cannot become topics or dialogues when metadata flags are lost", async () => {
   const f = await fixture();
   try {

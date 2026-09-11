@@ -6,7 +6,7 @@ import type { Diagnostics } from "./diagnostics.js";
 // serialize local paths, arbitrary exception text or crash dumps. Conversation
 // identifiers are allowed only in the dedicated technical continuation schema.
 const events = new Set([
-  "startup.begin", "startup.ready", "startup.saved-state", "startup.failed", "process.runtime", "storage.file",
+  "action.failed", "startup.begin", "startup.ready", "startup.saved-state", "startup.failed", "process.runtime", "storage.file",
   "crash-capture.started", "crash-capture.failed", "process.previous-unfinished", "process.marker-write-failed",
   "process.before-quit", "process.will-quit", "process.quit", "process.child-gone", "process.uncaught-exception", "process.exit",
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
@@ -19,7 +19,7 @@ const events = new Set([
   "support.request", "support.received", "support.failed", "support.update-requested", "support.channel-failed", "support.channel-ready",
   "analysis.coverage-recovery", "topic.refinement.start", "topic.refinement.ready", "topic.refinement.failed",
 ]);
-const codes = new Set(["COVERAGE_STRUCTURE", "COVERAGE_CANDIDATES", "COVERAGE_DUPLICATE_TOPIC", "COVERAGE_TOPIC_CONTENT", "COVERAGE_NO_EVIDENCE", "COVERAGE_NO_REASON", "COVERAGE_UNKNOWN_TOPIC", "COVERAGE_SPLIT_TOPIC", "COVERAGE_RECIPIENT_CHANGED", "CODEX_DESKTOP_UNAVAILABLE", "CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT", "CODEX_DESKTOP_PROTOCOL", "CODEX_HISTORY_READ_FAILED", "CHATGPT_SOURCE_UNAVAILABLE","CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
+const codes = new Set(["COVERAGE_STRUCTURE", "COVERAGE_CANDIDATES", "COVERAGE_DUPLICATE_TOPIC", "COVERAGE_TOPIC_CONTENT", "COVERAGE_NO_EVIDENCE", "COVERAGE_NO_REASON", "COVERAGE_UNKNOWN_TOPIC", "COVERAGE_SPLIT_TOPIC", "COVERAGE_RECIPIENT_CHANGED", "CODEX_DESKTOP_UNAVAILABLE", "CODEX_DESKTOP_BUSY", "CODEX_DESKTOP_TIMEOUT", "CODEX_DESKTOP_PROTOCOL", "CODEX_HISTORY_READ_FAILED", "CHATGPT_SOURCE_UNAVAILABLE","CODEX_PROCESS_EXIT", "CODEX_ISOLATION_UNSUPPORTED", "TOPIC_COVERAGE_INVALID","ENOENT", "EACCES", "EPERM", "EBUSY", "ENOSPC", "ENOBUFS", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "23505", "23503", "42501", "22023", "57014", "PGRST116", "PGRST301", "PGRST303", "INVALID_JSON", "AUTH", "PAIR_ACCESS", "NETWORK", "UNKNOWN"]);
 export function supportErrorCode(error: unknown): string {
   const e = error as { code?: unknown; message?: unknown; cause?: { code?: unknown } } | null;
   for (const code of [e?.code, e?.cause?.code]) if (typeof code === "string" && codes.has(code)) return code;

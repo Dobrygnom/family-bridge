@@ -1,3 +1,4 @@
+import { errorMessage } from "../src/core/error-message.js";
 import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -353,7 +354,7 @@ export class BackgroundService {
       for (const topic of mergeTopicCatalog(retry, pending)) {
         if (this.updating || this.launchPromises.size >= 3) break;
         if (this.launchPromises.has(topicKey(topic))) continue;
-        void this.startRemoteConversation(topic).catch(error=>this.emit({ type:"error", error:error instanceof Error ? error.message : String(error) }));
+        void this.startRemoteConversation(topic).catch(error=>this.emit({ type:"error", error:errorMessage(error) }));
       }
     } finally { this.automaticBusy = false; }
   }
@@ -500,7 +501,7 @@ export class BackgroundService {
         topics: analysis?.topics.length ?? 0, people: analysis?.people.length ?? 0, reports: state.reports.length,
         running: this.running, workers: this.remoteWorkers.size, pendingDeliveries: Object.keys(state.incomingDeliveries).length,
         pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
-        continuations: Object.entries(state.continuations).filter(([id, c]) => c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
+        continuations: Object.entries(state.continuations).filter(([id, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
         configured: Boolean(state.remote), connected: Date.now() - this.lastPollAt < 30_000 && !this.lastPollCode,
         recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode,
@@ -509,7 +510,7 @@ export class BackgroundService {
       update: { ...this.updateState, error: Boolean(this.updateState.error) },
       updateDiagnostics: { ...this.updateDiagnostics(), ...this.options.updateDiagnostics?.() },
       dialogueDiagnostics: this.dialogueDiagnostics(state),
-      continuations: Object.entries(state.continuations).filter(([, c]) => c.pairId === state.remote?.pairId).map(([id, c]) => ({
+      continuations: Object.entries(state.continuations).filter(([, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId).map(([id, c]) => ({
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
         attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
         active: this.continuing.has(id), messages: state.conversationTranscripts[id]?.messages.length ?? 0,
@@ -704,7 +705,7 @@ export class BackgroundService {
       if (refreshingReadyContext) this.updateContextSync(true, 100);
       return this.state();
     } catch (error) {
-      const failed: ContextSource = { ...selected, status: "error", error: error instanceof Error ? error.message : String(error) };
+      const failed: ContextSource = { ...selected, status: "error", error: errorMessage(error) };
       await this.writeContextSource(failed);
       this.emit({ type: "context", context: failed });
       throw error;
@@ -829,7 +830,7 @@ export class BackgroundService {
       return saved;
     } catch (error) {
       this.diagnostics.record("analysis.failed", { code: supportErrorCode(error), elapsedMs: Date.now() - analysisStartedAt, exitCode: (error as { exitCode?: number })?.exitCode });
-      const failed: ContextAnalysis = { ...analyzing, status: "error", error: error instanceof Error ? error.message : String(error), errorCode: supportErrorCode(error) };
+      const failed: ContextAnalysis = { ...analyzing, status: "error", error: errorMessage(error), errorCode: supportErrorCode(error) };
       const saved = await this.writeContextAnalysis(failed, true);
       this.emit({ type: "context-analysis", analysis: saved });
       throw error;
@@ -1181,7 +1182,7 @@ export class BackgroundService {
       const analysisOutdated = !analysis || analysis.analysisVersion !== CONTEXT_ANALYSIS_VERSION || analysis.sourceId !== selected.id;
       if (force || analysisOutdated || contextNeedsSync(selected, latest)) await this.syncContext(latest);
     } catch (error) {
-      this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+      this.emit({ type: "error", error: errorMessage(error) });
     } finally {
       this.contextCheckBusy = false;
     }
@@ -1764,7 +1765,7 @@ export class BackgroundService {
       const code = supportErrorCode(error);
       if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
       this.lastPollCode = code;
-      this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+      this.emit({ type: "error", error: errorMessage(error) });
     }
     finally { this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
   }
@@ -1866,7 +1867,7 @@ export class BackgroundService {
           this.incomingRetryAt.set(envelope.id, Date.now() + 30_000);
           this.remoteAgents.delete(envelope.conversation_id);
           this.diagnostics.record("dialogue.retry_pending");
-          this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+          this.emit({ type: "error", error: errorMessage(error) });
         } finally {
           this.remoteWorkers.delete(envelope.conversation_id);
           this.publishConversations(await this.store.read());
@@ -2209,7 +2210,7 @@ export class BackgroundService {
     });
     this.emitTopicState(next);
     try { await this.shareTopic(trimmed); }
-    catch (error) { this.emit({ type: "error", error: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { this.emit({ type: "error", error: errorMessage(error) }); }
     return this.state();
   }
 
