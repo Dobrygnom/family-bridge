@@ -43,6 +43,7 @@ import { PAIR_RECOVERY_CAPSULES } from "./pair-recovery-capsules.js";
 import { RemoteSupport } from "./remote-support.js";
 import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
+import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,34 +52,6 @@ interface ContextSource extends ContextThread {
   messageCount?: number;
   status?: "ready" | "syncing" | "error" | "confirmation";
   error?: string;
-}
-
-interface TopicPayload {
-  kind: "topic";
-  topic: string;
-  senderName?: string;
-  senderVersion?: string;
-  experienceVersion?: string;
-  versionOnly?: boolean;
-  requestUpdateCheck?: boolean;
-  requestVersion?: boolean;
-  brief?: TopicBrief;
-}
-
-interface DialoguePayload {
-  brief?: TopicBrief;
-  origin?: import("../src/core/continuation.js").MessageOrigin;
-  kind?: "dialogue";
-  text: string;
-  topic: string;
-  status: string;
-  sharedSummary?: string;
-  comparisonSummary?: string;
-  senderName?: string;
-  senderVersion?: string;
-  experienceVersion?: string;
-  sentAt?: string;
-  continuation?: { parentReportId: string; history: Array<{ from: OwnerId; text: string }>; mode?: "restart" | "clean-continuation" };
 }
 
 interface OwnerQuestionView {
@@ -515,9 +488,10 @@ export class BackgroundService {
     return sanitizeSupportReport({ schema: 1, at: new Date().toISOString(), bootId: this.diagnostics.bootId,
       status: { version: this.options.appVersion, platform: process.platform, arch: process.arch,
         uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000), onboarding: state.onboardingComplete,
-        sourceReady: this.readContextSource()?.status === "ready", analysisStatus: analysis?.status ?? "none", analysisCode: analysis?.errorCode,
+        sourceReady: this.readContextSource()?.status === "ready", historyArchiveReady: existsSync(path.join(this.userData, "history-archives", "schema-2.completed")), analysisStatus: analysis?.status ?? "none", analysisCode: analysis?.errorCode,
         topics: analysis?.topics.length ?? 0, people: analysis?.people.length ?? 0, reports: state.reports.length,
         running: this.running, workers: this.remoteWorkers.size, pendingDeliveries: Object.keys(state.incomingDeliveries).length,
+        quarantinedDeliveries: Object.keys(state.quarantinedDeliveries).length,
         pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
         continuations: Object.entries(state.continuations).filter(([id, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
@@ -542,7 +516,7 @@ export class BackgroundService {
 
   async state() {
     const stored = await this.store.read();
-    const { pendingOwnerQuestions, continuations, incomingDeliveries: _incomingDeliveries, completedIncoming: _completedIncoming, ...saved } = stored;
+    const { pendingOwnerQuestions, continuations, incomingDeliveries: _incomingDeliveries, quarantinedDeliveries: _quarantinedDeliveries, completedIncoming: _completedIncoming, ...saved } = stored;
     const conversationState = this.conversationSnapshot(stored);
     const publicStored = { ...saved, ...conversationState,
       pendingTopics: saved.pendingTopics.filter(topic => !topic.startsWith(VERSION_PROBE_PREFIX)),
@@ -620,6 +594,9 @@ export class BackgroundService {
       conversations: Object.entries(state.conversationTranscripts).filter(([id, t]) => !completed.has(id) && !t.topic.startsWith(VERSION_PROBE_PREFIX)).map(([id, t]) => ({ id,
         messages: t.messages.length, lastFromLocal: t.messages.at(-1)?.from === state.owner,
         pending: Object.values(state.incomingDeliveries).some(d => d.envelope.conversation_id === id), active: this.remoteWorkers.has(id),
+        attempts: Math.max(0, ...Object.values(state.incomingDeliveries).filter(d => d.envelope.conversation_id === id).map(d => d.attempts ?? 0)),
+        retryInMs: Math.max(0, ...Object.values(state.incomingDeliveries).filter(d => d.envelope.conversation_id === id).map(d => (d.retryAt ?? 0) - Date.now())),
+        failureCode: Object.values(state.incomingDeliveries).find(d => d.envelope.conversation_id === id)?.failureCode,
       })),
     };
   }
@@ -1434,7 +1411,7 @@ export class BackgroundService {
     if (!current.continuations[id].preparedSentAt) await this.store.mutate(latest=>({continuations:{...latest.continuations,[id]:{...latest.continuations[id],preparedSentAt:sentAt}}}));
     const messages = [...request.history, { from: state.owner, text, origin, sentAt }];
     await transport.send({ pairId: request.pairId, conversationId: id, sequence: 1, recipientId, senderAgent: state.owner,
-      payload: { kind: "dialogue", text, origin, sentAt, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history, mode: request.mode } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
+      payload: { protocol: DIALOGUE_PROTOCOL_VERSION, kind: "dialogue", text, origin, sentAt, topic: request.topic, status: "continue", senderName: state.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, continuation: { parentReportId: request.parentReportId, history: request.history, mode: request.mode } } satisfies DialoguePayload, idempotencyKey: `${id}:1` });
     this.remoteMessages.set(id, messages);
     await this.persistTranscript(id, request.topic, messages);
     const next = await this.store.mutate((latest) => ({
@@ -1555,7 +1532,7 @@ export class BackgroundService {
     if (!latestJob.preparedSentAt) await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],preparedSentAt:sentAt}}}));
     const messages: SharedMessage[] = [{ from: stored.owner, text, origin, sentAt }];
     await this.remote.send({ pairId: pair.id, conversationId, sequence: 1, recipientId, senderAgent: stored.owner,
-      payload: { kind: "dialogue", text, origin, sentAt, topic, ...(job.openingBrief ? { brief: job.openingBrief } : {}), status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
+      payload: { protocol: DIALOGUE_PROTOCOL_VERSION, kind: "dialogue", text, origin, sentAt, topic, ...(job.openingBrief ? { brief: job.openingBrief } : {}), status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${conversationId}:1` });
     this.remoteMessages.set(conversationId, messages);
     await this.persistTranscript(conversationId, topic, messages);
     const next = await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "waiting"}}, activeTopics:mergeTopicCatalog(current.activeTopics,[topic])}));
@@ -1587,7 +1564,7 @@ export class BackgroundService {
     const controlId = randomUUID();
     await this.remote.send({ pairId: pair.id, conversationId: controlId, sequence: 1, recipientId, senderAgent: stored.owner,
       payload: { kind: "topic", topic, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion, versionOnly, requestUpdateCheck, requestVersion,
-        ...(!versionOnly ? { brief: this.savedTopicBrief(stored.topicBriefs, topic) ?? shareableTopicBrief(findTopicContext(this.readContextAnalysis(), topic)) } : {}) } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
+        protocol: DIALOGUE_PROTOCOL_VERSION, ...(!versionOnly ? { brief: this.savedTopicBrief(stored.topicBriefs, topic) ?? shareableTopicBrief(findTopicContext(this.readContextAnalysis(), topic)) } : {}) } satisfies TopicPayload, idempotencyKey: `topic:${controlId}` });
   }
 
   async requestPeerVersionCheck() {
@@ -1812,12 +1789,24 @@ export class BackgroundService {
       if (!this.remote || !stored.remote) return;
       this.inboxProgress.received++;
       this.inboxProgress.lastReceivedAt = Date.now();
-      if ((envelope.payload as { support?: unknown })?.support) {
+      const rawPayload = envelope.payload as unknown;
+      if (rawPayload && typeof rawPayload === "object" && (rawPayload as { support?: unknown }).support) {
         // Dedicated support polling handles this independently of the dialogue
         // lock, including already-processed rows. Never turn it into a topic.
         await this.remote.acknowledge(envelope.id);
         return;
       }
+      const payload = bridgeWirePayload(rawPayload);
+      if (!payload) {
+        await this.store.mutate(current => ({ quarantinedDeliveries: Object.fromEntries([
+          ...Object.entries(current.quarantinedDeliveries),
+          [envelope.id, { envelope: { ...envelope, payload: rawPayload }, code: "INVALID_PROTOCOL" as const, failedAt: new Date().toISOString() }],
+        ].slice(-100)) }));
+        this.diagnostics.record("dialogue.invalid-protocol");
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
+      envelope = { ...envelope, payload };
       // Service messages must not depend on onboarding, topics, or an LLM.
       if (envelope.payload.topic.startsWith(VERSION_PROBE_PREFIX) || envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
         this.inboxProgress.service++;
@@ -1887,10 +1876,13 @@ export class BackgroundService {
     if (this.updating) return;
     const work: Promise<void>[] = [];
     const considered = new Set<string>();
-    for (const { envelope } of Object.values(stored.incomingDeliveries).sort((a, b) => a.envelope.sequence_number - b.envelope.sequence_number)) {
+    for (const delivery of Object.values(stored.incomingDeliveries).sort((a, b) => a.envelope.sequence_number - b.envelope.sequence_number)) {
+      const { envelope } = delivery;
       if (this.remoteWorkers.size >= 3) break;
       if (considered.has(envelope.conversation_id)) continue;
       considered.add(envelope.conversation_id);
+      // Back off within this process, but allow one immediate recovery attempt
+      // after a real application restart. The prepared response remains durable.
       if (this.remoteWorkers.has(envelope.conversation_id) || (this.incomingRetryAt.get(envelope.id) ?? 0) > Date.now()) continue;
       const task = Promise.resolve().then(async () => {
         try {
@@ -1902,7 +1894,15 @@ export class BackgroundService {
           });
           this.incomingRetryAt.delete(envelope.id);
         } catch (error) {
-          this.incomingRetryAt.set(envelope.id, Date.now() + 30_000);
+          const code = supportErrorCode(error);
+          const failed = await this.store.mutate(current => {
+            const previous = current.incomingDeliveries[envelope.id];
+            if (!previous) return {};
+            const attempts = (previous.attempts ?? 0) + 1;
+            const retryAt = Date.now() + Math.min(30_000 * 2 ** Math.min(attempts - 1, 5), 10 * 60_000);
+            return { incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...previous, attempts, retryAt, failureCode: code } } };
+          });
+          this.incomingRetryAt.set(envelope.id, failed.incomingDeliveries[envelope.id]?.retryAt ?? Date.now() + 30_000);
           this.remoteAgents.delete(envelope.conversation_id);
           this.diagnostics.record("dialogue.retry_pending");
           this.emit({ type: "error", error: errorMessage(error) });
@@ -2025,7 +2025,7 @@ export class BackgroundService {
       if (!delivery?.responseSentAt) await this.store.mutate((current) => ({ incomingDeliveries: { ...current.incomingDeliveries,
         [envelope.id]: { ...current.incomingDeliveries[envelope.id], responseSentAt: sentAt } } }));
       await this.remote.send({ pairId: pair.id, conversationId: envelope.conversation_id, sequence, recipientId, senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, origin: "agent", sentAt, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
+        payload: { protocol: DIALOGUE_PROTOCOL_VERSION, kind: "dialogue", text: response.message_to_peer, origin: "agent", sentAt, topic: dialogue.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload, idempotencyKey: `${envelope.conversation_id}:${sequence}` });
       if (!delivery?.responseSent) messages.push({ from: stored.owner, text: response.message_to_peer, origin: "agent", sentAt });
       const sentState = await this.store.mutate((current) => ({
         conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },
@@ -2052,16 +2052,21 @@ export class BackgroundService {
   }
 
   private publicOwnerQuestions(questions: PendingOwnerQuestion[]): OwnerQuestionView[] {
-    return questions.map(({ transcript: _transcript, nextSequence: _nextSequence, conversationId: _conversationId, ...question }) => question);
+    return questions.map(({ transcript: _transcript, nextSequence: _nextSequence, conversationId: _conversationId,
+      ownerResponseRecorded: _ownerResponseRecorded, preparedResponse: _preparedResponse, preparedSentAt: _preparedSentAt, ...question }) => question);
   }
 
   private async queueOwnerQuestion(question: Omit<PendingOwnerQuestion, "id" | "createdAt">) {
     const stored = await this.store.read();
     const existing = stored.pendingOwnerQuestions.find((item) => item.conversationId === question.conversationId);
+    const sameQuestion = existing?.question === question.question;
     const pending: PendingOwnerQuestion = {
       ...question,
       id: existing?.id ?? randomUUID(),
       createdAt: existing?.createdAt ?? new Date().toISOString(),
+      ownerResponseRecorded: sameQuestion ? existing?.ownerResponseRecorded : undefined,
+      preparedResponse: sameQuestion ? existing?.preparedResponse : undefined,
+      preparedSentAt: sameQuestion ? existing?.preparedSentAt : undefined,
       transcript: question.transcript.map((message) => ({ ...message })),
     };
     const saved = await this.store.mutate((current) => ({ pendingOwnerQuestions: [...current.pendingOwnerQuestions.filter((item) => item.conversationId !== question.conversationId), pending] }));
@@ -2084,7 +2089,10 @@ export class BackgroundService {
       const stored = await this.store.read();
       const pending = stored.pendingOwnerQuestions.find((item) => item.id === id);
       if (!pending) return this.state();
-      await this.rememberOwnerResponse(pending, disposition, answer);
+      if (!pending.ownerResponseRecorded && !pending.preparedResponse) {
+        await this.rememberOwnerResponse(pending, disposition, answer);
+        await this.store.mutate(current => ({ pendingOwnerQuestions: current.pendingOwnerQuestions.map(item => item.id === id ? { ...item, ownerResponseRecorded: true } : item) }));
+      }
       if (!stored.remote || !this.remote) throw new Error("Сначала восстановите соединение со вторым компьютером");
       const pair = await this.remote.pairState(stored.remote.pairId);
       const me = await this.remote.identity();
@@ -2097,13 +2105,16 @@ export class BackgroundService {
           ? "Владелец ответил: «Не знаю». Больше не задавай этот вопрос и продолжи с условным выводом."
           : "Владелец не хочет отвечать на этот вопрос. Уважай границу, не задавай его снова и продолжи без этого факта.";
       const privacyInstruction = "Используй ответ только для собственного рассуждения. Второму агенту передай лишь минимально необходимый вывод своими словами: не цитируй сырой ответ и не сообщай лишние личные детали. owner_question оставь пустым, если нового действительно необходимого вопроса нет.";
-      const existingAgent = this.remoteAgents.get(pending.conversationId);
-      const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]));
-      const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
-      const initialResponse = existingAgent
-        ? await (agent.respondToOwner?.(`${reply}\n\n${privacyInstruction}`) ?? agent.respond(`${reply}\n\n${privacyInstruction}`))
-        : await agent.start(`Возобнови поставленный на паузу разговор по теме «${pending.topic}».\n\nУже переданные между агентами реплики:\n${transcript}\n\nТвой локальный вопрос был: ${pending.question}\n${reply}\n\n${privacyInstruction}`);
-      const response = await this.ensureConversationContinuesNaturally(agent, initialResponse, pending.topic, pending.nextSequence);
+      let response = pending.preparedResponse;
+      if (!response) {
+        const existingAgent = this.remoteAgents.get(pending.conversationId);
+        const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]));
+        const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
+        const initialResponse = existingAgent
+          ? await (agent.respondToOwner?.(`${reply}\n\n${privacyInstruction}`) ?? agent.respond(`${reply}\n\n${privacyInstruction}`))
+          : await agent.start(`Возобнови поставленный на паузу разговор по теме «${pending.topic}».\n\nУже переданные между агентами реплики:\n${transcript}\n\nТвой локальный вопрос был: ${pending.question}\n${reply}\n\n${privacyInstruction}`);
+        response = await this.ensureConversationContinuesNaturally(agent, initialResponse, pending.topic, pending.nextSequence);
+      }
 
       if (this.hasOwnerQuestion(response)) {
         await this.queueOwnerQuestion({
@@ -2117,14 +2128,15 @@ export class BackgroundService {
         return this.state();
       }
 
-      const sentAt = new Date().toISOString();
+      const sentAt = pending.preparedSentAt ?? new Date().toISOString();
+      if (!pending.preparedResponse) await this.store.mutate(current => ({ pendingOwnerQuestions: current.pendingOwnerQuestions.map(item => item.id === id ? { ...item, preparedResponse: response, preparedSentAt: sentAt } : item) }));
       await this.remote.send({
         pairId: pair.id,
         conversationId: pending.conversationId,
         sequence: pending.nextSequence,
         recipientId,
         senderAgent: stored.owner,
-        payload: { kind: "dialogue", text: response.message_to_peer, origin: "owner-answer", sentAt, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion,
+        payload: { protocol: DIALOGUE_PROTOCOL_VERSION, kind: "dialogue", text: response.message_to_peer, origin: "owner-answer", sentAt, topic: pending.topic, status: response.status, sharedSummary: response.shared_summary, comparisonSummary: response.comparison_summary, senderName: stored.displayName, senderVersion: this.options.appVersion, experienceVersion: this.options.experienceResetVersion,
           ...(pending.nextSequence === 1 && stored.continuations[pending.conversationId] ? { continuation: { parentReportId: stored.continuations[pending.conversationId].parentReportId, history: stored.continuations[pending.conversationId].history, mode: stored.continuations[pending.conversationId].mode } } : {}),
         } satisfies DialoguePayload,
         idempotencyKey: `${pending.conversationId}:${pending.nextSequence}`,

@@ -10,6 +10,7 @@ import type { AgentResponse, AgentRuntime } from "../src/core/types.js";
 class CapturingAgent implements AgentRuntime {
   readonly id = "katya" as const;
   received = "";
+  calls = 0;
 
   async start(message: string): Promise<AgentResponse> {
     this.received = message;
@@ -26,6 +27,7 @@ class CapturingAgent implements AgentRuntime {
   }
 
   private response(): AgentResponse {
+    this.calls++;
     return {
       message_to_peer: "Уточнённый вывод без дословного личного ответа",
       owner_question: "",
@@ -71,10 +73,11 @@ test("owner question survives restart and raw answer is not sent to the peer", a
       remoteAgents: Map<string, AgentRuntime>;
       codexStatus(): Promise<{ installed: boolean; authenticated: boolean; version: string }>;
     };
+    let failFirstSend = true;
     internal.remote = {
       async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
       async identity() { return "partner-device"; },
-      async send(input) { sent.push(input); },
+      async send(input) { sent.push(input); if (failFirstSend) { failFirstSend = false; throw new Error("Lost response"); } },
     };
     internal.remoteAgents.set(question.conversationId, agent);
     internal.codexStatus = async () => ({ installed: true, authenticated: true, version: "test" });
@@ -90,15 +93,20 @@ test("owner question survives restart and raw answer is not sent to the peer", a
     assert.equal("transcript" in before.ownerQuestions[0], false);
 
     const rawAnswer = "Сырой личный ответ, который нельзя пересылать";
+    await assert.rejects(service.answerOwnerQuestion({ id: question.id, disposition: "answer", answer: rawAnswer }), /Lost response/);
+    const prepared = (await store.read()).pendingOwnerQuestions[0];
+    assert.equal(prepared.preparedResponse?.message_to_peer, "Уточнённый вывод без дословного личного ответа");
     await service.answerOwnerQuestion({ id: question.id, disposition: "answer", answer: rawAnswer });
 
     assert.match(agent.received, new RegExp(rawAnswer));
-    assert.equal(sent.length, 1);
+    assert.equal(sent.length, 2);
+    assert.equal(agent.calls, 1);
     assert.equal(sent[0].sequence, question.nextSequence);
     assert.equal(sent[0].payload.senderVersion,"1.2.10");
     assert.equal(sent[0].payload.experienceVersion,"current");
     assert.equal(sent[0].payload.text, "Уточнённый вывод без дословного личного ответа");
     assert.equal(sent[0].payload.origin, "owner-answer");
+    assert.deepEqual(sent[0].payload, sent[1].payload);
     assert.equal((await service.state()).liveConversations[0].messages.at(-1)?.origin, "owner-answer");
     assert.doesNotMatch(sent[0].payload.text, new RegExp(rawAnswer));
     assert.deepEqual((await store.read()).pendingOwnerQuestions, []);

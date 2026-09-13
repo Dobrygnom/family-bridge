@@ -38,6 +38,9 @@ export interface PendingOwnerQuestion {
   peerName?: string;
   nextSequence: number;
   transcript: SharedMessage[];
+  ownerResponseRecorded?: boolean;
+  preparedResponse?: AgentResponse;
+  preparedSentAt?: string;
 }
 
 export interface StoredState {
@@ -70,7 +73,8 @@ export interface StoredState {
   conversationParents: Record<string, string>;
   conversationModes: Record<string, "restart" | "clean-continuation">;
   roleRepairCutoffAt?: string;
-  incomingDeliveries: Record<string, { envelope: RemoteEnvelope; received?: boolean; response?: AgentResponse; responseSentAt?: string; responseSent?: boolean }>;
+  incomingDeliveries: Record<string, { envelope: RemoteEnvelope; received?: boolean; response?: AgentResponse; responseSentAt?: string; responseSent?: boolean; attempts?: number; retryAt?: number; failureCode?: string }>;
+  quarantinedDeliveries: Record<string, { envelope: RemoteEnvelope; code: "INVALID_PROTOCOL"; failedAt: string }>;
   completedIncoming: string[];
   lastConversationAt?: string;
   remote?: {
@@ -109,6 +113,7 @@ const defaults: StoredState = {
   conversationParents: {},
   conversationModes: {},
   incomingDeliveries: {},
+  quarantinedDeliveries: {},
   completedIncoming: [],
 };
 

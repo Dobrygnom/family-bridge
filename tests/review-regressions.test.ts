@@ -70,6 +70,19 @@ test("blocked incoming dialogue never generates or sends a reply", async () => {
   } finally { await f.cleanup(); }
 });
 
+test("malformed authenticated payload is acknowledged into a bounded local quarantine instead of poisoning retries", async () => {
+  const f = await fixture(); const acknowledged: string[] = [];
+  try {
+    f.transport.acknowledge = async (id: string) => { acknowledged.push(id); };
+    f.queue.push({ ...envelope("broken"), payload: { kind:"dialogue", topic:"Topic", status:"continue" } });
+    await (f.service as any).pumpRemote();
+    const stored = await f.store.read();
+    assert.deepEqual(acknowledged,["broken"]); assert.deepEqual(stored.incomingDeliveries,{});
+    assert.equal(stored.quarantinedDeliveries.broken.code,"INVALID_PROTOCOL");
+    assert.doesNotMatch(JSON.stringify(await f.service.state()),/quarantinedDeliveries/);
+  } finally { await f.cleanup(); }
+});
+
 test("failed sending survives restart and redelivery without duplicate generation or transcript", async () => {
   const f = await fixture();
   let generations = 0;

@@ -2,8 +2,9 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { StoredState } from "./store.js";
 import { messageSentAt } from "../src/core/continuation.js";
+import { stitchMessages } from "../src/core/stitch-messages.js";
 
-const ARCHIVE_SCHEMA = "1";
+const ARCHIVE_SCHEMA = "2";
 
 function safeFileName(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-180);
@@ -31,21 +32,31 @@ export async function archiveConversationHistory(userData: string, state: Stored
   };
   await writeFile(path.join(root, "history.json"), JSON.stringify(snapshot, null, 2), "utf8");
   const sections: string[] = [`# Family Bridge — архив разговоров\n\nСоздан: ${snapshot.createdAt}\nВерсия приложения: ${appVersion}\n`];
-  for (const [id, transcript] of Object.entries(state.conversationTranscripts)) {
-    sections.push(`\n## ${transcript.topic}\n\nИдентификатор: ${id}\n`);
-    for (const message of transcript.messages) sections.push(renderMessage(message.from, message.text, message.sentAt));
-  }
+  type ArchiveMessage = { from?: string; text?: string; payload?: string; sentAt?: unknown; createdAt?: unknown };
+  type ArchiveReport = { id: string; parentReportId?: string; restarted?: boolean; inheritedMessageCount?: number; topic: string; messages: ArchiveMessage[] };
+  const reports: ArchiveReport[] = [];
   for (const reportPath of state.reports) {
     try {
       const raw = await readFile(reportPath, "utf8");
-      const report = JSON.parse(raw) as { topic?: string; conversationId?: string; messages?: Array<{ from?: string; text?: string; payload?: string; sentAt?: unknown; createdAt?: unknown }> };
-      sections.push(`\n## ${report.topic || "Сохранённый разговор"}\n\nИдентификатор: ${report.conversationId || "неизвестен"}\n`);
-      for (const message of report.messages ?? []) {
-        const text = message.text ?? message.payload ?? "";
-        if (text) sections.push(renderMessage(message.from, text, message.sentAt ?? message.createdAt));
-      }
+      const report = JSON.parse(raw) as { topic?: string; conversationId?: string; parentReportId?: string; restarted?: boolean; inheritedMessageCount?: number; messages?: ArchiveMessage[] };
+      reports.push({ id: report.conversationId || path.basename(reportPath), parentReportId: report.parentReportId, restarted: report.restarted,
+        inheritedMessageCount: report.inheritedMessageCount, topic: report.topic || "Сохранённый разговор", messages: report.messages ?? [] });
       await copyFile(reportPath, path.join(reportsRoot, safeFileName(path.basename(reportPath))));
     } catch { /* A missing legacy report must not prevent archiving the remaining history. */ }
+  }
+  const ordered = reports.reverse();
+  for (const [id, transcript] of Object.entries(state.conversationTranscripts)) ordered.push({ id, topic: transcript.topic,
+    parentReportId: state.conversationParents[id], restarted: state.conversationModes[id] === "restart",
+    inheritedMessageCount: state.conversationInheritedCounts[id] ?? state.continuations[id]?.history.length, messages: transcript.messages });
+  const stitched = stitchMessages(ordered, (a, b) => a.from === b.from && (a.text ?? a.payload) === (b.text ?? b.payload));
+  for (const report of ordered) {
+    const messages = stitched.get(report.id)?.newMessages ?? report.messages;
+    if (!messages.length) continue;
+    sections.push(`\n## ${report.topic}${report.parentReportId ? " — продолжение" : ""}\n\nИдентификатор: ${report.id}\n`);
+    for (const message of messages) {
+      const text = message.text ?? message.payload ?? "";
+      if (text) sections.push(renderMessage(message.from, text, message.sentAt ?? message.createdAt));
+    }
   }
   await writeFile(path.join(root, "history.md"), sections.join("\n"), "utf8");
   await writeFile(marker, JSON.stringify({ archiveSchema: ARCHIVE_SCHEMA, createdAt: snapshot.createdAt, directory: path.basename(root) }, null, 2), "utf8");

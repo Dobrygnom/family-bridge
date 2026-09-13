@@ -58,6 +58,7 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
   const restartLabel = { ru: "Обсуждаем заново", en: "Discussing again", cs: "Probíráme znovu", fr: "Nouvelle discussion" }[language];
   const repairLabel = { ru: "Ожидает повторного обсуждения", en: "Waiting to discuss again", cs: "Čeká na nový rozhovor", fr: "En attente d’une nouvelle discussion" }[language];
   const repairHint = { ru: "Начнём автоматически, когда оба приложения обновятся и текущий разговор завершится. Прежние ответы не будут использованы.", en: "Starts automatically once both apps are updated and the current conversation finishes. Previous replies will not be used.", cs: "Začne automaticky po aktualizaci obou aplikací a dokončení aktuálního rozhovoru. Předchozí odpovědi se nepoužijí.", fr: "Démarrera automatiquement après la mise à jour des deux applications et la fin du dialogue en cours. Les anciennes réponses seront exclues." }[language];
+  const dayLabel = (sentAt?: string) => sentAt ? new Date(sentAt).toLocaleDateString(language, { day: "numeric", month: "long", year: "numeric" }) : t.unknownTime;
       const repairPending = state.repairPendingIds?.includes(thread.id);
       const status = repairPending ? state.repairWaiting?.[thread.id] ? repairLabels[language][state.repairWaiting[thread.id]] : repairLabel
         : thread.live ? activity ? activityLabels[language][activity] : t.live : thread.latest?.completionState === "needs_follow_up" ? t.follow : t.done;
@@ -76,9 +77,9 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
             <div className="report-transcript" role="log" aria-live={stage.live ? "polite" : "off"} aria-relevant="additions text" aria-atomic="false">
               {stage.newMessages.map((message, i) => {
                 const key = `${stage.id}:${stage.messages.length - stage.newMessages.length + i}`;
-                const previous = stage.newMessages[i - 1];
-                const day = message.sentAt ? new Date(message.sentAt).toLocaleDateString(language, { day: "numeric", month: "long", year: "numeric" }) : t.unknownTime;
-                const previousDay = previous?.sentAt ? new Date(previous.sentAt).toLocaleDateString(language, { day: "numeric", month: "long", year: "numeric" }) : previous ? t.unknownTime : undefined;
+                const previous = stage.newMessages[i - 1] ?? thread.currentStages[index - 1]?.newMessages.at(-1);
+                const day = dayLabel(message.sentAt);
+                const previousDay = previous ? dayLabel(previous.sentAt) : undefined;
                 const time = message.sentAt ? new Date(message.sentAt).toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit" }) : t.unknownTime;
                 return <div key={key} id={`message-${key}`} className="message-anchor">
                   {day !== previousDay && <div className="message-day"><span>{day}</span></div>}

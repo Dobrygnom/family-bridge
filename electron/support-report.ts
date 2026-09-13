@@ -14,7 +14,7 @@ const events = new Set([
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
   "context.read-ready", "context.read-progress", "context.read-failed", "analysis.start", "analysis.progress", "analysis.coverage-invalid", "analysis.ready", "analysis.failed", "health.failed",
   "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
-  "dialogue.received", "dialogue.retry_pending", "dialogue.incompatible-version", "conversation.repair-deferred",
+  "dialogue.received", "dialogue.retry_pending", "dialogue.incompatible-version", "dialogue.invalid-protocol", "conversation.repair-deferred",
   "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
   "conversation.repair-started", "conversation.repair-identifiers-migrated", "conversation.repair-owner-reconciled",
   "peer-version.sent", "peer-version.received", "peer-version.timeout", "peer-version.error",
@@ -36,8 +36,8 @@ export function supportErrorCode(error: unknown): string {
 }
 
 type Fields = Record<string, string | number | boolean>;
-const numeric = new Set(["exitCode","startedAt","people", "topics", "reports", "current", "total", "elapsedMs", "size", "uptimeSeconds", "workers", "pendingDeliveries", "continuations", "pendingQuestions", "pendingTopics", "progress", "healthAgeSeconds"]);
-const booleans = new Set(["onboarding", "sourceReady", "ready", "available", "checking", "downloading", "installing", "installRequested", "updatedLaunch", "agentLaunched", "running", "contextSyncing", "portraitsUpdating", "configured", "connected", "codexChecked", "codexInstalled", "codexAuthenticated", "error", "recoveryRoute"]);
+const numeric = new Set(["exitCode","startedAt","people", "topics", "reports", "current", "total", "elapsedMs", "size", "uptimeSeconds", "workers", "pendingDeliveries", "quarantinedDeliveries", "continuations", "pendingQuestions", "pendingTopics", "progress", "healthAgeSeconds"]);
+const booleans = new Set(["onboarding", "sourceReady", "historyArchiveReady", "ready", "available", "checking", "downloading", "installing", "installRequested", "updatedLaunch", "agentLaunched", "running", "contextSyncing", "portraitsUpdating", "configured", "connected", "codexChecked", "codexInstalled", "codexAuthenticated", "error", "recoveryRoute"]);
 const enums: Record<string, readonly string[]> = {
   analysisCode: [...codes],
   operation: updateOperations, channel: updateIpcChannels,
@@ -96,6 +96,8 @@ export function sanitizeDialogueDiagnostics(value: unknown): DialogueDiagnostics
     if (!row || !identifier(row.id) || !Number.isSafeInteger(row.messages) || row.messages < 0) return [];
     const entry: Fields = { id: row.id, messages: row.messages };
     for (const key of ["lastFromLocal", "pending", "active"]) if (typeof row[key] === "boolean") entry[key] = row[key];
+    for (const key of ["attempts", "retryInMs"]) if (Number.isSafeInteger(row[key]) && row[key] >= 0) entry[key] = row[key];
+    if (typeof row.failureCode === "string" && codes.has(row.failureCode)) entry.failureCode = row.failureCode;
     return [entry];
   });
   return { ...safe, repairs, conversations };
