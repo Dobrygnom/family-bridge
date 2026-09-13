@@ -39,6 +39,7 @@ function publishUpdate(update: UpdateState) {
   currentUpdate = update;
   service.setUpdateState(update);
   service.diagnostics.record('updater.state', { version: update.version, ready: update.ready, downloading: update.downloading, installing: update.installing, waitingFor: update.waitingFor, current: update.progress });
+  if (update.error) service.diagnostics.record("updater.failed", { code: supportErrorCode(update.error) });
 }
 let activeIpc = 0;
 const ipcActivity = new UpdateActivity();

@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { randomUUID } from "node:crypto";
 
 function installUiErrorObserver() {
   let previousSignature = "", occurrenceId = "", timer: ReturnType<typeof setTimeout> | undefined;
@@ -10,7 +9,7 @@ function installUiErrorObserver() {
     const signature = alerts.map(element => `${element.className}:${element.textContent ?? ""}`).join("\n");
     if (signature === previousSignature) return;
     previousSignature = signature;
-    if (alerts.length) occurrenceId = randomUUID(); else occurrenceId = "";
+    if (alerts.length) occurrenceId = crypto.randomUUID(); else occurrenceId = "";
     void ipcRenderer.invoke("bridge:ui-error-state", { visible: alerts.length > 0, visibleCount: alerts.length, ...(occurrenceId ? { occurrenceId } : {}) }).catch(() => undefined);
   };
   const schedule = () => { clearTimeout(timer); timer = setTimeout(inspect, 50); };

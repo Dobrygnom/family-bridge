@@ -14,7 +14,7 @@ const events = new Set([
   "process.before-quit", "process.will-quit", "process.quit", "process.child-gone", "process.uncaught-exception", "process.exit",
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
   "context.read-ready", "context.read-progress", "context.read-failed", "analysis.start", "analysis.progress", "analysis.coverage-invalid", "analysis.ready", "analysis.failed", "health.failed",
-  "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
+  "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "updater.failed", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
   "dialogue.received", "dialogue.retry_pending", "dialogue.incompatible-version", "dialogue.invalid-protocol", "conversation.repair-deferred",
   "continuation.start", "continuation.sent", "continuation.failed", "continuation.resume-deferred", "automatic.retry-pending",
   "conversation.repair-started", "conversation.repair-identifiers-migrated", "conversation.repair-owner-reconciled",
