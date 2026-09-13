@@ -27,7 +27,7 @@ export class SupportChannel {
   private working?: Promise<unknown>;
   constructor(private readonly root: string,
     private readonly makeTransport: (secret: string, storage: AuthStorage, preserve: boolean) => SupabaseTransport,
-    private readonly binding: () => Promise<{ pairId: string; owner: "dima" | "katya" } | undefined>) {}
+    private readonly binding: () => Promise<{ pairId: string; owner: "dima" | "katya"; peerVersion?: string } | undefined>) {}
 
   private serial<T>(run: () => Promise<T>): Promise<T> {
     const next = (this.working ?? Promise.resolve()).catch(() => undefined).then(run);
@@ -82,7 +82,7 @@ export class SupportChannel {
       if (pair.owner_id !== saved.creatorId) throw new Error("Support pair owner mismatch");
       const peer = pair.owner_id === me ? pair.partner_id : pair.partner_id === me ? pair.owner_id : undefined;
       if (!peer) return;
-      return { transport, pairId: pair.id, me, peer, owner: binding.owner, peerVersion: "1.2.20", independent: true };
+      return { transport, pairId: pair.id, me, peer, owner: binding.owner, peerVersion: binding.peerVersion, independent: true };
     });
   }
 

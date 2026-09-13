@@ -478,7 +478,7 @@ export class BackgroundService {
       record: (event, code) => this.diagnostics.record(event, { code }),
     }, Date.now, this.options.backgroundTasks === false ? undefined : new SupportChannel(path.join(userData, "support-channel"),
       (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
-      async () => { const state = await this.store.read(); return state.remote ? { pairId: state.remote.pairId, owner: state.owner } : undefined; }));
+      async () => { const state = await this.store.read(); return state.remote ? { pairId: state.remote.pairId, owner: state.owner, peerVersion: state.remote.peerVersion } : undefined; }));
   }
 
   async applicationDiagnostics() {

@@ -44,7 +44,7 @@ function network() {
 test("separate support sessions bootstrap automatically and survive loss of both dialogue sessions and restart", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fb-support-channel-"));
   const net = network(), pairId = randomUUID();
-  const channelA = new SupportChannel(path.join(dir, "a"), net.factory, async () => ({ pairId, owner: "dima" }));
+  const channelA = new SupportChannel(path.join(dir, "a"), net.factory, async () => ({ pairId, owner: "dima", peerVersion: "1.2.39" }));
   const channelB = new SupportChannel(path.join(dir, "b"), net.factory, async () => ({ pairId, owner: "katya" }));
   const queues: Record<string, any[]> = { a: [], z: [] };
   const primary = (me: string, peer: string): SupportContext => ({ me, peer, pairId, owner: me === "a" ? "dima" : "katya", peerVersion: "1.2.20", transport: {
@@ -64,6 +64,7 @@ test("separate support sessions bootstrap automatically and survive loss of both
     assert.equal(net.pairs.size, 1, "one separate pair, deterministic creator");
     const ca = await channelA.context(), cb = await channelB.context();
     assert.ok(ca && cb); assert.equal(ca.pairId, cb.pairId); assert.equal(ca.peer, cb.me);
+    assert.equal(ca.peerVersion, "1.2.39");
     assert.notEqual(ca.pairId, pairId);
     primaryBroken = true;
     const request = await a.request("update");
