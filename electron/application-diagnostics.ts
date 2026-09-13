@@ -35,15 +35,20 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
   const quarantined = Object.entries(state.quarantinedDeliveries).map(([id, delivery]) => ({ id, ...delivery }));
   const ownerQuestions = state.pendingOwnerQuestions.map(question => ({ ...question }));
   const duplicateLaunches = [...topicNames].filter(title => topicLaunches.filter(job => job.topic === title && job.status !== "complete").length > 1);
-  const knownConversation = (id: string) => Boolean(state.conversationTranscripts[id]) || reports.some(report => report.id === id)
-    || Object.prototype.hasOwnProperty.call(state.continuations, id);
-  const danglingParents = Object.entries(state.conversationParents).filter(([id, parent]) => knownConversation(id) && !knownConversation(parent));
+  const cyclicParents = Object.keys(state.conversationParents).filter(id => {
+    const seen = new Set<string>();
+    for (let current: string | undefined = id; current; current = state.conversationParents[current]) {
+      if (seen.has(current)) return true;
+      seen.add(current);
+    }
+    return false;
+  });
   return { schema:1, at:new Date().toISOString(), identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions,
     conversations, continuations, deliveries, quarantined, reports,
     invariants:[
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },
-      { name:"conversation-parent-resolves", ok:danglingParents.length===0, ...(danglingParents.length ? {details:danglingParents.map(([id,parent])=>`${id}->${parent}`).join(" | ")} : {}) },
+      { name:"conversation-parents-acyclic", ok:cyclicParents.length===0, ...(cyclicParents.length ? {details:cyclicParents.join(" | ")} : {}) },
       { name:"no-duplicate-delivery-id", ok:new Set([...Object.keys(state.incomingDeliveries),...Object.keys(state.quarantinedDeliveries)]).size === Object.keys(state.incomingDeliveries).length + Object.keys(state.quarantinedDeliveries).length },
     ] };
 }
