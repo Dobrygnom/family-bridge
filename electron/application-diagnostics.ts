@@ -37,7 +37,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
   const duplicateLaunches = [...topicNames].filter(title => topicLaunches.filter(job => job.topic === title && job.status !== "complete").length > 1);
   const knownConversation = (id: string) => Boolean(state.conversationTranscripts[id]) || reports.some(report => report.id === id)
     || Object.prototype.hasOwnProperty.call(state.continuations, id);
-  const danglingParents = Object.entries(state.conversationParents).filter(([id, parent]) => !knownConversation(id) || !knownConversation(parent));
+  const danglingParents = Object.entries(state.conversationParents).filter(([id, parent]) => knownConversation(id) && !knownConversation(parent));
   return { schema:1, at:new Date().toISOString(), identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions,
     conversations, continuations, deliveries, quarantined, reports,

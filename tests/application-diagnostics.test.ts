@@ -30,3 +30,14 @@ test("application diagnostics reject unbounded peer payloads", () => {
   assert.equal(sanitizeApplicationDiagnostics({ schema: 1, at: new Date().toISOString(), topics: [], invariants: [], huge: "x".repeat(4_000_001) }), undefined);
   assert.equal(sanitizeApplicationDiagnostics({ schema: 1, at: new Date().toISOString(), topics: [], invariants: [], nested: { sourceChat: ["raw"] } }), undefined);
 });
+
+test("archived child mappings are ignored, but a visible conversation with a missing parent fails its invariant", () => {
+  const base = { owner: "dima", displayName: "Дима", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true,
+    pendingTopics: [], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [], topicSources: {}, topicBriefs: {}, reports: [],
+    topicLaunches: {}, pendingOwnerQuestions: [], conversationInheritedCounts: {}, continuations: {}, conversationModes: {}, incomingDeliveries: {},
+    quarantinedDeliveries: {}, completedIncoming: [], ignoredConversationIds: [] } satisfies Omit<StoredState, "conversationTranscripts" | "conversationParents">;
+  const archived = buildApplicationDiagnostics({ ...base, conversationTranscripts: {}, conversationParents: { archived: "old-parent" } }, undefined, []);
+  assert.equal(archived.invariants.find(item => item.name === "conversation-parent-resolves")?.ok, true);
+  const visible = buildApplicationDiagnostics({ ...base, conversationTranscripts: { child: { topic: "T", messages: [] } }, conversationParents: { child: "missing" } }, undefined, []);
+  assert.equal(visible.invariants.find(item => item.name === "conversation-parent-resolves")?.ok, false);
+});
