@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { RemoteSupport, type SupportContext } from "../electron/remote-support.js";
+import { RemoteSupport, type SupportContext, type SupportMaintenanceCommand } from "../electron/remote-support.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "../electron/support-report.js";
 import { Diagnostics } from "../electron/diagnostics.js";
 import { startSupportControl, supportLocatorFiles } from "../electron/support-control.js";
@@ -19,19 +19,19 @@ const report = (at = now): SupportReport => ({ schema: 1, at: new Date(at).toISO
 async function fixture() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fb-support-"));
   const incoming: any[] = [], sent: any[] = [];
-  let updates = 0, clock = now;
+  let updates = 0, clock = now; const maintenance:any[]=[];
   const context: SupportContext = { pairId: "pair", me: "me", peer: "peer", owner: "dima", peerVersion: "1.2.20", transport: {
     readSupportMessages: async () => incoming,
     send: async (value: any) => { sent.push(value); return "sent"; },
   } as any };
-  const hooks = { context: async () => context, snapshot: async (_logs = false, application = false) => ({ ...report(clock), ...(application ? { applicationDiagnostics: { schema: 1 as const, at: new Date(clock).toISOString(), identity: { owner: "katya", displayName: "Катя" }, topics: [{ title: "prepared" }], topicLaunches: [], ownerQuestions: [], conversations: [], continuations: [], deliveries: [], quarantined: [], reports: [], uiErrors: { schema: 1 as const, totalShown: 0, currentlyVisible: false, visibleCount: 0, recent: [] }, invariants: [] } } : {}) }), update: () => { updates++; }, record: () => {} };
+  const hooks = { context: async () => context, snapshot: async (_logs = false, application = false) => ({ ...report(clock), ...(application ? { applicationDiagnostics: { schema: 1 as const, at: new Date(clock).toISOString(), identity: { owner: "katya", displayName: "Катя" }, topics: [{ title: "prepared" }], topicLaunches: [], ownerQuestions: [], conversations: [], continuations: [], deliveries: [], quarantined: [], reports: [], uiErrors: { schema: 1 as const, totalShown: 0, currentlyVisible: false, visibleCount: 0, recent: [] }, invariants: [] } } : {}) }), update: () => { updates++; }, maintenance:async (command:SupportMaintenanceCommand)=>{maintenance.push(command);}, record: () => {} };
   const support = new RemoteSupport(dir, hooks, () => clock);
   const envelope = (action: string = "snapshot", extra: any = {}) => {
     const id = randomUUID();
     return { id, pair_id: "pair", sender_id: "peer", recipient_id: "me", created_at: new Date(clock).toISOString(),
       payload: { support: { protocol: 1, type: "request", id, sentAt: new Date(clock).toISOString(), action, ...extra } } };
   };
-  return { dir, incoming, sent, context, hooks, support, envelope, updates: () => updates, advance: (ms: number) => { clock += ms; },
+  return { dir, incoming, sent, context, hooks, support, envelope, updates: () => updates, maintenance, advance: (ms: number) => { clock += ms; },
     cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
@@ -168,6 +168,28 @@ test("deep application state is returned only for an explicit diagnostic request
   } finally { await f.cleanup(); }
 });
 
+test("maintenance is version-gated, strictly typed and replay-safe", async()=>{
+  const f=await fixture();
+  try {
+    const operationId=randomUUID(), conversationId=randomUUID();
+    f.context.peerVersion="1.2.43";
+    assert.equal((await f.support.requestMaintenance({operationId,operation:"delete-conversation",conversationId})).status,"unsupported");
+    f.context.peerVersion="1.2.44";
+    assert.equal((await f.support.requestMaintenance({operationId,operation:"delete-conversation",conversationId})).status,"sent");
+    const second=await f.support.requestMaintenance({operationId:randomUUID(),operation:"delete-conversation",conversationId:randomUUID()});
+    assert.equal(second.status,"sent");
+    assert.notEqual(second.id,(await f.support.status()).requests[0].id);
+    const request=f.sent.at(-1).payload.support;
+    f.incoming.push(f.envelope("maintenance",{id:request.id,command:request.command}));
+    await f.support.tick(); await f.support.tick();
+    assert.equal(f.maintenance.length,1);
+    assert.equal(f.sent.filter(s=>s.payload.support.replyTo===request.id).length,1);
+    f.incoming.push(f.envelope("maintenance",{command:{operationId,operation:"restart-from-message",conversationId,messageIndex:-1}}));
+    await f.support.tick();
+    assert.equal(f.maintenance.length,1);
+  }finally{await f.cleanup();}
+});
+
 test("local control requires its secret, rejects browser origins and exposes only fixed commands", async () => {
   const f = await fixture();
   const server = await startSupportControl(f.dir, f.support);
@@ -190,9 +212,9 @@ test("local control requires its secret, rejects browser origins and exposes onl
 });
 
 test("local blocker and application diagnostics remain readable when normal state reporting is stuck",async()=>{
-  const f=await fixture(); let installs=0,refreshes=0;
+  const f=await fixture(); let installs=0,refreshes=0,maintenance=0;
   f.support.status=()=>new Promise(()=>{});
-  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};}});
+  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};},maintenance:async()=>{maintenance++;return {accepted:true};}});
   try {
     const locator=JSON.parse(await readFile(supportLocatorFiles(f.dir)[0],'utf8'));
     const url=`http://127.0.0.1:${locator.port}`, headers={Authorization:`Bearer ${locator.token}`};
@@ -208,6 +230,11 @@ test("local blocker and application diagnostics remain readable when normal stat
     assert.equal(refreshes,0);
     assert.equal((await fetch(`${url}/local/refresh-context`,{method:'POST',headers})).status,200);
     assert.equal(refreshes,1);
+    const command={operationId:randomUUID(),operation:'delete-conversation',conversationId:randomUUID()};
+    assert.equal((await fetch(`${url}/local/maintenance`,{method:'POST',headers,body:JSON.stringify(command)})).status,200);
+    assert.equal(maintenance,1);
+    assert.equal((await fetch(`${url}/local/maintenance`,{method:'POST',headers:{...headers,Origin:'https://evil.test'},body:JSON.stringify(command)})).status,403);
+    assert.equal(maintenance,1);
   }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(supportLocatorFiles(f.dir)[1],{force:true});await f.cleanup();}
 });
 

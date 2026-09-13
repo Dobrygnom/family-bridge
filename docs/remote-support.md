@@ -18,8 +18,17 @@ uptime, Codex availability, preparation status, queue counts, update download/
 installation state, and a strictly filtered lifecycle log on request. Private
 messages, topic names, personal profiles, prompts, local paths, credentials and
 crash dumps are excluded. Error text is classified into fixed technical codes.
-The protocol supports only a diagnostic snapshot and the official app updater.
-It has no shell, arbitrary file read, download URL, script or account-reset action.
+The protocol has no shell, arbitrary file read, download URL, script or account-reset action.
+
+Starting with 1.2.44, a separate maintenance command family provides two bounded
+operations: delete one conversation by ID, or create a replacement branch from
+one zero-based message index. Deletion removes the report and active state and
+adds a tombstone so delayed transport packets cannot recreate it. Restart never
+rewrites the original report: it creates a new conversation ID, preserves the
+prefix through the selected point, and uses the ordinary encrypted dialogue
+transport for all subsequent messages. Every attempt is appended to the local
+`diagnostics/maintenance.jsonl` audit with operation ID and outcome, but no text.
+Persisted support receipts and operation IDs make retries idempotent.
 
 Starting with 1.2.21, reports also include up to 100 continuation records for the
 current pair: conversation/parent UUID, mode, status, attempt and message counts,
@@ -37,6 +46,10 @@ Run from the source checkout on the operator's computer:
 node --import tsx scripts/family-bridge-support.ts status
 node --import tsx scripts/family-bridge-support.ts snapshot
 node --import tsx scripts/family-bridge-support.ts update
+node --import tsx scripts/family-bridge-maintenance.ts local delete <conversation-id>
+node --import tsx scripts/family-bridge-maintenance.ts peer delete <conversation-id>
+node --import tsx scripts/family-bridge-maintenance.ts local restart <conversation-id> <zero-based-message-index>
+node --import tsx scripts/family-bridge-maintenance.ts peer restart <conversation-id> <zero-based-message-index>
 ```
 
 An optional final argument selects a different local profile directory. `status`
@@ -47,6 +60,11 @@ Use `status` to read the request result and later version/boot ID. `received` or
 `accepted` acknowledges a command; neither means installation completed.
 `legacy-update-requested` means an older peer was sent its existing check command;
 it does not prove the old process consumed it or installed anything.
+Maintenance requires 1.2.44 or newer on the target. An `unsupported` response is
+authoritative and does not mutate either device. For symmetric deletion, request
+the peer first, wait for a `received` receipt and a fresh diagnostic report, then
+delete locally. This ordering avoids a half-deleted state when the peer is old or
+offline.
 
 The local control server binds only to `127.0.0.1`, uses a random per-process
 token in an owner-only locator file, rejects browser origins, and exposes only

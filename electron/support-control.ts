@@ -3,7 +3,13 @@ import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { RemoteSupport } from "./remote-support.js";
+import type { RemoteSupport, SupportMaintenanceCommand } from "./remote-support.js";
+
+async function jsonBody(req: import("node:http").IncomingMessage) {
+  const chunks:Buffer[]=[]; let size=0;
+  for await (const chunk of req) { const value=Buffer.from(chunk); size+=value.length; if(size>4096) throw new Error("request-too-large"); chunks.push(value); }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
 
 export function supportLocatorFiles(userData: string) {
   const key = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 20);
@@ -11,7 +17,7 @@ export function supportLocatorFiles(userData: string) {
     path.join(os.tmpdir(), `family-bridge-support-${key}.json`)];
 }
 /** Local operator access without Electron Inspector or a second profile writer. */
-export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; applicationDiagnostics?: () => unknown; update: () => unknown; refreshContext?: () => unknown }): Promise<Server> {
+export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; applicationDiagnostics?: () => unknown; update: () => unknown; refreshContext?: () => unknown; maintenance?: (command:SupportMaintenanceCommand)=>Promise<unknown> }): Promise<Server> {
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   const server = createServer((req, res) => {
@@ -21,7 +27,6 @@ export async function startSupportControl(userData: string, support: RemoteSuppo
     if (req.headers.origin || auth.length !== expected.length || !timingSafeEqual(auth, expected)) {
       res.writeHead(403); res.end('{"error":"forbidden"}'); req.resume(); return;
     }
-    req.resume();
     void (async () => {
       if (local && req.method === "GET" && req.url === "/local/diagnostics") return local.diagnostics();
       if (local?.applicationDiagnostics && req.method === "GET" && req.url === "/local/application-diagnostics") return local.applicationDiagnostics();
@@ -31,6 +36,12 @@ export async function startSupportControl(userData: string, support: RemoteSuppo
       if (req.method === "POST" && req.url === "/peer/snapshot") return support.request("snapshot");
       if (req.method === "POST" && req.url === "/peer/diagnostics") return support.request("diagnostics");
       if (req.method === "POST" && req.url === "/peer/update") return support.request("update");
+      if (req.method === "POST" && req.url === "/local/maintenance") {
+        if (!local?.maintenance) throw new Error("Maintenance unavailable");
+        return local.maintenance(await jsonBody(req) as SupportMaintenanceCommand);
+      }
+      if (req.method === "POST" && req.url === "/peer/maintenance") return support.requestMaintenance(await jsonBody(req) as SupportMaintenanceCommand);
+      req.resume();
       res.statusCode = 404; return { error: "unknown-command" };
     })().then(value => res.end(JSON.stringify(value))).catch(() => {
       res.statusCode = 503; res.end('{"error":"support-unavailable","hint":"Read /status for technical state"}');

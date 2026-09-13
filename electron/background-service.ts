@@ -3,7 +3,7 @@ import { newTopicText, normalizeNewTopic, newTopicPrompt, legacyNewTopicWireText
 import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -40,7 +40,7 @@ import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.
 import { openPairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
 import { PAIR_RECOVERY_CAPSULES } from "./pair-recovery-capsules.js";
-import { RemoteSupport } from "./remote-support.js";
+import { RemoteSupport, type SupportMaintenanceCommand } from "./remote-support.js";
 import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
@@ -476,6 +476,7 @@ export class BackgroundService {
         if (!request) throw new Error("Updater unavailable");
         request();
       },
+      maintenance: command => this.runMaintenance(command),
       record: (event, code) => this.diagnostics.record(event, { code }),
     }, Date.now, this.options.backgroundTasks === false ? undefined : new SupportChannel(path.join(userData, "support-channel"),
       (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
@@ -486,6 +487,81 @@ export class BackgroundService {
     const state = await this.store.read();
     const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
     return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.());
+  }
+
+  private async auditMaintenance(command: SupportMaintenanceCommand, outcome: "accepted" | "failed") {
+    const row = { schema:1, at:new Date().toISOString(), operationId:command.operationId, operation:command.operation,
+      conversationId:command.conversationId, ...(command.operation === "restart-from-message" ? { messageIndex:command.messageIndex } : {}), outcome };
+    const directory = path.join(this.userData, "diagnostics");
+    await mkdir(directory, { recursive:true });
+    await appendFile(path.join(directory, "maintenance.jsonl"), `${JSON.stringify(row)}\n`, { encoding:"utf8", mode:0o600 });
+  }
+
+  async runMaintenance(command: SupportMaintenanceCommand) {
+    if (!command || !/^[a-z0-9-]{8,80}$/i.test(command.operationId) || !/^[a-z0-9-]{8,80}$/i.test(command.conversationId)
+      || command.operation !== "delete-conversation" && command.operation !== "restart-from-message"
+      || command.operation === "restart-from-message" && (!Number.isInteger(command.messageIndex) || command.messageIndex < 0 || command.messageIndex >= 100)) throw new Error("Invalid maintenance command");
+    try {
+      const result = command.operation === "delete-conversation"
+        ? await this.deleteConversation(command.conversationId)
+        : await this.restartConversationFromMessage(command.conversationId, command.messageIndex, command.operationId);
+      await this.auditMaintenance(command, "accepted");
+      return result;
+    } catch (error) { await this.auditMaintenance(command, "failed"); throw error; }
+  }
+
+  async deleteConversation(conversationId: string) {
+    if (!/^[a-z0-9-]{8,80}$/i.test(conversationId)) throw new Error("Invalid conversation id");
+    const before = await this.store.read();
+    const reportFiles = before.reports.filter(file => readReportSummaries([file])[0]?.id === conversationId);
+    const reportTopic = reportFiles.flatMap(file => readReportSummaries([file]).map(report => report.topic))[0];
+    const transcriptTopic = before.conversationTranscripts[conversationId]?.topic;
+    const topic = reportTopic || transcriptTopic;
+    const next = await this.store.mutate(current => {
+      const without = <T>(record:Record<string,T>) => { const copy={...record}; delete copy[conversationId]; return copy; };
+      const deliveries = Object.fromEntries(Object.entries(current.incomingDeliveries).filter(([,item])=>item.envelope.conversation_id!==conversationId));
+      const quarantined = Object.fromEntries(Object.entries(current.quarantinedDeliveries).filter(([,item])=>item.envelope.conversation_id!==conversationId));
+      const launches = { ...current.topicLaunches }; delete launches[conversationId];
+      const remainingReports = current.reports.filter(file => readReportSummaries([file])[0]?.id !== conversationId);
+      const topicStillUsed = topic && (Object.entries(current.conversationTranscripts).some(([id,t])=>id!==conversationId && t.topic===topic)
+        || remainingReports.some(file=>readReportSummaries([file])[0]?.topic===topic));
+      return { reports:remainingReports, topicLaunches:launches, pendingOwnerQuestions:current.pendingOwnerQuestions.filter(q=>q.conversationId!==conversationId),
+        conversationTranscripts:without(current.conversationTranscripts), conversationInheritedCounts:without(current.conversationInheritedCounts),
+        continuations:without(current.continuations), conversationParents:without(current.conversationParents), conversationModes:without(current.conversationModes),
+        incomingDeliveries:deliveries, quarantinedDeliveries:quarantined, completedIncoming:current.completedIncoming.filter(id=>id!==conversationId),
+        ignoredConversationIds:[...new Set([...current.ignoredConversationIds,conversationId])].slice(-500),
+        activeTopics:topic && !topicStillUsed ? current.activeTopics.filter(t=>t!==topic) : current.activeTopics,
+        pairTopics:topic && !topicStillUsed ? current.pairTopics.filter(t=>t!==topic) : current.pairTopics,
+        pendingTopics:topic && !topicStillUsed ? current.pendingTopics.filter(t=>t!==topic) : current.pendingTopics };
+    });
+    for (const file of reportFiles) await rm(file, { force:true });
+    this.remoteMessages.delete(conversationId); this.remoteAgents.delete(conversationId); this.remoteWorkers.delete(conversationId);
+    this.publishConversations(next); this.emitTopicState(next); this.diagnostics.record("maintenance.conversation-deleted");
+    return { accepted:true, operation:"delete-conversation", conversationId, existed:reportFiles.length>0 || Boolean(transcriptTopic) };
+  }
+
+  async restartConversationFromMessage(conversationId: string, messageIndex: number, requestId: string = randomUUID()) {
+    if (!/^[a-z0-9-]{8,80}$/i.test(conversationId) || !Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= 100) throw new Error("Invalid restart point");
+    const state = await this.store.read();
+    if (state.continuations[requestId]) return { accepted:true, operation:"restart-from-message", conversationId, newConversationId:requestId, messageIndex, repeated:true };
+    const file = state.reports.find(candidate=>readReportSummaries([candidate])[0]?.id===conversationId);
+    if (!file || !state.remote) throw new Error("Conversation not found");
+    const report = JSON.parse(readFileSync(file,"utf8")) as { topic?:string; messages?:Array<{from?:string;text?:string;origin?:unknown;sentAt?:unknown}> };
+    const raw = report.messages ?? [];
+    if (messageIndex >= raw.length) throw new Error("Message index out of range");
+    const messages = raw.map(message=>({ from:message.from as OwnerId, text:String(message.text??""), ...(messageOrigin(message.origin)?{origin:messageOrigin(message.origin)}:{}), ...(messageSentAt(message.sentAt)?{sentAt:messageSentAt(message.sentAt)}:{}) }));
+    if (messages.some(message=>!(["dima","katya"] as string[]).includes(message.from)||!message.text)) throw new Error("Conversation history is invalid");
+    const selected = messages[messageIndex], localSelected = selected.from === state.owner;
+    const history = messages.slice(0, localSelected ? messageIndex : messageIndex + 1);
+    const topic = report.topic || "Разговор агентов";
+    const started = await this.store.mutate(current=>({
+      continuations:{...current.continuations,[requestId]:{mode:"clean-continuation",originReportId:conversationId,parentReportId:conversationId,topic,pairId:state.remote!.pairId,
+        instruction:`Техническое восстановление после сообщения ${messageIndex}.`,history,status:"starting",attempts:1,...(localSelected?{preparedMessage:selected.text,preparedSentAt:new Date().toISOString()}: {})}},
+      conversationParents:{...current.conversationParents,[requestId]:conversationId}, conversationModes:{...current.conversationModes,[requestId]:"clean-continuation"}
+    }));
+    this.publishConversations(started); this.diagnostics.record("maintenance.conversation-restarted");
+    void this.processContinuation(requestId).catch(async error=>{ await this.store.mutate(current=>({continuations:{...current.continuations,[requestId]:{...current.continuations[requestId],status:"error",failureCode:supportErrorCode(error),retryAt:Date.now()+60_000}}})); });
+    return { accepted:true, operation:"restart-from-message", conversationId, newConversationId:requestId, messageIndex };
   }
 
   private async supportSnapshot(logs: boolean, application = false): Promise<SupportReport> {
