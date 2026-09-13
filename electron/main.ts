@@ -107,8 +107,12 @@ function createWindow() {
     }
   });
   const contents = mainWindow.webContents;
-  contents.on("preload-error", () => service.diagnostics.record("renderer.preload-failed"));
-  contents.on("render-process-gone", (_event, details) => service.diagnostics.record("renderer.gone", { code: `${details.reason}:${details.exitCode}` }));
+  const releaseFailedRendererUpdateGate = () => {
+    rendererUpdateBlocked = false;
+    if (currentUpdate.ready) { updateGate?.requestNow(); setTimeout(() => void updateGate?.tick(), 0); }
+  };
+  contents.on("preload-error", () => { service.diagnostics.record("renderer.preload-failed"); releaseFailedRendererUpdateGate(); });
+  contents.on("render-process-gone", (_event, details) => { service.diagnostics.record("renderer.gone", { code: `${details.reason}:${details.exitCode}` }); releaseFailedRendererUpdateGate(); });
   mainWindow.on("unresponsive", () => service.diagnostics.record("renderer.unresponsive"));
   mainWindow.on("responsive", () => service.diagnostics.record("renderer.responsive"));
   contents.on("did-finish-load", () => {

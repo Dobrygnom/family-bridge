@@ -59,6 +59,10 @@ export function isVersionNewer(current: string, candidate: string) {
   return false;
 }
 
+export function shouldReplacePreparedUpdate(preparedVersion: string, candidateVersion: string) {
+  return isVersionNewer(preparedVersion, candidateVersion);
+}
+
 export function findMacAppBundle(executablePath: string) {
   const pathApi = executablePath.startsWith("/") ? path.posix : path;
   let current = pathApi.resolve(executablePath);
@@ -173,10 +177,6 @@ export class MacReleaseUpdater {
 
   async checkForUpdates() {
     if (this.busy) return;
-    if (this.prepared) {
-      this.onState({ available: true, version: this.prepared.version, downloading: false, progress: 100, ready: true });
-      return;
-    }
     this.busy = true;
     this.onState({ available: false, checking: true, downloading: false });
     try {
@@ -187,11 +187,21 @@ export class MacReleaseUpdater {
       const release = await response.json() as GitHubRelease;
       if (release.draft || release.prerelease) throw new Error("Последний GitHub-релиз ещё не готов для установки");
       const candidateVersion = normalizeVersion(release.tag_name);
+      if (this.prepared && !shouldReplacePreparedUpdate(this.prepared.version, candidateVersion)) {
+        this.onState({ available: true, version: this.prepared.version, downloading: false, progress: 100, ready: true });
+        return;
+      }
       if (!isVersionNewer(this.currentVersion, candidateVersion)) {
         this.onState({ available: false, downloading: false });
         return;
       }
       const { asset, version } = selectMacAsset(release, this.architecture);
+      if (this.prepared) {
+        const obsolete = this.prepared;
+        this.prepared = undefined;
+        this.installerStarted = false;
+        await rm(path.join(this.userData, "updates", obsolete.version), { recursive: true, force: true });
+      }
       this.onState({ available: true, version, downloading: true, progress: 0 });
       const updateRoot = path.join(this.userData, "updates", version);
       await rm(updateRoot, { recursive: true, force: true });

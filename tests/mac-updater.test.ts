@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { findMacAppBundle, isVersionNewer, normalizeVersion, selectMacAsset } from "../electron/mac-updater.js";
+import { findMacAppBundle, isVersionNewer, normalizeVersion, selectMacAsset, shouldReplacePreparedUpdate } from "../electron/mac-updater.js";
 
 test("compares release versions without treating equal or older releases as updates", () => {
   assert.equal(normalizeVersion("v0.3.11"), "0.3.11");
@@ -8,6 +8,8 @@ test("compares release versions without treating equal or older releases as upda
   assert.equal(isVersionNewer("0.3.11", "0.3.11"), false);
   assert.equal(isVersionNewer("0.3.11", "0.3.10"), false);
   assert.equal(isVersionNewer("0.3.11", "0.4.0"), true);
+  assert.equal(shouldReplacePreparedUpdate("1.2.43", "1.2.44"), true);
+  assert.equal(shouldReplacePreparedUpdate("1.2.44", "1.2.44"), false);
 });
 
 test("selects only the exact architecture asset with a GitHub URL and SHA-256 digest", () => {
