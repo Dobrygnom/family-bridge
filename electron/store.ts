@@ -26,6 +26,7 @@ export interface ConversationContinuation {
   history: SharedMessage[];
   status: "starting" | "waiting" | "complete" | "error";
   preparedMessage?: string;
+  preparedSentAt?: string;
 }
 
 export interface PendingOwnerQuestion {
@@ -40,7 +41,7 @@ export interface PendingOwnerQuestion {
 }
 
 export interface StoredState {
-  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number }>;
+  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; preparedSentAt?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number }>;
   owner: OwnerId;
   onboardingComplete: boolean;
   identityConfigured: boolean;
@@ -69,7 +70,7 @@ export interface StoredState {
   conversationParents: Record<string, string>;
   conversationModes: Record<string, "restart" | "clean-continuation">;
   roleRepairCutoffAt?: string;
-  incomingDeliveries: Record<string, { envelope: RemoteEnvelope; received?: boolean; response?: AgentResponse; responseSent?: boolean }>;
+  incomingDeliveries: Record<string, { envelope: RemoteEnvelope; received?: boolean; response?: AgentResponse; responseSentAt?: string; responseSent?: boolean }>;
   completedIncoming: string[];
   lastConversationAt?: string;
   remote?: {

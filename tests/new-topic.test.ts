@@ -58,6 +58,8 @@ test("direct message keeps whitespace and context through a failed send, restart
     await service.sendNewTopic(request); await (service as any).startRemoteConversation(request.title);
     assert.equal(f.sent.length, 2);
     for (const sent of f.sent) { assert.equal(sent.payload.text, request.message); assert.equal(sent.payload.brief.context, request.context); assert.equal(sent.idempotencyKey, `${request.id}:1`); assert.equal(sent.payload.origin, "owner-answer"); }
+    assert.ok(Number.isFinite(Date.parse(f.sent[0].payload.sentAt)));
+    assert.equal(f.sent[0].payload.sentAt, f.sent[1].payload.sentAt, "An idempotent retry keeps the original send time");
     assert.equal((await f.store.read()).conversationTranscripts[request.id].messages.length, 1);
   } finally { await f.cleanup(); }
 });

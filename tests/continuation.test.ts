@@ -319,9 +319,10 @@ test("owner follow-up preserves original result, uses old dialogue and never sen
 test("retry after send failure reuses the prepared message without charging for another generation", async () => {
   const f = await fixture();
   let starts = 0;
+  let failedPayload: any;
   (f.service as any).remoteAgents.set("request-retry", { start: async () => { starts++; return response("А вечером можно?"); } });
   const normalSend = f.transport.send;
-  f.transport.send = async () => { throw new Error("offline"); };
+  f.transport.send = async (input: any) => { failedPayload = input.payload; throw new Error("offline"); };
   try {
     await f.service.continueReport({ reportId: "original-id", requestId: "request-retry", prompt: "Уточни вечер" });
     await until(async () => (await f.store.read()).continuations["request-retry"]?.status === "error");
@@ -330,6 +331,7 @@ test("retry after send failure reuses the prepared message without charging for 
     await until(async () => (await f.store.read()).continuations["request-retry"]?.status === "waiting");
     assert.equal(starts, 1);
     assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].payload.sentAt, failedPayload.sentAt, "Retry keeps the durable original send time");
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 

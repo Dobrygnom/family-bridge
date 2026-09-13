@@ -7,7 +7,7 @@ export interface LiveConversation {
   topic: string;
   inheritedMessageCount?: number;
   activity?: "preparing" | "sending" | "waiting-peer" | "needs-answer" | "retrying" | "error" | "interrupted";
-  messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./continuation.js").MessageOrigin }>;
+  messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./continuation.js").MessageOrigin; sentAt?: string }>;
 }
 
 export type ConversationSnapshot = Pick<AppState, "reports" | "reportSummaries" | "continuationStates" | "repairPendingIds" | "repairWaiting"> & {

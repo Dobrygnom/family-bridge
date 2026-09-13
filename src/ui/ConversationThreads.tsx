@@ -10,10 +10,10 @@ import { StableDetails } from "./StableDetails.js";
 import { originLabel } from "./message-origin.js";
 
 const labels = {
-  ru: { live: "Разговор продолжается", done: "Обсудили", follow: "Нужно вернуться к теме", history: "Предыдущие реплики", next: "Продолжение", messages: "реплик", result: "Последний итог", draft: "Дополнить этот этап", empty: "Разговоров пока нет" },
-  en: { live: "Conversation in progress", done: "Discussed", follow: "Needs follow-up", history: "Earlier messages", next: "Continuation", messages: "messages", result: "Latest result", draft: "Add to this stage", empty: "No conversations yet" },
-  cs: { live: "Rozhovor pokračuje", done: "Probráno", follow: "Je potřeba se k tématu vrátit", history: "Předchozí zprávy", next: "Pokračování", messages: "zpráv", result: "Poslední závěr", draft: "Doplnit tuto část", empty: "Zatím žádné rozhovory" },
-  fr: { live: "Conversation en cours", done: "Discussion terminée", follow: "À reprendre", history: "Messages précédents", next: "Suite", messages: "messages", result: "Dernière conclusion", draft: "Compléter cette étape", empty: "Aucune conversation pour le moment" },
+  ru: { live: "Разговор продолжается", done: "Обсудили", follow: "Нужно вернуться к теме", history: "Предыдущие реплики", next: "Продолжение", messages: "реплик", result: "Последний итог", draft: "Дополнить этот этап", empty: "Разговоров пока нет", unknownTime: "Время неизвестно" },
+  en: { live: "Conversation in progress", done: "Discussed", follow: "Needs follow-up", history: "Earlier messages", next: "Continuation", messages: "messages", result: "Latest result", draft: "Add to this stage", empty: "No conversations yet", unknownTime: "Time unknown" },
+  cs: { live: "Rozhovor pokračuje", done: "Probráno", follow: "Je potřeba se k tématu vrátit", history: "Předchozí zprávy", next: "Pokračování", messages: "zpráv", result: "Poslední závěr", draft: "Doplnit tuto část", empty: "Zatím žádné rozhovory", unknownTime: "Čas není znám" },
+  fr: { live: "Conversation en cours", done: "Discussion terminée", follow: "À reprendre", history: "Messages précédents", next: "Suite", messages: "messages", result: "Dernière conclusion", draft: "Compléter cette étape", empty: "Aucune conversation pour le moment", unknownTime: "Heure inconnue" },
 };
 
 interface Props {
@@ -76,9 +76,14 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
             <div className="report-transcript" role="log" aria-live={stage.live ? "polite" : "off"} aria-relevant="additions text" aria-atomic="false">
               {stage.newMessages.map((message, i) => {
                 const key = `${stage.id}:${stage.messages.length - stage.newMessages.length + i}`;
+                const previous = stage.newMessages[i - 1];
+                const day = message.sentAt ? new Date(message.sentAt).toLocaleDateString(language, { day: "numeric", month: "long", year: "numeric" }) : t.unknownTime;
+                const previousDay = previous?.sentAt ? new Date(previous.sentAt).toLocaleDateString(language, { day: "numeric", month: "long", year: "numeric" }) : previous ? t.unknownTime : undefined;
+                const time = message.sentAt ? new Date(message.sentAt).toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit" }) : t.unknownTime;
                 return <div key={key} id={`message-${key}`} className="message-anchor">
+                  {day !== previousDay && <div className="message-day"><span>{day}</span></div>}
                   {boundary === key && <div className="unread-divider">{attention.since}</div>}
-                  <div className={`transcript-message ${message.local ? "local" : "peer"}`}><ReadMessage messageKey={key} unread={Boolean(reading && !reading.seen[key])} onRead={onRead}><strong>{message.speaker}</strong>{message.origin && <small className="message-origin">{originLabel(message.origin, message.local, language)}</small>}<p>{message.text}</p></ReadMessage></div>
+                  <div className={`transcript-message ${message.local ? "local" : "peer"}`}><ReadMessage messageKey={key} unread={Boolean(reading && !reading.seen[key])} onRead={onRead}><strong>{message.speaker}</strong>{message.origin && <small className="message-origin">{originLabel(message.origin, message.local, language)}</small>}<p>{message.text}</p><time className="message-time" dateTime={message.sentAt}>{time}</time></ReadMessage></div>
                 </div>;
               })}
             </div>

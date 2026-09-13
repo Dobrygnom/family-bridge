@@ -6,7 +6,7 @@ import { conversationThreads } from "../src/core/conversation-threads.js";
 import { ConversationThreads } from "../src/ui/ConversationThreads.js";
 import type { AppState } from "../src/global.js";
 
-const msg = (text: string) => ({ text, speaker: "Me", local: true });
+const msg = (text: string): AppState["reportSummaries"][number]["messages"][number] => ({ text, speaker: "Me", local: true });
 const report = (id: string, parentReportId?: string, texts = [id]) => ({ id, parentReportId, topic: "Same title", summary: "Result", answerFrom: "Peer", proposedBy: ["Me"], completedAt: id, messageCount: texts.length, messages: texts.map(msg) });
 const state = (reportSummaries: AppState["reportSummaries"], liveConversations: AppState["liveConversations"] = []) => ({ reportSummaries, liveConversations, remote: { configured: true, peerVersion: "1.2.8" }, continuationStates: [] }) as unknown as AppState;
 
@@ -89,4 +89,16 @@ test("automatic repair hides the broken attempt without restart controls or an a
   assert.doesNotMatch(html,/Продолжить этот разговор/);
   assert.doesNotMatch(html,/BROKEN OLD REPLY|Действия с разговором|Обсудить заново|Начать заново|Предыдущая попытка/);
   assert.doesNotMatch(html,/<details[^>]*open/);
+});
+
+test("messages are grouped by local day and legacy messages explicitly keep unknown time", t => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { value: {}, configurable: true });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, "window", previous); else Reflect.deleteProperty(globalThis, "window"); });
+  const dated = report("dated", undefined, ["old", "morning", "tomorrow"]);
+  dated.messages = [msg("old"), { ...msg("morning"), sentAt: "2026-09-13T08:15:00Z" }, { ...msg("tomorrow"), sentAt: "2026-09-14T08:15:00Z" }];
+  const html = renderToStaticMarkup(createElement(ConversationThreads, { state: state([dated]), language: "ru", selectedReportId: "dated", onState:()=>{}, activeDictation:"", onDictationBusy:()=>{} }));
+  assert.match(html, /Время неизвестно/);
+  assert.match(html, /<time[^>]*>\d{2}:15<\/time>/);
+  assert.equal((html.match(/class="message-day"/g) ?? []).length, 3);
 });

@@ -268,6 +268,10 @@ button[aria-busy="true"] { cursor: progress; }
 .unread-divider::before, .unread-divider::after { content: ''; height: 1px; flex: 1; background: #396057; }
 .unread-jump { position: sticky; bottom: 16px; display: block; margin: 12px auto; z-index: 1; background: #19362e; }
 .message-origin { display: inline-block; margin-left: 10px; font-size: 11px; color: var(--muted); font-weight: 400; }
+.message-day { display: flex; align-items: center; gap: 10px; margin: 18px 0 12px; color: var(--muted); font-size: 11px; }
+.message-day::before, .message-day::after { content: ''; height: 1px; flex: 1; background: #2b4149; }
+.message-day span { padding: 3px 9px; border: 1px solid #2b4149; border-radius: 999px; background: #112028; }
+.message-time { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; text-align: right; }
 
 .registry-hint { color: #91abb3; font-size: 12px; margin: 0 0 12px; }
 .topic-dismiss { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; background: transparent; border: 1px solid transparent; color: #91abb3; border-radius: 8px; }
