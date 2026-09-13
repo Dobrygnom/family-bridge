@@ -9,7 +9,7 @@ import { sanitizeSupportReport, supportErrorCode, supportId, type SupportReport 
 import type { SupportChannel, SupportOffer } from "./support-channel.js";
 import type { RuntimeDiagnostics } from "./runtime-diagnostics.js";
 
-export type SupportAction = "snapshot" | "update";
+export type SupportAction = "snapshot" | "diagnostics" | "update";
 interface SupportWire {
   protocol: 1; type: "request" | "report" | "offer"; id: string; sentAt: string;
   offer?: SupportOffer;
@@ -25,6 +25,11 @@ export function supportsRemoteSupport(version: string | undefined) {
   if (!validPeerVersion(version)) return false;
   const [a,b,c] = version!.split(".").map(Number);
   return a > 1 || a === 1 && (b > 2 || b === 2 && c >= 20);
+}
+export function supportsApplicationDiagnostics(version: string | undefined) {
+  if (!validPeerVersion(version)) return false;
+  const [a,b,c] = version!.split(".").map(Number);
+  return a > 1 || a === 1 && (b > 2 || b === 2 && c >= 38);
 }
 const fresh = (at: unknown, now: number, ttl = 5 * 60_000) => {
   const t = typeof at === "string" ? Date.parse(at) : NaN;
@@ -50,7 +55,7 @@ export class RemoteSupport {
   constructor(private readonly directory: string, private readonly hooks: {
     runtime?: RuntimeDiagnostics;
     context: () => Promise<SupportContext | undefined>;
-    snapshot: (logs: boolean) => Promise<SupportReport>;
+    snapshot: (logs: boolean, application?: boolean) => Promise<SupportReport>;
     update: () => void;
     record: (event: string, code?: string) => void;
   }, private readonly now = Date.now, private readonly channel?: SupportChannel) {}
@@ -106,7 +111,7 @@ export class RemoteSupport {
     try {
       const saved = JSON.parse(await readFile(path.join(this.directory, "requests.json"), "utf8"));
       for (const [id, r] of Object.entries(saved).slice(-30) as Array<[string, any]>) {
-        if (!supportId(id) || !r || typeof r.pairId !== "string" || !["snapshot", "update"].includes(r.action)
+        if (!supportId(id) || !r || typeof r.pairId !== "string" || !["snapshot", "diagnostics", "update"].includes(r.action)
           || !["sending", "sent", "received", "failed", "legacy-update-requested"].includes(r.status)
           || !fresh(r.requestedAt, this.now(), 24 * 60 * 60_000)) continue;
         this.pending.set(id, { pairId: r.pairId, requestedAt: r.requestedAt, action: r.action,
@@ -127,7 +132,7 @@ export class RemoteSupport {
   }
 
   async request(action: SupportAction) {
-    if (action !== "snapshot" && action !== "update") throw new Error("Unsupported support action");
+    if (!(["snapshot", "diagnostics", "update"] as const).includes(action)) throw new Error("Unsupported support action");
     if (this.sending) throw new Error("Support request already sending");
     this.sending = true;
     try {
@@ -139,7 +144,8 @@ export class RemoteSupport {
       if (same) return { id: same[0], status: same[1].status };
       const id = randomUUID(), sentAt = new Date(this.now()).toISOString();
       const supported = supportsRemoteSupport(c.peerVersion);
-      if (!supported && action === "snapshot") return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
+      if (!supported && action !== "update") return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
+      if (action === "diagnostics" && !supportsApplicationDiagnostics(c.peerVersion)) return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
       this.pending.set(id, { pairId: c.pairId, requestedAt: sentAt, action, status: "sending" });
       while (this.pending.size > 30) this.pending.delete(this.pending.keys().next().value!);
       await this.save("requests.json", Object.fromEntries(this.pending));
@@ -223,7 +229,7 @@ export class RemoteSupport {
       }
       return;
     }
-    if (r.type !== "request" || !["snapshot", "update"].includes(r.action!)) return;
+    if (r.type !== "request" || !["snapshot", "diagnostics", "update"].includes(r.action!)) return;
     const key = `${c.pairId}:${c.peer}:${r.id}`;
     if (this.delivered.has(key)) return;
     let reply = this.receipts.get(key);
@@ -231,7 +237,7 @@ export class RemoteSupport {
       this.hooks.record("support.received");
       // Persist acceptance before scheduling an update or sending its receipt.
       reply = { protocol: 1, type: "report", id: randomUUID(), sentAt: new Date(this.now()).toISOString(), replyTo: r.id,
-        outcome: "accepted", report: await this.hooks.snapshot(true) };
+        outcome: "accepted", report: await this.hooks.snapshot(true, r.action === "diagnostics") };
       this.receipts.set(key, reply);
       for (const [k,v] of this.receipts) if (!fresh(v.sentAt, this.now())) { this.receipts.delete(k); this.delivered.delete(k); }
       if (this.receipts.size > 100) { this.receipts.delete(key); return; }

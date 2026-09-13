@@ -10,7 +10,13 @@ Family Bridge is a modular desktop application, not a collection of network micr
 - **Conversation runtime** schedules independent conversations, calls the local agent and advances delivery state. One slow conversation must not block support traffic or another conversation.
 - **History projection and archive** reconstruct inherited legacy reports without rewriting them. Readable exports contain each logical message once; raw reports remain available for recovery.
 - **Update service** waits for active writes, dictation and conversations, then installs without user intervention. A release is installed only when a fresh report from that device says so.
-- **Support service** is a separate metadata-only encrypted lane. It exposes bounded status, retry stage, power/resume evidence, archive readiness and sanitized error codes; it never exports transcripts, prompts, paths or credentials.
+- **Support service** is a separate encrypted operator lane. Periodic heartbeats and ordinary snapshots remain metadata-only. An explicit deep-diagnostics request may additionally expose app-derived personal state needed to identify a stuck workflow, but never credentials, local paths, or the raw selected source chat.
+
+## Diagnostic API
+
+Deep application diagnostics are a separate, explicit capability. The local authenticated control endpoint exposes `GET /local/application-diagnostics`; the encrypted peer support lane requests the same contract through `POST /peer/diagnostics`. It contains analyzed, pending, in-flight and active topics; prepared launches and messages; owner questions; conversation state; continuations; delivery/quarantine state; reports; and consistency invariants.
+
+This content is never attached to periodic heartbeats or ordinary snapshots. It is captured only for an explicit diagnostic request, is size-bounded, and is accepted only from the currently paired peer. Pairing secrets, credentials, local paths, and the original selected chat remain outside the contract. Topic names and other derived application content are intentionally included because they are required to identify exactly which workflow is stuck.
 
 ## Delivery state machine
 

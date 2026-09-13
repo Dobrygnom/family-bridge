@@ -2,10 +2,11 @@ import { updateOperations, updateIpcChannels } from "./update-activity.js";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Diagnostics } from "./diagnostics.js";
 import { powerEvents, runtimeStages } from "./runtime-diagnostics.js";
+import { sanitizeApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
 
 // This is a separate, stricter boundary than the LOCAL lifecycle log. Never
-// serialize local paths, arbitrary exception text or crash dumps. Conversation
-// identifiers are allowed only in the dedicated technical continuation schema.
+// serialize local paths, arbitrary exception text or crash dumps. Application
+// content is allowed only in the explicit deep-diagnostics contract.
 const events = new Set([
   ...powerEvents.map(event => `power.${event}`),
   "action.failed", "startup.begin", "startup.ready", "startup.saved-state", "startup.failed", "process.runtime", "storage.file",
@@ -65,6 +66,7 @@ export interface SupportReport {
   updateDiagnostics?: ReturnType<typeof sanitizeUpdateDiagnostics>;
   dialogueDiagnostics?: ReturnType<typeof sanitizeDialogueDiagnostics>;
   runtimeDiagnostics?: ReturnType<typeof sanitizeRuntimeDiagnostics>;
+  applicationDiagnostics?: ApplicationDiagnostics;
   events: Array<{ at: string; event: string; fields: Fields }>;
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
@@ -139,6 +141,7 @@ export function sanitizeSupportReport(value: unknown): SupportReport | undefined
     ...(r.updateDiagnostics ? { updateDiagnostics: sanitizeUpdateDiagnostics(r.updateDiagnostics) } : {}),
     ...(r.dialogueDiagnostics ? { dialogueDiagnostics: sanitizeDialogueDiagnostics(r.dialogueDiagnostics) } : {}),
     ...(r.runtimeDiagnostics ? { runtimeDiagnostics: sanitizeRuntimeDiagnostics(r.runtimeDiagnostics) } : {}),
+    ...(r.applicationDiagnostics ? { applicationDiagnostics: sanitizeApplicationDiagnostics(r.applicationDiagnostics) } : {}),
     ...(Array.isArray(r.continuations) ? { continuations: continuationDiagnostics(r.continuations) } : {}),
     events: (Array.isArray(r.events) ? r.events : []).slice(-120).filter(e => e && iso(e.at) && events.has(e.event))
       .map(e => ({ at: e.at, event: e.event, fields: sanitizeSupportFields(e.fields) })) };

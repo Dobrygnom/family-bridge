@@ -24,7 +24,7 @@ async function fixture() {
     readSupportMessages: async () => incoming,
     send: async (value: any) => { sent.push(value); return "sent"; },
   } as any };
-  const hooks = { context: async () => context, snapshot: async () => report(clock), update: () => { updates++; }, record: () => {} };
+  const hooks = { context: async () => context, snapshot: async (_logs = false, application = false) => ({ ...report(clock), ...(application ? { applicationDiagnostics: { schema: 1 as const, at: new Date(clock).toISOString(), identity: { owner: "katya", displayName: "Катя" }, topics: [{ title: "prepared" }], topicLaunches: [], ownerQuestions: [], conversations: [], continuations: [], deliveries: [], quarantined: [], reports: [], invariants: [] } } : {}) }), update: () => { updates++; }, record: () => {} };
   const support = new RemoteSupport(dir, hooks, () => clock);
   const envelope = (action: string = "snapshot", extra: any = {}) => {
     const id = randomUUID();
@@ -146,6 +146,25 @@ test("older peers receive only their existing update command, with no diagnostic
     assert.equal(f.sent[0].payload.requestUpdateCheck, true);
     assert.equal(f.sent[0].payload.support, undefined);
     assert.equal(f.sent[0].payload.versionOnly, true);
+    f.context.peerVersion = "1.2.37";
+    assert.equal((await f.support.request("diagnostics")).status, "unsupported");
+  } finally { await f.cleanup(); }
+});
+
+test("deep application state is returned only for an explicit diagnostic request", async () => {
+  const f = await fixture();
+  try {
+    f.context.peerVersion = "1.2.38";
+    f.incoming.push(f.envelope("snapshot"));
+    await f.support.tick();
+    assert.equal(f.sent.find(s => s.payload.support.replyTo)?.payload.support.report.applicationDiagnostics, undefined);
+    f.incoming.length = 0; f.sent.length = 0;
+    f.incoming.push(f.envelope("diagnostics"));
+    await f.support.tick();
+    const deep = f.sent.find(s => s.payload.support.replyTo)?.payload.support.report.applicationDiagnostics;
+    assert.equal(deep.topics[0].title, "prepared");
+    assert.equal((await f.support.request("diagnostics")).status, "sent");
+    assert.equal(f.sent.at(-1).payload.support.action, "diagnostics");
   } finally { await f.cleanup(); }
 });
 
@@ -170,15 +189,17 @@ test("local control requires its secret, rejects browser origins and exposes onl
   }
 });
 
-test("local blocker diagnostics remain readable when normal state reporting is stuck",async()=>{
+test("local blocker and application diagnostics remain readable when normal state reporting is stuck",async()=>{
   const f=await fixture(); let installs=0,refreshes=0;
   f.support.status=()=>new Promise(()=>{});
-  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};}});
+  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};}});
   try {
     const locator=JSON.parse(await readFile(supportLocatorFiles(f.dir)[0],'utf8'));
     const url=`http://127.0.0.1:${locator.port}`, headers={Authorization:`Bearer ${locator.token}`};
     const result=await (await fetch(`${url}/local/diagnostics`,{headers,signal:AbortSignal.timeout(1000)})).json();
     assert.deepEqual(result.blockers,['state_writes']);
+    const application=await (await fetch(`${url}/local/application-diagnostics`,{headers,signal:AbortSignal.timeout(1000)})).json();
+    assert.equal(application.topics[0].title,'prepared');
     assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers:{...headers,Origin:'https://evil.test'}})).status,403);
     assert.equal(installs,0);
     assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers})).status,200);

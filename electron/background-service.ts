@@ -44,6 +44,7 @@ import { RemoteSupport } from "./remote-support.js";
 import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
+import { buildApplicationDiagnostics } from "./application-diagnostics.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -468,7 +469,7 @@ export class BackgroundService {
         if (!peer || this.remote !== transport) return undefined;
         return { transport, pairId: state.remote.pairId, me, peer, owner: state.owner, peerVersion: state.remote.peerVersion };
       },
-      snapshot: logs => this.supportSnapshot(logs),
+      snapshot: (logs, application) => this.supportSnapshot(logs, application),
       update: () => {
         const request = this.options.requestSupportUpdate ?? this.options.requestUpdateCheck;
         if (!request) throw new Error("Updater unavailable");
@@ -480,7 +481,13 @@ export class BackgroundService {
       async () => { const state = await this.store.read(); return state.remote ? { pairId: state.remote.pairId, owner: state.owner } : undefined; }));
   }
 
-  private async supportSnapshot(logs: boolean): Promise<SupportReport> {
+  async applicationDiagnostics() {
+    const state = await this.store.read();
+    const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
+    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>);
+  }
+
+  private async supportSnapshot(logs: boolean, application = false): Promise<SupportReport> {
     const state = await this.store.read();
     if (logs) this.diagnostics.snapshotProfile(this.userData, "support");
     const analysis = this.readContextAnalysis();
@@ -503,6 +510,7 @@ export class BackgroundService {
       updateDiagnostics: { ...this.updateDiagnostics(), ...this.options.updateDiagnostics?.() },
       dialogueDiagnostics: this.dialogueDiagnostics(state),
       runtimeDiagnostics: this.diagnostics.runtime.snapshot(),
+      ...(application ? { applicationDiagnostics: await this.applicationDiagnostics() } : {}),
       continuations: Object.entries(state.continuations).filter(([, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId).map(([id, c]) => ({
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
         attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
