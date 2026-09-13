@@ -100,6 +100,7 @@ interface BackgroundServiceOptions {
   requestSupportUpdate?: () => void;
   topicRefiner?: TopicRefiner;
   newTopicComposer?: (prompt: string) => Promise<NewTopicPreview>;
+  uiDiagnostics?: () => Promise<import("./ui-error-diagnostics.js").UiErrorSnapshot>;
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
@@ -484,7 +485,7 @@ export class BackgroundService {
   async applicationDiagnostics() {
     const state = await this.store.read();
     const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
-    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>);
+    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.());
   }
 
   private async supportSnapshot(logs: boolean, application = false): Promise<SupportReport> {

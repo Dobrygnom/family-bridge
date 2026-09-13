@@ -19,6 +19,7 @@ test("application diagnostics expose prepared app state but never source chat or
   const diagnostics = buildApplicationDiagnostics(state, analysis, []);
   assert.equal(diagnostics.topics[0].pending, true);
   assert.equal(diagnostics.topicLaunches[0].preparedMessage, "Подготовленный текст");
+  assert.equal(diagnostics.uiErrors.currentlyVisible, false);
   assert.ok(diagnostics.invariants.every(item => item.ok));
   const json = JSON.stringify(diagnostics);
   assert.match(json, /Неотправленная тема|Подготовленный текст/);

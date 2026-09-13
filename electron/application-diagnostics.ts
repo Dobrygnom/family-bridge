@@ -1,5 +1,6 @@
 import type { ContextAnalysis } from "../src/core/context-analysis.js";
 import type { StoredState } from "./store.js";
+import type { UiErrorSnapshot } from "./ui-error-diagnostics.js";
 
 export interface ApplicationDiagnostics {
   schema: 1; at: string;
@@ -12,10 +13,11 @@ export interface ApplicationDiagnostics {
   deliveries: Array<Record<string, unknown>>;
   quarantined: Array<Record<string, unknown>>;
   reports: Array<Record<string, unknown>>;
+  uiErrors: UiErrorSnapshot;
   invariants: Array<{ name: string; ok: boolean; details?: string }>;
 }
 
-export function buildApplicationDiagnostics(state: StoredState, analysis: ContextAnalysis | undefined, reports: Array<Record<string, unknown>>): ApplicationDiagnostics {
+export function buildApplicationDiagnostics(state: StoredState, analysis: ContextAnalysis | undefined, reports: Array<Record<string, unknown>>, uiErrors: UiErrorSnapshot = { schema:1, totalShown:0, currentlyVisible:false, visibleCount:0, recent:[] }): ApplicationDiagnostics {
   const topicNames = new Set([...state.pendingTopics, ...state.inFlightTopics, ...state.pairTopics, ...state.activeTopics,
     ...Object.values(state.topicLaunches).map(job => job.topic), ...(analysis?.topics ?? []).map(topic => topic.title)]);
   const topics = [...topicNames].map(title => {
@@ -45,7 +47,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
   });
   return { schema:1, at:new Date().toISOString(), identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions,
-    conversations, continuations, deliveries, quarantined, reports,
+    conversations, continuations, deliveries, quarantined, reports, uiErrors,
     invariants:[
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },
       { name:"conversation-parents-acyclic", ok:cyclicParents.length===0, ...(cyclicParents.length ? {details:cyclicParents.join(" | ")} : {}) },

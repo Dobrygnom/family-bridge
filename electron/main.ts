@@ -18,6 +18,7 @@ import { installCrashDiagnostics } from "./crash-diagnostics.js";
 import { startSupportControl } from "./support-control.js";
 import { errorMessage } from "../src/core/error-message.js";
 import { supportErrorCode } from "./support-report.js";
+import { UiErrorDiagnostics } from "./ui-error-diagnostics.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -199,6 +200,7 @@ let serviceReady = false;
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   const store = new AtomicStore(app.getPath("userData"));
+  const uiErrors = new UiErrorDiagnostics(app.getPath("userData"));
   service = new BackgroundService(
     app.getPath("userData"),
     app.isPackaged ? process.resourcesPath : path.resolve(dirname, "..", ".."),
@@ -226,6 +228,7 @@ app.whenReady().then(async () => {
           }).catch(() => service.diagnostics.record("support.failed"));
         }, 0);
       },
+      uiDiagnostics: () => uiErrors.snapshot(),
     },
   );
   service.diagnostics.record('process.runtime', { version: app.getVersion(), executable: process.execPath, userData: app.getPath('userData'), cwd: process.cwd(), updatedLaunch: process.argv.includes('--updated'), agentLaunched: Boolean(process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID) });
@@ -288,6 +291,9 @@ app.whenReady().then(async () => {
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
 
   handle("bridge:get-state", () => service.state());
+  handle("bridge:ui-error-state", async (_event, input: unknown) => {
+    await uiErrors.record(input);
+  });
   handle("bridge:diagnose-ui", async (_event, input: unknown) => {
     const shown = input as { onboardingComplete?: unknown; analysisStatus?: unknown } | null;
     service.diagnostics.record("renderer.snapshot", { onboarding: shown?.onboardingComplete === true, analysisStatus: ["ready", "analyzing", "error"].includes(String(shown?.analysisStatus)) ? String(shown?.analysisStatus) : "none" });

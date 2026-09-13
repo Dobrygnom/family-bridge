@@ -1,4 +1,23 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { randomUUID } from "node:crypto";
+
+function installUiErrorObserver() {
+  let previousSignature = "", occurrenceId = "", timer: ReturnType<typeof setTimeout> | undefined;
+  const inspect = () => {
+    timer = undefined;
+    const alerts = [...document.querySelectorAll('[role="alert"],.error,.analysis-error,.composer-error,.dictation-error')]
+      .filter(element => element instanceof HTMLElement && element.offsetParent !== null);
+    const signature = alerts.map(element => `${element.className}:${element.textContent ?? ""}`).join("\n");
+    if (signature === previousSignature) return;
+    previousSignature = signature;
+    if (alerts.length) occurrenceId = randomUUID(); else occurrenceId = "";
+    void ipcRenderer.invoke("bridge:ui-error-state", { visible: alerts.length > 0, visibleCount: alerts.length, ...(occurrenceId ? { occurrenceId } : {}) }).catch(() => undefined);
+  };
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(inspect, 50); };
+  const start = () => { inspect(); new MutationObserver(schedule).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class", "role", "hidden", "style"] }); };
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", start, { once: true }); else start();
+}
+installUiErrorObserver();
 
 contextBridge.exposeInMainWorld("familyBridge", {
   getState: () => ipcRenderer.invoke("bridge:get-state"),

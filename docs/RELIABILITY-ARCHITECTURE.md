@@ -18,6 +18,8 @@ Deep application diagnostics are a separate, explicit capability. The local auth
 
 This content is never attached to periodic heartbeats or ordinary snapshots. It is captured only for an explicit diagnostic request, is size-bounded, and is accepted only from the currently paired peer. Pairing secrets, credentials, local paths, and the original selected chat remain outside the contract. Topic names and other derived application content are intentionally included because they are required to identify exactly which workflow is stuck.
 
+The preload boundary observes every visible error surface (`role=alert` and the application's error classes). It reports only visibility, count, and a random occurrence identifier—not rendered text. Shown, updated, and cleared transitions are persisted independently of application state and included in explicit application diagnostics, so an operator can distinguish “no error is visible” from “an error was shown and later disappeared”. Main-process failures, renderer crashes, update failures, transport failures, and startup failures continue to use the lifecycle log and are correlated by timestamp.
+
 ## Delivery state machine
 
 ```text
