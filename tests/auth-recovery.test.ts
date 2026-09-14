@@ -18,16 +18,26 @@ test("auth storage recovers interrupted writes and never treats corruption as a 
 
 function fake(preserve=true){
  const transport=new SupabaseTransport("https://example.test","test","secret",undefined,preserve);
- let created=0,rpc=0;
- const auth={getSession:async()=>({data:{session:null as any},error:null as any}),getUser:async()=>({data:{user:null as any},error:{name:"AuthSessionMissingError"} as any}),signInAnonymously:async()=>{created++;return {data:{user:{id:"new"}},error:null}}};
+ let created=0,rpc=0,refreshes=0;
+ const auth={getSession:async()=>({data:{session:null as any},error:null as any}),getUser:async()=>({data:{user:null as any},error:{name:"AuthSessionMissingError"} as any}),refreshSession:async()=>{refreshes++;return {data:{session:null as any,user:null as any},error:null as any}},signInAnonymously:async()=>{created++;return {data:{user:{id:"new"}},error:null}}};
  (transport as any).client={auth,rpc:async()=>{rpc++;return {data:[{id:"pair",owner_id:"old",partner_id:"peer"}],error:null}}};
- return{transport,auth,counts:()=>({created,rpc})};
+ return{transport,auth,counts:()=>({created,rpc,refreshes})};
 }
 test("paired clients never replace missing or temporarily unavailable identity",async()=>{
  const f=fake();await assert.rejects(f.transport.identity(),/новая учётная запись не создаётся/);
  f.auth.getSession=async()=>({data:{session:{user:{id:"old"}}},error:null});
  f.auth.getUser=async()=>({data:{user:null},error:{name:"AuthRetryableFetchError"}});
+ (f.auth as any).refreshSession=async()=>({data:{session:null,user:null},error:{name:"AuthRetryableFetchError"}});
  await assert.rejects(f.transport.identity());assert.equal(f.counts().created,0);
+});
+test("expired persisted access token refreshes the same identity and coalesces concurrent recovery",async()=>{
+ const f=fake();let refreshes=0;
+ f.auth.getSession=async()=>({data:{session:{user:{id:"old"}}},error:null});
+ f.auth.getUser=async()=>({data:{user:null},error:{name:"AuthApiError"}});
+ (f.auth as any).refreshSession=async()=>{refreshes++;await new Promise(r=>setTimeout(r,5));return {data:{session:{user:{id:"old"}},user:{id:"old"}},error:null};};
+ assert.deepEqual(await Promise.all([f.transport.identity(),f.transport.identity(),f.transport.identity()]),["old","old","old"]);
+ assert.equal(refreshes,1);
+ assert.equal(f.counts().created,0);
 });
 test("fresh installation may create identity, but a network failure may not",async()=>{
  const f=fake(false);assert.equal(await f.transport.identity(),"new");

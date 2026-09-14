@@ -40,6 +40,7 @@ export class SupabaseTransport {
   private channel?: RealtimeChannel;
   private lastPairRefresh = 0;
   private pairRefresh?: Promise<unknown>;
+  private identityRefresh?: Promise<string>;
 
   constructor(
     url: string,
@@ -60,6 +61,21 @@ export class SupabaseTransport {
     if (session.error) throw session.error;
     const existing = await this.client.auth.getUser();
     if (existing.data.user) return existing.data.user.id;
+    // getSession can still expose a persisted access/refresh-token pair while
+    // getUser rejects an expired access token. Refresh that SAME anonymous
+    // identity once before declaring recovery impossible. Concurrent polling
+    // lanes must share the refresh because refresh tokens rotate.
+    if (session.data.session) {
+      if (!this.identityRefresh) {
+        this.identityRefresh = this.client.auth.refreshSession().then(({ data, error }) => {
+          if (error) throw error;
+          const userId = data.session?.user?.id ?? data.user?.id;
+          if (!userId) throw new Error("Обновление сохранённой авторизации не вернуло пользователя.");
+          return userId;
+        }).finally(() => { this.identityRefresh = undefined; });
+      }
+      return this.identityRefresh;
+    }
     // A failed refresh/network request is NOT a first installation. Replacing
     // an anonymous identity strands the existing pair and its message queue.
     if (this.preserveIdentity || session.data.session || existing.error && existing.error.name !== "AuthSessionMissingError") {
