@@ -153,7 +153,7 @@ test("restart sends a clean new attempt, preserves files, and survives an idempo
     const before = await readFile(f.report,'utf8');
     let calls=0;
     (f.service as any).localRemoteAgent = (...args:any[])=>({start:async(prompt:string)=>{
-      calls++; assert.equal(args.at(-1),true); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      calls++; assert.equal(args[8],true); assert.equal(args[9],"gpt-5.6-sol"); assert.equal(args[10],"medium"); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
       return response('Давай начнём с того, как нам удобно созваниваться.');
     }});
     const input={reportId:'original-id',requestId:'restart-request'};
@@ -172,7 +172,7 @@ test("restart sends a clean new attempt, preserves files, and survives an idempo
     assert.equal(readReportSummaries(stored.reports)[0].restarted,true);
     assert.equal(stored.reports.length,2);
     (f.service as any).localRemoteAgent = (...args:any[])=>({start:async(prompt:string)=>{
-      assert.equal(args.at(-1),true); assert.match(prompt,/NEW/); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      assert.equal(args[8],true); assert.match(prompt,/NEW/); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
       return response('Продолжим новый разговор.');
     }});
     await f.service.continueReport({reportId:'original-id',requestId:'after-restart',prompt:'Уточни'});
@@ -199,7 +199,7 @@ test("the other computer receives restart isolation and preserves its old report
     const before=await readFile(f.report,'utf8');
     let clean=false;
     (f.service as any).localRemoteAgent=(...args:any[])=>({start:async(prompt:string)=>{
-      clean=args.at(-1)===true; assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      clean=args[8]===true; assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
       return response('Давай попробуем иначе.');
     }});
     await (f.service as any).processIncomingDialogue({id:'new-envelope',pair_id:'pair',conversation_id:'peer-restart',sequence_number:1,sender_agent:'katya',created_at:new Date().toISOString(),payload:{kind:'dialogue',topic:'Звонки',text:'Хочу обсудить удобное время.',status:'continue',senderVersion:'1.2.11',continuation:{parentReportId:'original-id',history:[],mode:'restart'}}});

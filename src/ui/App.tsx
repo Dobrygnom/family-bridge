@@ -42,6 +42,7 @@ import { loadSavedState } from "./load-state.js";
 import { topicNeedsReview, topicRelevanceLabel } from "../core/topic-review.js";
 import { shareableTopicBrief, topicKey } from "../core/conversation-quality.js";
 import { clearRecoveredConnectionError } from "./connection-error.js";
+import { CODEX_MODELS, CODEX_REASONING_EFFORTS, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../core/codex-settings.js";
 
 const fallback: AppState = {
   owner: "dima",
@@ -50,6 +51,8 @@ const fallback: AppState = {
   displayName: "",
   language: "ru",
   autoStart: true,
+  codexModel: "gpt-5.6-sol",
+  codexReasoningEffort: "medium",
   appVersion: "preview",
   pendingTopics: [],
   pairTopics: [],
@@ -869,6 +872,16 @@ export function App() {
               <div className="panel-title"><div><p className="eyebrow">{t.settings}</p><h3>{deviceText.question}</h3></div><Settings2 size={20} /></div>
               <div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div>
               <div className="settings-actions">
+                <div className="codex-settings">
+                  <label><span>Модель агента</span><select value={state.codexModel} onChange={async (event) => {
+                    if (!api) return;
+                    const model = event.target.value as CodexModel;
+                    const reasoningEffort = supportsCodexConfig(model, state.codexReasoningEffort) ? state.codexReasoningEffort : "medium";
+                    setState(await api.setCodexSettings({ model, reasoningEffort }));
+                  }}>{CODEX_MODELS.map(model => <option key={model} value={model}>{model}</option>)}</select></label>
+                  <label><span>Глубина рассуждения</span><select value={state.codexReasoningEffort} onChange={async (event) => api && setState(await api.setCodexSettings({ model: state.codexModel, reasoningEffort: event.target.value as CodexReasoningEffort }))}>{CODEX_REASONING_EFFORTS.filter(effort => supportsCodexConfig(state.codexModel, effort)).map(effort => <option key={effort} value={effort}>{effort}</option>)}</select></label>
+                  <small>Применяется к новым запускам агента. Текущий выбор сохраняется на этом компьютере.</small>
+                </div>
                 <button className="ghost" onClick={() => void api?.openDiagnostics().catch(() => setError(loadingText[1]))}>{loadingText[3]}</button>
                 <label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label>
                 <UpdateControl update={state.update} version={state.appVersion} language={language} onCheck={async () => api?.checkForUpdates()} onInstall={async () => api?.installUpdate()} />

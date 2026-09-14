@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   sendNewTopic: (input: unknown) => ipcRenderer.invoke("bridge:send-new-topic", input),
   blockTopic: (topic: string) => ipcRenderer.invoke("bridge:block-topic", topic),
   setAutoStart: (enabled: boolean) => ipcRenderer.invoke("bridge:set-autostart", enabled),
+  setCodexSettings: (input: unknown) => ipcRenderer.invoke("bridge:set-codex-settings", input),
   setDisplayName: (name: string) => ipcRenderer.invoke("bridge:set-display-name", name),
   setLanguage: (language: "ru" | "en" | "cs" | "fr") => ipcRenderer.invoke("bridge:set-language", language),
   listContextThreads: () => ipcRenderer.invoke("bridge:list-context-threads"),

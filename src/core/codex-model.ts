@@ -1,10 +1,11 @@
 import { CodexHistoryClient } from "./codex-history.js";
-
-const ASTRA = "gpt-6-astra";
+import { DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, type CodexReasoningEffort } from "./codex-settings.js";
+export { DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT } from "./codex-settings.js";
 
 // Apply at invocation, not in cache identity: changing runtime effort must not
 // discard completed extraction notes or force a full source-chat reanalysis.
-export const CODEX_REASONING_ARGS = ["-c", 'model_reasoning_effort="medium"'];
+export const CODEX_REASONING_ARGS = ["-c", `model_reasoning_effort="${DEFAULT_CODEX_REASONING_EFFORT}"`];
+export const codexReasoningArgs = (effort: CodexReasoningEffort = DEFAULT_CODEX_REASONING_EFFORT) => ["-c", `model_reasoning_effort="${effort}"`];
 
 /** One catalog request for concurrent jobs; failures keep the client's own default. */
 export function createModelResolver(
@@ -18,7 +19,7 @@ export function createModelResolver(
     const entry = { expires: Number.POSITIVE_INFINITY, pending: Promise.resolve(undefined) as Promise<string | undefined> };
     entry.pending = Promise.resolve().then(() => listModels(command)).then((models) => {
       entry.expires = now() + 5 * 60_000;
-      return models.some((model) => model.model === ASTRA && !model.hidden) ? ASTRA : undefined;
+      return models.some((model) => model.model === DEFAULT_CODEX_MODEL && !model.hidden) ? DEFAULT_CODEX_MODEL : undefined;
     }, () => {
       entry.expires = now() + 30_000;
       return undefined;

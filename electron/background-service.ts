@@ -46,6 +46,7 @@ import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportRep
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
 import { buildApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
 import { createUpdateCheckpoint, recoverMissingCheckpointData } from "./update-checkpoint.js";
+import { CODEX_MODELS, CODEX_REASONING_EFFORTS, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../src/core/codex-settings.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1528,7 +1529,7 @@ export class BackgroundService {
     if (!text) {
       await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:"generation"}}}));
       const brief = this.savedTopicBrief(state.topicBriefs, request.topic);
-      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName, request.topic, brief, state.remote.counterpartPersonId, Boolean(request.mode));
+      const agent = this.localRemoteAgent(id, state.owner, state.language, state.displayName, state.remote.peerName, request.topic, brief, state.remote.counterpartPersonId, Boolean(request.mode), state.codexModel ?? DEFAULT_CODEX_MODEL, state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT);
       const response = await agent.start(request.mode === "restart"
         ? conversationOpeningPrompt(state.displayName, request.topic, brief)
         : continuationPrompt(request.topic, request.history, request.instruction));
@@ -1659,7 +1660,7 @@ export class BackgroundService {
     const brief = this.savedTopicBrief(stored.topicBriefs, topic) ?? shareableTopicBrief(findTopicContext(this.readContextAnalysis(), topic));
     let text = job.preparedMessage;
     if (!text) {
-    const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName, topic, brief, stored.remote.counterpartPersonId);
+    const agent = this.localRemoteAgent(conversationId, stored.owner, stored.language, stored.displayName, stored.remote.peerName, topic, brief, stored.remote.counterpartPersonId, false, stored.codexModel ?? DEFAULT_CODEX_MODEL, stored.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT);
     const response = await agent.start(conversationOpeningPrompt(stored.displayName, topic, brief));
     if (response.status === "unsafe") {
       await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],attempts:3}}}));
@@ -1806,6 +1807,16 @@ export class BackgroundService {
     return this.remote;
   }
 
+  async setCodexSettings(input: unknown) {
+    const value = input && typeof input === "object" ? input as { model?: unknown; reasoningEffort?: unknown } : {};
+    if (!CODEX_MODELS.includes(value.model as CodexModel) || !CODEX_REASONING_EFFORTS.includes(value.reasoningEffort as CodexReasoningEffort)
+      || !supportsCodexConfig(value.model as CodexModel, value.reasoningEffort as CodexReasoningEffort)) {
+      throw new Error("Неизвестная модель или уровень рассуждения");
+    }
+    await this.store.update({ codexModel: value.model as CodexModel, codexReasoningEffort: value.reasoningEffort as CodexReasoningEffort });
+    return this.state();
+  }
+
   async approveContinuation(input: unknown) {
     if (this.updating) throw new Error("Устанавливаем обновление. Подготовленная реплика сохранена.");
     const value=input as {id?:unknown;text?:unknown}|null;
@@ -1858,7 +1869,7 @@ export class BackgroundService {
     return [source, ...this.readLearnedContext().slice(0, 50).map((entry) => JSON.stringify({ topic: entry.topic, question: entry.question, answer: entry.answer, disposition: entry.disposition }))].join("\n\n");
   }
 
-  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string, topic?: string, sharedBrief?: TopicBrief, counterpartPersonId?: string, cleanContext = false) {
+  private localRemoteAgent(conversationId: string, owner: OwnerId, language: AppLanguage, ownerName: string, peerName?: string, topic?: string, sharedBrief?: TopicBrief, counterpartPersonId?: string, cleanContext = false, model?: CodexModel, reasoningEffort?: CodexReasoningEffort) {
     const existing = this.remoteAgents.get(conversationId);
     if (existing) return existing;
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
@@ -1917,6 +1928,8 @@ export class BackgroundService {
       perspective: `Используй локальную психологическую память как фон, не цитируя её дословно:\n${memory}`,
       language,
       communicationExamples,
+      model,
+      reasoningEffort,
       workspace: path.join(this.userData, "agents", owner, conversationId), schemaPath, codexCommand: defaultCodexCommand() });
     this.remoteAgents.set(conversationId, agent);
     return agent;
@@ -2195,7 +2208,7 @@ export class BackgroundService {
         return;
       }
       const brief = this.savedTopicBrief(currentTopics.topicBriefs, dialogue.topic);
-      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName, dialogue.topic, brief, stored.remote.counterpartPersonId, Boolean(mode));
+      const agent = existingAgent ?? this.localRemoteAgent(envelope.conversation_id, stored.owner, stored.language, stored.displayName, peerName, dialogue.topic, brief, stored.remote.counterpartPersonId, Boolean(mode), stored.codexModel ?? DEFAULT_CODEX_MODEL, stored.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT);
       const guidance = dialogue.status === "complete" && !incomingCompletion.ready
         ? prematureCompletionInstruction(dialogue.topic, incomingCompletion.reasons)
         : "";
@@ -2308,7 +2321,7 @@ export class BackgroundService {
       let response = pending.preparedResponse;
       if (!response) {
         const existingAgent = this.remoteAgents.get(pending.conversationId);
-        const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]));
+        const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]), stored.codexModel ?? DEFAULT_CODEX_MODEL, stored.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT);
         const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
         const initialResponse = existingAgent
           ? await (agent.respondToOwner?.(`${reply}\n\n${privacyInstruction}`) ?? agent.respond(`${reply}\n\n${privacyInstruction}`))
@@ -2540,7 +2553,7 @@ export class BackgroundService {
     this.running = true;
     this.emit({ type: "status", status: "agenda_negotiation" });
     try {
-      const [dima, katya] = realCodex ? this.codexAgents(state.language) : this.mockAgents(state.language);
+      const [dima, katya] = realCodex ? this.codexAgents(state) : this.mockAgents(state.language);
       const coordinator = new ConversationCoordinator(dima, katya, undefined, {
         maxTurns: 8,
         onEvent: (event) => this.emit(event),
@@ -2590,7 +2603,7 @@ export class BackgroundService {
     }
   }
 
-  private codexAgents(language: AppLanguage): [AgentRuntime, AgentRuntime] {
+  private codexAgents(state: StoredState): [AgentRuntime, AgentRuntime] {
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
     const root = path.join(this.userData, "agents");
     const command = defaultCodexCommand();
@@ -2599,7 +2612,9 @@ export class BackgroundService {
         id: "dima",
         displayName: "Димы",
         perspective: "Demo: владельцу важна предсказуемость и ясность ключевых договорённостей.",
-        language,
+        language: state.language,
+        model: state.codexModel ?? DEFAULT_CODEX_MODEL,
+        reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
         workspace: path.join(root, "dima"),
         schemaPath,
         codexCommand: command,
@@ -2608,7 +2623,9 @@ export class BackgroundService {
         id: "katya",
         displayName: "Кати",
         perspective: "Demo: владельцу важны гибкость и свобода менять необязательные планы.",
-        language,
+        language: state.language,
+        model: state.codexModel ?? DEFAULT_CODEX_MODEL,
+        reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
         workspace: path.join(root, "katya"),
         schemaPath,
         codexCommand: command,

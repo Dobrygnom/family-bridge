@@ -14,6 +14,8 @@ export interface AppState {
   displayName: string;
   language: "ru" | "en" | "cs" | "fr";
   autoStart: boolean;
+  codexModel: import("./core/codex-settings.js").CodexModel;
+  codexReasoningEffort: import("./core/codex-settings.js").CodexReasoningEffort;
   appVersion: string;
   pendingTopics: string[];
   pairTopics: string[];
@@ -68,6 +70,7 @@ declare global {
       sendNewTopic(input: import("./core/new-topic.js").NewTopicSend): Promise<AppState>;
       blockTopic(topic: string): Promise<AppState>;
       setAutoStart(enabled: boolean): Promise<AppState>;
+      setCodexSettings(input: { model: import("./core/codex-settings.js").CodexModel; reasoningEffort: import("./core/codex-settings.js").CodexReasoningEffort }): Promise<AppState>;
       setDisplayName(name: string): Promise<AppState>;
       setLanguage(language: "ru" | "en" | "cs" | "fr"): Promise<AppState>;
       listContextThreads(): Promise<Array<{ id: string; title: string; project: string; source: "codex" | "chatgpt"; cwd?: string; updatedAt?: number }>>;

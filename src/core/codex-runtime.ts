@@ -4,7 +4,8 @@ import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentId, AgentResponse, AgentRuntime } from "./types.js";
-import { CODEX_REASONING_ARGS, preferredModelArgs } from "./codex-model.js";
+import { codexReasoningArgs, preferredModelArgs } from "./codex-model.js";
+import type { CodexReasoningEffort } from "./codex-settings.js";
 import { isolatedCodexInvocation, codexTaskFailure } from "./codex-isolation.js";
 import { agentKnowledgeRules, naturalDialogueStyleRules } from "./agent-context-rules.js";
 
@@ -32,6 +33,7 @@ export interface CodexRuntimeOptions {
   communicationExamples?: string;
   /** null explicitly keeps the CLI default; omitted prefers available Astra. */
   model?: string | null;
+  reasoningEffort?: CodexReasoningEffort;
 }
 
 const languageNames = { ru: "русском", en: "английском", cs: "чешском", fr: "французском" } as const;
@@ -213,7 +215,7 @@ export class CodexCliAgent implements AgentRuntime {
     const selectedArgs = await this.modelArgs;
     return new Promise((resolve, reject) => {
       const commandEnd = args[1] === "resume" ? 2 : 1;
-      const child = spawn(command, isolatedCodexInvocation([...args.slice(0, commandEnd), ...selectedArgs, ...CODEX_REASONING_ARGS, ...args.slice(commandEnd)]), {
+      const child = spawn(command, isolatedCodexInvocation([...args.slice(0, commandEnd), ...selectedArgs, ...codexReasoningArgs(this.options.reasoningEffort), ...args.slice(commandEnd)]), {
         cwd: this.options.workspace,
         windowsHide: true,
         shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),

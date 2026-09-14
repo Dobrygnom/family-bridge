@@ -104,6 +104,10 @@ section[id] { scroll-margin-top: 24px; }
 .screen-panel { margin-top: 20px; }
 .settings-actions, .memory-status, .report-list { margin-top: 18px; display: grid; gap: 10px; padding: 14px; background: #111f28; border-radius: 10px; color: #9cb0b4; font-size: 12px; }
 .settings-actions label { display: flex; gap: 9px; align-items: center; }
+.codex-settings { display: grid; gap: 10px; padding-bottom: 4px; }
+.codex-settings label { justify-content: space-between; }
+.codex-settings select { min-width: 180px; background: #0e1a22; border: 1px solid #2a3d47; color: #e8f0ed; padding: 9px 11px; border-radius: 9px; }
+.codex-settings small { color: #748a91; }
 .settings-actions button { width: max-content; border: 0; border-radius: 9px; padding: 9px 12px; background: #29443f; color: #bfe9db; }
 .update-card { margin-top: 3px; padding-top: 13px; border-top: 1px solid #20333d; }
 .update-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: center; }

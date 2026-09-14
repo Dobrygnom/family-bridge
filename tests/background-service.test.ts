@@ -40,6 +40,24 @@ test("mock conversation follows the selected language", async () => {
   }
 });
 
+test("Codex model settings default to Sol medium and persist only valid choices", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-model-settings-test-"));
+  try {
+    const store = new AtomicStore(directory);
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { backgroundTasks: false });
+    let state = await service.state();
+    assert.equal(state.codexModel, "gpt-5.6-sol");
+    assert.equal(state.codexReasoningEffort, "medium");
+    state = await service.setCodexSettings({ model: "gpt-6-astra", reasoningEffort: "high" });
+    assert.equal(state.codexModel, "gpt-6-astra");
+    assert.equal(state.codexReasoningEffort, "high");
+    await assert.rejects(service.setCodexSettings({ model: "gpt-5.5", reasoningEffort: "ultra" }), /Неизвестная модель/);
+    assert.equal((await store.read()).codexModel, "gpt-6-astra");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("automatic context sync runs only for a changed or genuinely stale chat", () => {
   const now = Date.parse("2026-08-31T20:00:00.000Z");
   const selected = { status: "ready" as const, lastSyncedAt: "2026-08-31T18:00:00.000Z", updatedAt: 1_788_134_400 };

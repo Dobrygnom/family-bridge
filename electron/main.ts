@@ -350,6 +350,7 @@ app.whenReady().then(async () => {
     return service.state();
   });
   handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
+  handle("bridge:set-codex-settings", (_event, input: unknown) => service.setCodexSettings(input));
   handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
   handle("bridge:list-context-threads", () => service.listContextThreads());
   handle("bridge:select-context-thread", (_event, threadId: unknown) => service.selectContextThread(threadId));
