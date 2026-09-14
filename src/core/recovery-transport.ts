@@ -46,7 +46,7 @@ export class RecoveryTransport extends SupabaseTransport {
       pair = await super.pairState(this.route.transportPairId);
     }
     if (pair.owner_id !== this.route.creatorAuthId) throw new Error("Recovery pair owner mismatch");
-    if (pair.partner_id && !this.copiedPending) {
+    if (pair.partner_id && !this.copiedPending && this.participant === this.route.creatorAgent) {
       const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
       // The still-authorized sender can rescue its undelivered old queue.
       // The original envelope ID preserves inbox deduplication on the peer.
@@ -93,9 +93,16 @@ export class RecoveryTransport extends SupabaseTransport {
     if (row) return this.unwrap(row);
     // Old in-flight messages addressed to an identity which survived the
     // upgrade can still be consumed. No old pair or queue is deleted.
-    const legacy = await super.claimNext(this.route.logicalPairId)
-      ?? await super.readClaimedReceived(this.route.logicalPairId)
-      ?? await super.readClaimedReceived(this.route.transportPairId);
+    // Legacy recovery is best-effort. The invited side can legitimately have a
+    // new identity which is authorized for the replacement pair but not for the
+    // old physical pair. That old RLS denial must not mark the healthy recovery
+    // channel as disconnected on every empty poll.
+    let legacy: RemoteEnvelope | null = null;
+    try {
+      legacy = await super.claimNext(this.route.logicalPairId)
+        ?? await super.readClaimedReceived(this.route.logicalPairId);
+    } catch { /* The replacement channel remains authoritative. */ }
+    legacy ??= await super.readClaimedReceived(this.route.transportPairId);
     return legacy && this.unwrap(legacy);
   }
   override async readSupportMessages(pairId: string, since: string): Promise<RemoteEnvelope[]> {
@@ -111,7 +118,9 @@ export class RecoveryTransport extends SupabaseTransport {
   override async readConversation(pairId: string, conversationId: string): Promise<RemoteEnvelope[]> {
     this.assertPair(pairId);
     const fresh = (await super.readConversation(this.route.transportPairId, recoveryConversationId(this.route, conversationId))).map(row => this.unwrap(row));
-    const old = await super.readConversation(pairId, conversationId);
+    let old: RemoteEnvelope[] = [];
+    try { old = await super.readConversation(pairId, conversationId); }
+    catch { /* A replacement identity may not read the old physical pair. */ }
     const bySequence = new Map(old.map(row => [row.sequence_number, row]));
     for (const row of fresh) bySequence.set(row.sequence_number, row);
     return [...bySequence.values()].sort((a, b) => a.sequence_number - b.sequence_number);

@@ -23,7 +23,7 @@ test("recovered wire conversation ids are deterministic, distinct from old ids, 
 function fake(participant: "dima" | "katya" = "dima", id: string | undefined = randomUUID()) {
   const transport = new RecoveryTransport("https://example.test", "test", "secret", undefined, route, participant);
   let joined = false, signups = 0, joins = 0, acknowledged: string | undefined;
-  let claim: unknown;
+  let claim: unknown, denyLegacyClaim = false;
   const auth = {
     getSession: async () => ({ data: { session: id ? { user: { id } } : null }, error: null }),
     getUser: async () => ({ data: { user: id ? { id } : null }, error: id ? null : { name: "AuthSessionMissingError" } }),
@@ -33,11 +33,14 @@ function fake(participant: "dima" | "katya" = "dima", id: string | undefined = r
   (transport as any).client = { auth, rpc: async (name: string, args: any) => {
     if (name === "join_family_pair") { joined = true; joins++; return { data: true, error: null }; }
     if (name === "get_family_pair") return { data: joined || id === route.creatorAuthId ? [{ id: route.transportPairId, owner_id: route.creatorAuthId, partner_id: joined ? id : null }] : [], error: null };
-    if (name === "claim_next_bridge_message") return { data: claim ? [claim] : [], error: null };
+    if (name === "claim_next_bridge_message") {
+      if (denyLegacyClaim && args.requested_pair_id === route.logicalPairId) return { data: null, error: { code: "42501", message: "not authorized" } };
+      return { data: claim ? [claim] : [], error: null };
+    }
     if (name === "ack_bridge_message") { acknowledged = args.requested_message_id; return { error: null }; }
   }, from: () => { const q: any = {}; for (const method of ["select", "eq", "in", "order"]) q[method] = () => q;
-    q.range = async () => ({ data: [], error: null }); return q; } };
-  return { transport, auth, setClaim: (value: unknown) => { claim = value; }, counts: () => ({ signups, joins, acknowledged }) };
+    q.range = async () => ({ data: [], error: null }); q.limit = async () => ({ data: [], error: null }); return q; } };
+  return { transport, auth, setClaim: (value: unknown) => { claim = value; }, denyLegacy: () => { denyLegacyClaim = true; }, counts: () => ({ signups, joins, acknowledged }) };
 }
 test("wrong old identity automatically joins the replacement channel without changing logical pair", async () => {
   const f = fake();
@@ -64,6 +67,12 @@ test("replayed envelope keeps its original inbox id and acknowledges the physica
   assert.deepEqual(row?.payload, { text: "test" });
   assert.equal(row?.historicalDelivery, true);
   await f.transport.acknowledge(row!.id); assert.equal(f.counts().acknowledged, physical);
+});
+test("an invited replacement identity stays connected when the inaccessible old queue is empty", async () => {
+  const f = fake();
+  await f.transport.pairState(route.logicalPairId);
+  f.denyLegacy();
+  assert.equal(await f.transport.claimNext(route.logicalPairId), null);
 });
 test("unrelated pair is never silently routed through the recovery channel", async () => {
   const f = fake(); await assert.rejects(f.transport.pairState(randomUUID()), /does not match/);
