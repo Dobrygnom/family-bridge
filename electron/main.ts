@@ -5,7 +5,6 @@ import electronUpdater from "electron-updater";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { BackgroundService } from "./background-service.js";
 import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
 import { exportReportFiles, revealInWindowsExplorer } from "./open-directory.js";
@@ -206,17 +205,14 @@ let serviceReady = false;
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   // NSIS force-launches the installed executable inside its own hand-off.
-  // app.relaunch() starts its successor before this transient process has fully
-  // released Windows/Electron state, and that successor repeatedly reproduced
-  // an AUTH failure despite intact credentials. A detached system helper waits
-  // for the hand-off process to be completely gone, then performs the same
-  // cold launch that has been verified to restore the saved connection.
+  // app.relaunch() inherits that transient context, while a child helper is
+  // terminated with the Windows installer job. Release our singleton lock and
+  // ask the Windows shell to perform an independent, ordinary launch instead.
   if (process.platform === "win32" && process.argv.includes("--updated")) {
-    const command = "$exe=$env:FAMILY_BRIDGE_RELAUNCH_EXE; Start-Sleep -Seconds 5; Start-Process -FilePath $exe -WindowStyle Hidden";
-    const helper = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], {
-      detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, FAMILY_BRIDGE_RELAUNCH_EXE: process.execPath },
-    });
-    helper.unref();
+    app.releaseSingleInstanceLock();
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    await shell.openPath(process.execPath);
+    await new Promise(resolve => setTimeout(resolve, 3_000));
     app.exit(0);
     return;
   }
