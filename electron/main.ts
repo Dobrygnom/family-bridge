@@ -207,9 +207,17 @@ app.whenReady().then(async () => {
   // NSIS force-launches the installed executable inside its own hand-off.
   // app.relaunch() inherits that transient context, while a child helper is
   // terminated with the Windows installer job. Release our singleton lock and
-  // ask the Windows shell to perform an independent, ordinary launch instead.
+  // wait for the actual installer parent to exit before asking the Windows
+  // shell to perform an independent, ordinary launch instead.
   if (process.platform === "win32" && process.argv.includes("--updated")) {
+    const installerPid = process.ppid;
     app.releaseSingleInstanceLock();
+    const installerGoneBy = Date.now() + 60_000;
+    while (Date.now() < installerGoneBy) {
+      try { process.kill(installerPid, 0); }
+      catch { break; }
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+    }
     await new Promise(resolve => setTimeout(resolve, 5_000));
     await shell.openPath(process.execPath);
     await new Promise(resolve => setTimeout(resolve, 3_000));
