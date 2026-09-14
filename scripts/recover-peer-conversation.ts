@@ -21,13 +21,29 @@ if (!status) throw new Error("Authenticated local diagnostic endpoint is unavail
 const received = Object.values(status.requests || {}).filter((item: any) => item?.status === "received" && item.report?.applicationDiagnostics)
   .sort((a: any, b: any) => String(b.requestedAt).localeCompare(String(a.requestedAt)));
 const diagnostic = received.map((item: any) => item.report.applicationDiagnostics)
-  .find((item: any) => item.reports?.some((report: any) => report.id === reportId));
+  .find((item: any) => item.reports?.some((report: any) => report.id === reportId) || item.conversations?.some((conversation: any) => conversation.id === reportId));
 const report = diagnostic?.reports?.find((item: any) => item.id === reportId);
-if (!report || !Array.isArray(report.messages) || !report.parentReportId) throw new Error("Completed peer report was not found in the latest diagnostic response");
+const live = diagnostic?.conversations?.find((item: any) => item.id === reportId);
+if (!report && (!live || !Array.isArray(live.messages) || typeof live.topic !== "string")) throw new Error("Peer report or live conversation was not found in the latest diagnostic response");
 const peerOwner = diagnostic.identity?.owner as OwnerId;
 if (peerOwner !== "dima" && peerOwner !== "katya") throw new Error("Peer identity is invalid");
 const store = new AtomicStore(profile), state = await store.read();
 if (state.owner === peerOwner) throw new Error("Peer diagnostic identity matches the local identity");
+if (live && !report) {
+  const messages = live.messages.map((message:any) => {
+    if ((message.from !== "dima" && message.from !== "katya") || typeof message.text !== "string") throw new Error("Peer live conversation is invalid");
+    return { from:message.from, text:message.text, ...(message.origin ? {origin:message.origin}:{}), ...(message.sentAt ? {sentAt:message.sentAt}:{}) };
+  });
+  await copyFile(path.join(profile, "state.json"), path.join(profile, `state.before-peer-recovery-${Date.now()}.json`));
+  await store.mutate(current => ({
+    conversationTranscripts:{...current.conversationTranscripts,[reportId]:{topic:live.topic,messages}},
+    ...(typeof live.parentId === "string" ? {conversationParents:{...current.conversationParents,[reportId]:live.parentId}}:{}),
+    ...(live.mode === "restart" || live.mode === "clean-continuation" ? {conversationModes:{...current.conversationModes,[reportId]:live.mode}}:{}),
+    ...(Number.isInteger(live.inheritedMessageCount) ? {conversationInheritedCounts:{...current.conversationInheritedCounts,[reportId]:live.inheritedMessageCount}}:{}),
+  }));
+  console.log(JSON.stringify({status:"live-recovered",conversationId:reportId,parentReportId:live.parentId,messages:messages.length}));
+  process.exit(0);
+}
 if (state.reports.some(file => file.includes(reportId))) { console.log(JSON.stringify({ status:"already-present", reportId })); process.exit(0); }
 const reportsDir = path.join(profile, "reports");
 await mkdir(reportsDir, { recursive: true });

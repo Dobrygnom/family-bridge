@@ -208,10 +208,12 @@ app.whenReady().then(async () => {
   // second clean launch is the first one with normal process ownership; never
   // initialize storage, UI or auth in the transient launch.
   if (process.platform === "win32" && process.argv.includes("--updated")) {
-    await new Promise(resolve => setTimeout(resolve, 2_000));
     app.relaunch({ args: [...process.argv.slice(1).filter(arg => arg !== "--updated"), "--update-settled"] });
     app.exit(0);
     return;
+  }
+  if (process.platform === "win32" && process.argv.includes("--update-settled")) {
+    await new Promise(resolve => setTimeout(resolve, 8_000));
   }
   const store = new AtomicStore(app.getPath("userData"));
   const uiErrors = new UiErrorDiagnostics(app.getPath("userData"));
