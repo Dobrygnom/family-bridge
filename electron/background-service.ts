@@ -279,12 +279,19 @@ export class BackgroundService {
       blockers: [...this.updateActivity.snapshot(), ...this.store.updateActivity.snapshot()] };
   }
 
-  async prepareForUpdate() {
+  async prepareForUpdate(forced = false) {
     // Claim the pause BEFORE checking work. Otherwise the two-second inbox timer
     // can win every two-second updater tick and installation starves forever.
     this.updating = true;
     this.updateDrainStartedAt ??= Date.now();
-    if (this.updateActivity.snapshot().length || this.store.updateActivity.snapshot().length) return false;
+    if (!forced && (this.updateActivity.snapshot().length || this.store.updateActivity.snapshot().length)) return false;
+    if (forced) {
+      const state = await this.store.read();
+      await createUpdateCheckpoint(this.userData, state, this.options.appVersion ?? "development");
+      this.updateCheckpointForDrain = this.updateDrainStartedAt;
+      this.diagnostics.record("update.force-checkpoint-verified");
+      return this.updating;
+    }
     await this.updateActivity.track("save_barrier", Promise.all([this.topicEdits, this.analysisWrites, this.portraitUpdates]).then(() => this.store.read()));
     if (this.updateCheckpointForDrain !== this.updateDrainStartedAt) {
       const state = await this.store.read();

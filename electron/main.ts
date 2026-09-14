@@ -271,9 +271,9 @@ app.whenReady().then(async () => {
     .catch(() => service.diagnostics.record("support.failed"));
   updateGate = new AutomaticUpdate({
     canInstall: () => app.isPackaged && activeIpc === 0 && (!mainWindow || !rendererUpdateBlocked),
-    prepare: async () => {
+    prepare: async forced => {
       preparingUpdate = true;
-      const prepared = await service.prepareForUpdate();
+      const prepared = await service.prepareForUpdate(forced);
       return prepared;
     },
     install: installPreparedUpdate,

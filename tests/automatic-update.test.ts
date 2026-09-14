@@ -8,7 +8,7 @@ test("desktop activity outside Family Bridge does not postpone installation", ()
   assert.doesNotMatch(main, /getSystemIdleTime/);
   assert.match(main, /activeIpc === 0/);
   assert.match(main, /!rendererUpdateBlocked/);
-  assert.match(main, /service\.prepareForUpdate\(\)/);
+  assert.match(main, /service\.prepareForUpdate\(forced\)/);
 });
 
 test("automatic installation waits for dictation, editing and background work without confirmations", async () => {
@@ -30,6 +30,14 @@ test("input becoming busy during the save barrier cancels the restart",async()=>
   let safe=true,resumes=0;
   const updater=new AutomaticUpdate({canInstall:()=>safe,prepare:async()=>{safe=false;return true;},install:async()=>assert.fail(),resume:()=>{resumes++;},failed:()=>assert.fail()});
   updater.ready(); await updater.tick(); assert.equal(resumes,1);
+});
+
+test("durably saved conversation drafts do not impersonate active editing", () => {
+  const app = readFileSync(new URL("../src/ui/App.tsx", import.meta.url), "utf8");
+  const continuation = readFileSync(new URL("../src/ui/ReportContinuation.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(app, /conversationDraftActive|family-bridge:draft-state/);
+  assert.doesNotMatch(continuation, /family-bridge:draft-state/);
+  assert.match(continuation, /localStorage\.setItem\(key, draft\)/);
 });
 
 test("editing after a background wait releases the pause; cancellation during saving never installs",async()=>{
@@ -56,9 +64,16 @@ test("update now reports blockers, keeps safety barriers, and installs automatic
   let safe=false, prepared=false, installed=0;
   const waiting:string[]=[];
   const gate=new AutomaticUpdate({canInstall:()=>safe,prepare:async()=>prepared,install:async()=>{installed++;},resume:()=>{},failed:()=>assert.fail(),waiting:reason=>waiting.push(reason)});
-  gate.ready(); gate.requestNow(); await gate.tick();
+  gate.ready(); await gate.tick();
   assert.deepEqual(waiting,['activity']); assert.equal(installed,0);
   safe=true; await gate.tick(); assert.deepEqual(waiting,['activity','background']);
   prepared=true; await Promise.all([gate.tick(),gate.tick()]); assert.equal(installed,1);
   gate.ready(); gate.cancel(); await gate.tick(); assert.equal(installed,1);
+});
+
+test("explicit update bypasses every activity blocker after a forced durable prepare",async()=>{
+  let preparedWith:boolean|undefined,installed=0;
+  const gate=new AutomaticUpdate({canInstall:()=>false,prepare:async forced=>{preparedWith=forced;return true;},install:async()=>{installed++;},resume:()=>{},failed:()=>assert.fail()});
+  gate.ready(); gate.requestNow(); await gate.tick();
+  assert.equal(preparedWith,true); assert.equal(installed,1); assert.equal(gate.snapshot().forced,false);
 });
