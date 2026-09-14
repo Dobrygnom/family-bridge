@@ -4,8 +4,8 @@ import os from "node:os";
 import { supportLocatorFiles } from "../electron/support-control.js";
 
 const [command = "status", ...args] = process.argv.slice(2);
-const commands = { "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "application-diagnostics": ["GET", "/local/application-diagnostics"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], "peer-diagnostics": ["POST", "/peer/diagnostics"], update: ["POST", "/peer/update"] } as const;
-if (!(command in commands) || args.length > 1) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts status|diagnostics|application-diagnostics|local-update|refresh-context|snapshot|peer-diagnostics|update [profile-directory]");
+const commands = { "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "application-diagnostics": ["GET", "/local/application-diagnostics"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], "peer-diagnostics": ["POST", "/peer/diagnostics"], update: ["POST", "/peer/update"], recover: ["POST", "/peer/recover"] } as const;
+if (!(command in commands) || args.length > 1) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts status|diagnostics|application-diagnostics|local-update|refresh-context|snapshot|peer-diagnostics|update|recover [profile-directory]");
 const profile = args[0] || (process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "family-bridge")
   : process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "family-bridge") : path.join(os.homedir(), ".config", "family-bridge"));
 let success = false;

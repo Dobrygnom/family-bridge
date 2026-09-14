@@ -12,6 +12,7 @@ import { BackgroundService } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 import { SupabaseTransport } from "../src/core/supabase-transport.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
+import type { PairRecovery } from "../src/core/pair-recovery.js";
 
 const now = Date.now();
 const report = (at = now): SupportReport => ({ schema: 1, at: new Date(at).toISOString(), bootId: randomUUID(),
@@ -43,6 +44,18 @@ test("repair decisions never use stale or differently bound peer reports", async
     f.context.pairId="other"; await f.support.tick(); assert.equal(f.support.peerReport(),undefined);
     f.context.pairId="pair"; await f.support.tick(); assert.ok(f.support.peerReport());
     f.advance(90_001); assert.equal(f.support.peerReport(),undefined);
+  } finally {await f.cleanup();}
+});
+
+test("authenticated support recovery returns a bounded replacement route", async () => {
+  const f=await fixture();
+  const route:PairRecovery={version:1,logicalPairId:randomUUID(),transportPairId:randomUUID(),creatorAuthId:randomUUID(),creatorAgent:"dima",inviteSecret:"a".repeat(43)};
+  (f.hooks as any).recover=async()=>route;
+  try {
+    f.context.peerVersion="1.2.47"; f.incoming.push(f.envelope("recover"));
+    await f.support.tick();
+    const reply=f.sent.find(item=>item.payload.support?.replyTo)?.payload.support;
+    assert.equal(reply.outcome,"accepted"); assert.deepEqual(reply.recovery,route);
   } finally {await f.cleanup();}
 });
 

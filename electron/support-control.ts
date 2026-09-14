@@ -36,6 +36,7 @@ export async function startSupportControl(userData: string, support: RemoteSuppo
       if (req.method === "POST" && req.url === "/peer/snapshot") return support.request("snapshot");
       if (req.method === "POST" && req.url === "/peer/diagnostics") return support.request("diagnostics");
       if (req.method === "POST" && req.url === "/peer/update") return support.request("update");
+      if (req.method === "POST" && req.url === "/peer/recover") return support.request("recover");
       if (req.method === "POST" && req.url === "/local/maintenance") {
         if (!local?.maintenance) throw new Error("Maintenance unavailable");
         return local.maintenance(await jsonBody(req) as SupportMaintenanceCommand);

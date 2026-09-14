@@ -37,7 +37,7 @@ import { repairCandidates } from "../src/core/conversation-repair.js";
 import { selectCommunicationExamples } from "../src/core/communication-style.js";
 import { messageOrigin, messageSentAt, type SharedMessage, type MessageOrigin } from "../src/core/continuation.js";
 import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
-import { openPairRecovery } from "../src/core/pair-recovery.js";
+import { openPairRecovery, validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
 import { PAIR_RECOVERY_CAPSULES } from "./pair-recovery-capsules.js";
 import { RemoteSupport, type SupportMaintenanceCommand } from "./remote-support.js";
@@ -477,6 +477,8 @@ export class BackgroundService {
         request();
       },
       maintenance: command => this.runMaintenance(command),
+      recover: () => this.createRecoveryRoute(),
+      acceptRecovery: route => this.acceptRecoveryRoute(route),
       record: (event, code) => this.diagnostics.record(event, { code }),
     }, Date.now, this.options.backgroundTasks === false ? undefined : new SupportChannel(path.join(userData, "support-channel"),
       (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
@@ -1730,7 +1732,9 @@ export class BackgroundService {
   private configureRemote(secret: string, preserveIdentity = true, savedState?: StoredState) {
     if (this.remoteTimer) clearInterval(this.remoteTimer);
     this.remote?.dispose();
-    const recovery = savedState?.remote && openPairRecovery(PAIR_RECOVERY_CAPSULES, secret, savedState.remote.pairId);
+    let recovery: PairRecovery | undefined;
+    try { if (savedState?.remote?.recoveryRoute) recovery = validatePairRecovery(savedState.remote.recoveryRoute); } catch { /* fall through */ }
+    recovery ??= savedState?.remote && openPairRecovery(PAIR_RECOVERY_CAPSULES, secret, savedState.remote.pairId);
     this.remote = recovery
       ? new RecoveryTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), recovery, savedState!.owner)
       : new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), preserveIdentity);
@@ -1739,6 +1743,28 @@ export class BackgroundService {
     this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
     void this.pumpRemote();
     return this.remote;
+  }
+
+  private async createRecoveryRoute(): Promise<PairRecovery> {
+    const state = await this.store.read(), transport = this.remote;
+    if (!state.remote || !transport) throw new Error("No saved primary channel");
+    const invite = await transport.createPair();
+    const route = validatePairRecovery({ version:1, logicalPairId:state.remote.pairId, transportPairId:invite.pairId,
+      creatorAuthId:await transport.identity(), creatorAgent:state.owner, inviteSecret:invite.inviteSecret });
+    const next = await this.store.mutate(current => current.remote?.pairId === route.logicalPairId
+      ? { remote:{ ...current.remote, recoveryRoute:route } } : {});
+    this.configureRemote(next.remote!.encryptionSecret, true, next);
+    this.diagnostics.record("connection.recovery-route-created");
+    return route;
+  }
+
+  private async acceptRecoveryRoute(value: PairRecovery): Promise<void> {
+    const route = validatePairRecovery(value), state = await this.store.read();
+    if (!state.remote || route.logicalPairId !== state.remote.pairId || route.creatorAgent === state.owner) throw new Error("Recovery route does not match peer");
+    const next = await this.store.mutate(current => current.remote?.pairId === route.logicalPairId
+      ? { remote:{ ...current.remote, recoveryRoute:route } } : {});
+    this.configureRemote(next.remote!.encryptionSecret, true, next);
+    this.diagnostics.record("connection.recovery-route-accepted");
   }
 
   private authStorage(): AuthStorage {

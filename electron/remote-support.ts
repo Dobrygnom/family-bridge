@@ -8,8 +8,9 @@ import { replaceStateFile } from "./store.js";
 import { sanitizeSupportReport, supportErrorCode, supportId, type SupportReport } from "./support-report.js";
 import type { SupportChannel, SupportOffer } from "./support-channel.js";
 import type { RuntimeDiagnostics } from "./runtime-diagnostics.js";
+import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 
-export type SupportAction = "snapshot" | "diagnostics" | "update" | "maintenance";
+export type SupportAction = "snapshot" | "diagnostics" | "update" | "maintenance" | "recover";
 export type SupportMaintenanceCommand =
   | { operationId: string; operation: "delete-conversation"; conversationId: string }
   | { operationId: string; operation: "restart-from-message"; conversationId: string; messageIndex: number };
@@ -18,6 +19,7 @@ interface SupportWire {
   offer?: SupportOffer;
   action?: SupportAction; report?: SupportReport; replyTo?: string;
   command?: SupportMaintenanceCommand;
+  recovery?: PairRecovery;
   outcome?: "accepted" | "failed";
 }
 export interface SupportContext {
@@ -74,6 +76,8 @@ export class RemoteSupport {
     snapshot: (logs: boolean, application?: boolean) => Promise<SupportReport>;
     update: () => void;
     maintenance?: (command: SupportMaintenanceCommand) => Promise<unknown>;
+    recover?: () => Promise<PairRecovery>;
+    acceptRecovery?: (route: PairRecovery) => Promise<void>;
     record: (event: string, code?: string) => void;
   }, private readonly now = Date.now, private readonly channel?: SupportChannel) {}
 
@@ -114,8 +118,10 @@ export class RemoteSupport {
       for (const [key, value] of Object.entries(saved)) {
         const r = value as SupportWire;
         const report = sanitizeSupportReport(r?.report);
+        let recovery: PairRecovery | undefined;
+        try { if (r.recovery) recovery = validatePairRecovery(r.recovery); } catch { /* ignored */ }
         if (r && supportId(r.id) && supportId(r.replyTo) && r.type === "report" && fresh(r.sentAt, this.now()) && report)
-          this.receipts.set(key, { protocol: 1, type: "report", id: r.id, replyTo: r.replyTo, sentAt: r.sentAt, outcome: r.outcome === "accepted" ? "accepted" : "failed", report });
+          this.receipts.set(key, { protocol: 1, type: "report", id: r.id, replyTo: r.replyTo, sentAt: r.sentAt, outcome: r.outcome === "accepted" ? "accepted" : "failed", report, ...(recovery ? { recovery } : {}) });
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -128,7 +134,7 @@ export class RemoteSupport {
     try {
       const saved = JSON.parse(await readFile(path.join(this.directory, "requests.json"), "utf8"));
       for (const [id, r] of Object.entries(saved).slice(-30) as Array<[string, any]>) {
-        if (!supportId(id) || !r || typeof r.pairId !== "string" || !["snapshot", "diagnostics", "update", "maintenance"].includes(r.action)
+        if (!supportId(id) || !r || typeof r.pairId !== "string" || !["snapshot", "diagnostics", "update", "maintenance", "recover"].includes(r.action)
           || !["sending", "sent", "received", "failed", "legacy-update-requested"].includes(r.status)
           || !fresh(r.requestedAt, this.now(), 24 * 60 * 60_000)) continue;
         this.pending.set(id, { pairId: r.pairId, requestedAt: r.requestedAt, action: r.action,
@@ -157,7 +163,7 @@ export class RemoteSupport {
     return this.requestWithCommand("maintenance", valid);
   }
   private async requestWithCommand(action: SupportAction, command?: SupportMaintenanceCommand) {
-    if (!(["snapshot", "diagnostics", "update", "maintenance"] as const).includes(action)) throw new Error("Unsupported support action");
+    if (!(["snapshot", "diagnostics", "update", "maintenance", "recover"] as const).includes(action)) throw new Error("Unsupported support action");
     if (this.sending) throw new Error("Support request already sending");
     this.sending = true;
     try {
@@ -172,6 +178,7 @@ export class RemoteSupport {
       if (!supported && action !== "update") return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
       if (action === "diagnostics" && !supportsApplicationDiagnostics(c.peerVersion)) return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
       if (action === "maintenance" && !supportsRemoteMaintenance(c.peerVersion)) return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
+      if (action === "recover" && (!validPeerVersion(c.peerVersion) || Number(c.peerVersion!.split(".")[2]) < 47)) return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
       this.pending.set(id, { pairId: c.pairId, requestedAt: sentAt, action, operationId:command?.operationId, status: "sending" });
       while (this.pending.size > 30) this.pending.delete(this.pending.keys().next().value!);
       await this.save("requests.json", Object.fromEntries(this.pending));
@@ -249,13 +256,18 @@ export class RemoteSupport {
       }
       const pending = r.replyTo && this.pending.get(r.replyTo);
       if (pending && pending.pairId === c.pairId && fresh(pending.requestedAt, this.now()) && pending.report?.at !== report.at) {
-        pending.status = r.outcome === "accepted" ? "received" : "failed";
+        let accepted = r.outcome === "accepted";
+        if (accepted && pending.action === "recover") {
+          try { await this.hooks.acceptRecovery?.(validatePairRecovery(r.recovery)); if (!this.hooks.acceptRecovery) accepted = false; }
+          catch { accepted = false; }
+        }
+        pending.status = accepted ? "received" : "failed";
         pending.report = report;
         await this.save("requests.json", Object.fromEntries(this.pending));
       }
       return;
     }
-    if (r.type !== "request" || !["snapshot", "diagnostics", "update", "maintenance"].includes(r.action!)) return;
+    if (r.type !== "request" || !["snapshot", "diagnostics", "update", "maintenance", "recover"].includes(r.action!)) return;
     const command = r.action === "maintenance" ? maintenanceCommand(r.command) : undefined;
     if (r.action === "maintenance" && !command) return;
     const key = `${c.pairId}:${c.peer}:${r.id}`;
@@ -278,6 +290,13 @@ export class RemoteSupport {
       if (r.action === "maintenance") {
         this.hooks.record("support.maintenance-requested");
         try { await this.hooks.maintenance?.(command!); if (!this.hooks.maintenance) reply.outcome = "failed"; }
+        catch { reply.outcome = "failed"; }
+        reply.report = await this.hooks.snapshot(true, true);
+        await this.save("receipts.json", Object.fromEntries(this.receipts));
+      }
+      if (r.action === "recover") {
+        this.hooks.record("support.recovery-requested");
+        try { reply.recovery = await this.hooks.recover?.(); if (!reply.recovery) reply.outcome = "failed"; }
         catch { reply.outcome = "failed"; }
         reply.report = await this.hooks.snapshot(true, true);
         await this.save("receipts.json", Object.fromEntries(this.receipts));
