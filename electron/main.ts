@@ -212,7 +212,8 @@ app.whenReady().then(async () => {
     app.exit(0);
     return;
   }
-  if (process.platform === "win32" && process.argv.includes("--update-settled")) {
+  const updateSettledLaunch = process.platform === "win32" && process.argv.includes("--update-settled");
+  if (updateSettledLaunch) {
     await new Promise(resolve => setTimeout(resolve, 8_000));
   }
   const store = new AtomicStore(app.getPath("userData"));
@@ -251,6 +252,22 @@ app.whenReady().then(async () => {
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'before-start');
   await service.start();
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'after-start');
+  // electron-updater's force-launched Windows process can retain a transient
+  // installer context even after NSIS has exited. The durable credentials and
+  // pair are intact, but Supabase may reject every request until a normal app
+  // process starts (the same reason a manual Ctrl+R never reliably fixed it,
+  // while a cold app restart did). Recover once, only for this marked launch,
+  // and never mutate auth, pairing, drafts, or conversation state.
+  if (updateSettledLaunch) {
+    setTimeout(() => {
+      const connection = service.connectionDiagnostic();
+      if (connection.connected || connection.code !== "AUTH" || updateInstallIsQuitting) return;
+      service.diagnostics.record("updater.auth-cold-relaunch");
+      isQuitting = true;
+      app.relaunch({ args: process.argv.slice(1).filter(arg => arg !== "--update-settled") });
+      app.exit(0);
+    }, 15_000).unref();
+  }
   void startSupportControl(app.getPath("userData"), service.support, {
       diagnostics: () => ({ schema: 1, at: new Date().toISOString(), bootId: service.diagnostics.bootId, version: app.getVersion(), update: service.updateDiagnostics(), gate: updateGate?.snapshot(), ipc: [...activeChannels.values()].map(row => ({ ...row, elapsedMs: Math.max(0, Date.now() - row.startedAt) })), rendererBlocked: rendererUpdateBlocked, rendererReason: rendererUpdateReason }),
       applicationDiagnostics: () => service.applicationDiagnostics(),
