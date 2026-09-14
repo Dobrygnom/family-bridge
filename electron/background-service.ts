@@ -44,7 +44,7 @@ import { RemoteSupport, type SupportMaintenanceCommand } from "./remote-support.
 import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
-import { buildApplicationDiagnostics } from "./application-diagnostics.js";
+import { buildApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
 import { createUpdateCheckpoint, recoverMissingCheckpointData } from "./update-checkpoint.js";
 
 const execFileAsync = promisify(execFile);
@@ -488,6 +488,7 @@ export class BackgroundService {
       maintenance: command => this.runMaintenance(command),
       recover: () => this.createRecoveryRoute(),
       acceptRecovery: route => this.acceptRecoveryRoute(route),
+      reconcileApplication: diagnostics => this.reconcilePeerApplication(diagnostics),
       record: (event, code) => this.diagnostics.record(event, { code }),
     }, Date.now, this.options.backgroundTasks === false ? undefined : new SupportChannel(path.join(userData, "support-channel"),
       (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
@@ -498,6 +499,44 @@ export class BackgroundService {
     const state = await this.store.read();
     const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
     return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.());
+  }
+
+  private async reconcilePeerApplication(diagnostic: ApplicationDiagnostics) {
+    const state = await this.store.read();
+    const peerOwner = diagnostic.identity.owner;
+    if (!state.remote || (peerOwner !== "dima" && peerOwner !== "katya") || peerOwner === state.owner) return;
+    const completed = new Set(readReportSummaries(state.reports).map(report=>report.id));
+    const reports: string[] = [];
+    const reportParents: Record<string,string> = {};
+    for (const raw of diagnostic.reports) {
+      const report=raw as any;
+      if (typeof report.id!=="string" || completed.has(report.id) || typeof report.topic!=="string" || report.topic.startsWith(VERSION_PROBE_PREFIX)
+        || report.topic === "Техническая проверка связи" || !Array.isArray(report.messages) || !report.messages.length) continue;
+      const messages=report.messages.map((message:any)=>({from:message.local?peerOwner:state.owner,text:String(message.text),...(message.origin?{origin:message.origin}:{}),...(message.sentAt?{sentAt:message.sentAt}:{})}));
+      const directory=path.join(this.userData,"reports"); await mkdir(directory,{recursive:true});
+      const file=path.join(directory,`${String(report.completedAt||new Date().toISOString()).replace(/[:.]/g,"-")}-${report.id}-peer-reconciled.json`);
+      await writeFile(file,JSON.stringify({conversationId:report.id,parentReportId:report.parentReportId,pairId:state.remote.pairId,topic:report.topic,sharedSummary:report.summary,answerFrom:report.answerFrom,completionState:report.completionState||"completed",messages,completedAt:report.completedAt||new Date().toISOString()}),"utf8");
+      reports.push(file); completed.add(report.id); if(typeof report.parentReportId==="string") reportParents[report.id]=report.parentReportId;
+    }
+    const transcripts: StoredState["conversationTranscripts"] = {};
+    const parents: Record<string,string> = {};
+    const modes: StoredState["conversationModes"] = {};
+    const inherited: Record<string,number> = {};
+    for(const raw of diagnostic.conversations){
+      const conversation=raw as any;
+      if(typeof conversation.id!=="string" || completed.has(conversation.id) || typeof conversation.topic!=="string" || conversation.topic.startsWith(VERSION_PROBE_PREFIX) || !Array.isArray(conversation.messages)) continue;
+      const messages=conversation.messages.flatMap((message:any)=>(message?.from==="dima"||message?.from==="katya")&&typeof message.text==="string"?[{from:message.from,text:message.text,...(message.origin?{origin:message.origin}:{}),...(message.sentAt?{sentAt:message.sentAt}:{})}]:[]);
+      if(messages.length!==conversation.messages.length) continue;
+      const local=state.conversationTranscripts[conversation.id]?.messages;
+      if(local && (local.length>=messages.length || !local.every((message,index)=>message.from===messages[index].from&&message.text===messages[index].text))) continue;
+      transcripts[conversation.id]={topic:conversation.topic,messages};
+      if(typeof conversation.parentId==="string") parents[conversation.id]=conversation.parentId;
+      if(conversation.mode==="restart"||conversation.mode==="clean-continuation") modes[conversation.id]=conversation.mode;
+      if(Number.isInteger(conversation.inheritedMessageCount)) inherited[conversation.id]=conversation.inheritedMessageCount;
+    }
+    if(!reports.length&&!Object.keys(transcripts).length)return;
+    await this.store.mutate(current=>({reports:[...reports.filter(file=>!current.reports.includes(file)),...current.reports],conversationTranscripts:{...current.conversationTranscripts,...transcripts},conversationParents:{...current.conversationParents,...reportParents,...parents},conversationModes:{...current.conversationModes,...modes},conversationInheritedCounts:{...current.conversationInheritedCounts,...inherited}}));
+    this.diagnostics.record("conversation.peer-reconciled",{reports:reports.length,current:Object.keys(transcripts).length});
   }
 
   private async auditMaintenance(command: SupportMaintenanceCommand, outcome: "accepted" | "failed") {
@@ -1204,6 +1243,7 @@ export class BackgroundService {
       this.emitTopicState(state);
     }
     if (state.remote && this.options.backgroundTasks !== false) this.configureRemote(state.remote.encryptionSecret, true, state);
+    if (state.remote && this.options.backgroundTasks !== false) setTimeout(()=>void this.support.request("diagnostics").catch(()=>this.diagnostics.record("conversation.peer-reconcile-deferred")),15_000);
     const savedAnalysis = this.readContextAnalysis();
     const recoveredAnalysis = recoverInterruptedContextAnalysis(savedAnalysis);
     if (recoveredAnalysis && recoveredAnalysis !== savedAnalysis) {

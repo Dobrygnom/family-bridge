@@ -8,6 +8,7 @@ import { replaceStateFile } from "./store.js";
 import { sanitizeSupportReport, supportErrorCode, supportId, type SupportReport } from "./support-report.js";
 import type { SupportChannel, SupportOffer } from "./support-channel.js";
 import type { RuntimeDiagnostics } from "./runtime-diagnostics.js";
+import type { ApplicationDiagnostics } from "./application-diagnostics.js";
 import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 
 export type SupportAction = "snapshot" | "diagnostics" | "update" | "maintenance" | "recover";
@@ -78,6 +79,7 @@ export class RemoteSupport {
     maintenance?: (command: SupportMaintenanceCommand) => Promise<unknown>;
     recover?: () => Promise<PairRecovery>;
     acceptRecovery?: (route: PairRecovery) => Promise<void>;
+    reconcileApplication?: (diagnostics: ApplicationDiagnostics) => Promise<void>;
     record: (event: string, code?: string) => void;
   }, private readonly now = Date.now, private readonly channel?: SupportChannel) {}
 
@@ -266,6 +268,7 @@ export class RemoteSupport {
         pending.report = report;
         await this.save("requests.json", Object.fromEntries(this.pending));
       }
+      if (report.applicationDiagnostics) await this.hooks.reconcileApplication?.(report.applicationDiagnostics);
       return;
     }
     if (r.type !== "request" || !["snapshot", "diagnostics", "update", "maintenance", "recover"].includes(r.action!)) return;

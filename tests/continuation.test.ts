@@ -51,6 +51,18 @@ test("a user continuation is durably previewed and sends only the approved edite
   } finally { await rm(f.dir, { recursive:true, force:true }); }
 });
 
+test("peer reconciliation restores a missing completed report and a longer live branch to disk", async () => {
+  const f=await fixture();
+  try {
+    await (f.service as any).reconcilePeerApplication({identity:{owner:"katya"},reports:[{id:"peer-report",parentReportId:"original-id",topic:"Звонки",summary:"Итог",completedAt:"2026-09-02T00:00:00Z",messages:[{local:true,text:"Ответ Кати"},{local:false,text:"Ответ Димы"}]}],conversations:[{id:"peer-live",parentId:"peer-report",topic:"Звонки",messages:[{from:"katya",text:"Первое"},{from:"dima",text:"Второе"},{from:"katya",text:"Третье"}]}]});
+    const state=await f.store.read();
+    assert.ok(readReportSummaries(state.reports).some(report=>report.id==="peer-report"));
+    assert.equal(state.conversationTranscripts["peer-live"].messages.length,3);
+    assert.equal(state.conversationParents["peer-live"],"peer-report");
+    assert.equal(f.sent.length,0,"reconciliation stores data but never sends dialogue");
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
 test("migrated repair automatically sends its exact saved reply with a UUID and no model call", async () => {
   const f = await fixture();
   try {
