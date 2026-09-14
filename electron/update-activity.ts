@@ -1,5 +1,5 @@
 /** Technical operation names only; never include arguments, topics or paths. */
-export const updateOperations = ['automatic_dispatch','remote_poll','remote_workers','topic_launches','continuations','owner_answers','context_sync','context_check','portraits','conversation','topic_edits','analysis_writes','portrait_queue','state_writes','save_barrier','ipc'] as const;
+export const updateOperations = ['automatic_dispatch','remote_poll','remote_workers','topic_launches','continuations','owner_answers','context_sync','context_check','portraits','conversation','topic_edits','analysis_writes','portrait_queue','state_writes','save_barrier','update_checkpoint','ipc'] as const;
 export type UpdateOperation = typeof updateOperations[number];
 export interface UpdateBlocker { operation: UpdateOperation; count: number; startedAt: number; elapsedMs: number }
 

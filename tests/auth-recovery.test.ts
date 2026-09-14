@@ -30,6 +30,14 @@ test("paired clients never replace missing or temporarily unavailable identity",
  (f.auth as any).refreshSession=async()=>({data:{session:null,user:null},error:{name:"AuthRetryableFetchError"}});
  await assert.rejects(f.transport.identity());assert.equal(f.counts().created,0);
 });
+test("an empty updater-time auth snapshot reloads the exact durable session",async()=>{
+ const key="sb-example-auth-token",saved=JSON.stringify({access_token:"access",refresh_token:"refresh"});
+ const storage={getItem:async(k:string)=>k===key?saved:null,setItem:async()=>{},removeItem:async()=>{}};
+ const transport=new SupabaseTransport("https://example.test","test","secret",storage,true);
+ let installed=false;
+ (transport as any).client.auth={getSession:async()=>({data:{session:installed?{user:{id:"old"}}:null},error:null}),getUser:async()=>({data:{user:installed?{id:"old"}:null},error:installed?null:{name:"AuthSessionMissingError"}}),setSession:async(input:any)=>{assert.deepEqual(input,{access_token:"access",refresh_token:"refresh"});installed=true;return{data:{session:{user:{id:"old"}}},error:null}},refreshSession:async()=>({data:{session:null,user:null},error:null}),signInAnonymously:async()=>assert.fail("must not create identity")};
+ assert.equal(await transport.identity(),"old");
+});
 test("expired persisted access token refreshes the same identity and coalesces concurrent recovery",async()=>{
  const f=fake();let refreshes=0;
  f.auth.getSession=async()=>({data:{session:{user:{id:"old"}}},error:null});

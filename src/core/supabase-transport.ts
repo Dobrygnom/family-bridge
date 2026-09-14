@@ -37,6 +37,7 @@ export interface PairState {
 
 export class SupabaseTransport {
   private readonly client: SupabaseClient;
+  private readonly authStorageKey?: string;
   private channel?: RealtimeChannel;
   private lastPairRefresh = 0;
   private pairRefresh?: Promise<unknown>;
@@ -46,9 +47,11 @@ export class SupabaseTransport {
     url: string,
     publishableKey: string,
     private readonly encryptionSecret: string,
-    storage?: AuthStorage,
+    private readonly storage?: AuthStorage,
     private readonly preserveIdentity = false,
   ) {
+    const project = /^https?:\/\/([a-z0-9-]+)\./i.exec(url)?.[1];
+    this.authStorageKey = project ? `sb-${project}-auth-token` : undefined;
     this.client = createClient(url, publishableKey, {
       auth: { persistSession: true, autoRefreshToken: true, storage },
       global: { fetch: (input, init) => fetch(input, { ...init,
@@ -57,8 +60,22 @@ export class SupabaseTransport {
   }
 
   async ensureAnonymousIdentity(): Promise<string> {
-    const session = await this.client.auth.getSession();
+    let session = await this.client.auth.getSession();
     if (session.error) throw session.error;
+    // An updater can start the new process while the auth SDK still holds an
+    // empty initialization snapshot. The durable storage is authoritative:
+    // re-read and install that exact session, never create a replacement user.
+    if (!session.data.session && this.storage) {
+      const saved = this.authStorageKey ? await this.storage.getItem(this.authStorageKey) : null;
+      if (saved) {
+        const value = JSON.parse(saved) as { access_token?:unknown; refresh_token?:unknown };
+        if (typeof value.access_token === "string" && typeof value.refresh_token === "string") {
+          const restored = await this.client.auth.setSession({ access_token:value.access_token, refresh_token:value.refresh_token });
+          if (restored.error) throw restored.error;
+          session = { data:{ session:restored.data.session }, error:null } as typeof session;
+        }
+      }
+    }
     const existing = await this.client.auth.getUser();
     if (existing.data.user) return existing.data.user.id;
     // getSession can still expose a persisted access/refresh-token pair while

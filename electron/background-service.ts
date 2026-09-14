@@ -45,6 +45,7 @@ import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
 import { buildApplicationDiagnostics } from "./application-diagnostics.js";
+import { createUpdateCheckpoint, recoverMissingCheckpointData } from "./update-checkpoint.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -245,6 +246,7 @@ export class BackgroundService {
   private readonly updateActivity = new UpdateActivity();
   private updating = false;
   private updateDrainStartedAt?: number;
+  private updateCheckpointForDrain?: number;
   private get automaticBusy() { return this.updateActivity.flag("automatic_dispatch"); }
   private set automaticBusy(value: boolean) { this.updateActivity.flag("automatic_dispatch", value); }
   private recoveredLegacyReplies = false;
@@ -283,9 +285,15 @@ export class BackgroundService {
     this.updateDrainStartedAt ??= Date.now();
     if (this.updateActivity.snapshot().length || this.store.updateActivity.snapshot().length) return false;
     await this.updateActivity.track("save_barrier", Promise.all([this.topicEdits, this.analysisWrites, this.portraitUpdates]).then(() => this.store.read()));
+    if (this.updateCheckpointForDrain !== this.updateDrainStartedAt) {
+      const state = await this.store.read();
+      await this.updateActivity.track("update_checkpoint", createUpdateCheckpoint(this.userData, state, this.options.appVersion ?? "development"));
+      this.updateCheckpointForDrain = this.updateDrainStartedAt;
+      this.diagnostics.record("update.checkpoint-verified");
+    }
     return this.updating;
   }
-  cancelPreparedUpdate() { this.updating = false; this.updateDrainStartedAt = undefined; }
+  cancelPreparedUpdate() { this.updating = false; this.updateDrainStartedAt = undefined; this.updateCheckpointForDrain = undefined; }
 
   private async reconcileApprovedTopics() {
     const analysis = this.readContextAnalysis();
@@ -1173,6 +1181,11 @@ export class BackgroundService {
 
   async start() {
     this.diagnostics.record("startup.begin", { version: this.options.appVersion });
+    const recovered = await recoverMissingCheckpointData(this.userData, await this.store.read());
+    if (Object.keys(recovered).length) {
+      await this.store.update(recovered);
+      this.diagnostics.record("update.checkpoint-reconciled");
+    }
     await archiveConversationHistory(this.userData, await this.store.read(), this.options.appVersion ?? "development");
     this.diagnostics.record("conversation.history-archived");
     let { state } = await this.resetExperienceOnce();
