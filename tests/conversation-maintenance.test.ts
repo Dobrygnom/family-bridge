@@ -44,7 +44,11 @@ test("restart from a local message creates a new idempotent branch and preserves
     assert.equal(payload.text,"Повторить отсюда");
     assert.deepEqual(payload.continuation.history.map((m:any)=>m.text),["Первое","Ответ"]);
     assert.equal(payload.continuation.parentReportId,f.id);
-    const state=await f.store.read();
+    let state=await f.store.read();
+    for(let i=0;i<50&&state.continuations[operationId].status!=="waiting";i++) {
+      await new Promise(resolve=>setTimeout(resolve,10));
+      state=await f.store.read();
+    }
     assert.equal(state.continuations[operationId].status,"waiting");
     assert.equal(state.conversationParents[operationId],f.id);
     assert.equal((await f.service.restartConversationFromMessage(f.id,2,operationId)).repeated,true);

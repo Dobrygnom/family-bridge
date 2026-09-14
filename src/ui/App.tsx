@@ -41,6 +41,7 @@ import { TopicRefinementRequest } from "./TopicRefinementRequest.js";
 import { loadSavedState } from "./load-state.js";
 import { topicNeedsReview, topicRelevanceLabel } from "../core/topic-review.js";
 import { shareableTopicBrief, topicKey } from "../core/conversation-quality.js";
+import { clearRecoveredConnectionError } from "./connection-error.js";
 
 const fallback: AppState = {
   owner: "dima",
@@ -304,6 +305,7 @@ export function App() {
       void loadSavedState(() => api.getState()).then((next) => {
       if (!active || request !== sequence) return;
       setState(next);
+      setError((current) => clearRecoveredConnectionError(current, next.remote.connected));
       setLoaded(true);
       setLoadFailed(false);
       setLanguage(next.language);
@@ -328,7 +330,11 @@ export function App() {
       if (versionEvent.type === "peer-version-check") setState((current) => ({ ...current, remote: { ...current.remote, peerVersionCheck: versionEvent.peerVersionCheck } }));
       const healthEvent = raw as { type?: string; codex?: AppState["codex"]; connected?: boolean };
       if (healthEvent.type === "continuation-updated") refreshState();
-      if (healthEvent.type === "health" && healthEvent.codex) setState((current) => ({ ...current, codex: healthEvent.codex!, remote: { ...current.remote, connected: Boolean(healthEvent.connected) } }));
+      if (healthEvent.type === "health" && healthEvent.codex) {
+        const connected = Boolean(healthEvent.connected);
+        setState((current) => ({ ...current, codex: healthEvent.codex!, remote: { ...current.remote, connected } }));
+        setError((current) => clearRecoveredConnectionError(current, connected));
+      }
       const event = raw as { type?: string; available?: boolean; version?: string; checking?: boolean; downloading?: boolean; ready?: boolean; error?: string; peerName?: string; peerVersion?: string; peerLastSeenAt?: string; context?: AppState["context"]; analysis?: AppState["contextAnalysis"]; topics?: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: AppState["topicSources"]; reports?: string[]; reportSummaries?: AppState["reportSummaries"]; questions?: AppState["ownerQuestions"]; running?: boolean; syncing?: boolean; updating?: boolean; progress?: number };
       if (event.type === "peer") setState((current) => ({ ...current, remote: { ...current.remote, ...(event.peerName ? { peerName: event.peerName } : {}), ...(event.peerVersion ? { peerVersion: event.peerVersion } : {}), ...(event.peerLastSeenAt ? { peerLastSeenAt: event.peerLastSeenAt } : {}) } }));
       if (event.type === "context" && event.context) setState((current) => ({ ...current, context: event.context }));
