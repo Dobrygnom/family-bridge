@@ -5,6 +5,7 @@ import electronUpdater from "electron-updater";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { BackgroundService } from "./background-service.js";
 import { MacReleaseUpdater, type UpdateState } from "./mac-updater.js";
 import { exportReportFiles, revealInWindowsExplorer } from "./open-directory.js";
@@ -204,17 +205,20 @@ function checkForUpdates() {
 let serviceReady = false;
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
-  // NSIS force-launches the installed executable inside its own hand-off. A
-  // second clean launch is the first one with normal process ownership; never
-  // initialize storage, UI or auth in the transient launch.
+  // NSIS force-launches the installed executable inside its own hand-off.
+  // app.relaunch() starts its successor before this transient process has fully
+  // released Windows/Electron state, and that successor repeatedly reproduced
+  // an AUTH failure despite intact credentials. A detached system helper waits
+  // for the hand-off process to be completely gone, then performs the same
+  // cold launch that has been verified to restore the saved connection.
   if (process.platform === "win32" && process.argv.includes("--updated")) {
-    app.relaunch({ args: [...process.argv.slice(1).filter(arg => arg !== "--updated"), "--update-settled"] });
+    const command = "$exe=$env:FAMILY_BRIDGE_RELAUNCH_EXE; Start-Sleep -Seconds 5; Start-Process -FilePath $exe -WindowStyle Hidden";
+    const helper = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], {
+      detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, FAMILY_BRIDGE_RELAUNCH_EXE: process.execPath },
+    });
+    helper.unref();
     app.exit(0);
     return;
-  }
-  const updateSettledLaunch = process.platform === "win32" && process.argv.includes("--update-settled");
-  if (updateSettledLaunch) {
-    await new Promise(resolve => setTimeout(resolve, 8_000));
   }
   const store = new AtomicStore(app.getPath("userData"));
   const uiErrors = new UiErrorDiagnostics(app.getPath("userData"));
@@ -252,22 +256,6 @@ app.whenReady().then(async () => {
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'before-start');
   await service.start();
   service.diagnostics.snapshotProfile(app.getPath('userData'), 'after-start');
-  // electron-updater's force-launched Windows process can retain a transient
-  // installer context even after NSIS has exited. The durable credentials and
-  // pair are intact, but Supabase may reject every request until a normal app
-  // process starts (the same reason a manual Ctrl+R never reliably fixed it,
-  // while a cold app restart did). Recover once, only for this marked launch,
-  // and never mutate auth, pairing, drafts, or conversation state.
-  if (updateSettledLaunch) {
-    setTimeout(() => {
-      const connection = service.connectionDiagnostic();
-      if (connection.connected || connection.code !== "AUTH" || updateInstallIsQuitting) return;
-      service.diagnostics.record("updater.auth-cold-relaunch");
-      isQuitting = true;
-      app.relaunch({ args: process.argv.slice(1).filter(arg => arg !== "--update-settled") });
-      app.exit(0);
-    }, 15_000).unref();
-  }
   void startSupportControl(app.getPath("userData"), service.support, {
       diagnostics: () => ({ schema: 1, at: new Date().toISOString(), bootId: service.diagnostics.bootId, version: app.getVersion(), update: service.updateDiagnostics(), gate: updateGate?.snapshot(), ipc: [...activeChannels.values()].map(row => ({ ...row, elapsedMs: Math.max(0, Date.now() - row.startedAt) })), rendererBlocked: rendererUpdateBlocked, rendererReason: rendererUpdateReason }),
       applicationDiagnostics: () => service.applicationDiagnostics(),

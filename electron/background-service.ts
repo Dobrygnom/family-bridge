@@ -772,10 +772,6 @@ export class BackgroundService {
     this.emit({ type: "update", ...update });
   }
 
-  connectionDiagnostic() {
-    return { connected: Date.now() - this.lastPollAt < 30_000 && !this.lastPollCode, code: this.lastPollCode };
-  }
-
   async listContextThreads() {
     const codex = new CodexHistoryClient(defaultCodexCommand());
     const localThreads = await codex.listThreads();
