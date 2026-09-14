@@ -404,6 +404,7 @@ export class BackgroundService {
   readonly support: RemoteSupport;
   private lastPollCode?: string;
   private lastPollAt = 0;
+  private lastAuthTransportRefreshAt = 0;
   private inboxProgress = { received: 0, service: 0, dialogue: 0, staleService: 0, lastReceivedAt: 0, lastDialogueAt: 0 };
   private readonly startedAt = Date.now();
   private healthCheck?: Promise<void>;
@@ -1892,6 +1893,19 @@ export class BackgroundService {
       if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
       this.lastPollCode = code;
       this.emit({ type: "error", error: errorMessage(error) });
+      // During an installer hand-off the new process can initialize Supabase
+      // while the old process is still finishing its auth-storage write. A
+      // cold restart proves the durable session is intact; refresh only this
+      // disposable client so the next poll rereads it. Pair and app state stay
+      // untouched. Bound retries so a genuinely broken credential cannot spin.
+      if (code === "AUTH" && this.remote instanceof RecoveryTransport && Date.now() - this.lastAuthTransportRefreshAt >= 10_000) {
+        this.lastAuthTransportRefreshAt = Date.now();
+        const latest = await this.store.read();
+        if (latest.remote?.recoveryRoute) {
+          this.configureRemote(latest.remote.encryptionSecret, true, latest);
+          this.diagnostics.record("connection.auth-client-refreshed");
+        }
+      }
     }
     finally { this.diagnostics.runtime.end("dialogue"); this.remoteBusy = false; void this.automaticWork().catch(() => this.diagnostics.record("automatic.retry-pending")); }
   }
