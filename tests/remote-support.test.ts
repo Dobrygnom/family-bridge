@@ -47,6 +47,28 @@ test("repair decisions never use stale or differently bound peer reports", async
   } finally {await f.cleanup();}
 });
 
+test("loading durable peer evidence reconciles it before support starts", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fb-support-load-"));
+  const pairId = randomUUID(), observed: SupportReport[] = [];
+  const saved = { pairId, receivedAt: new Date(now).toISOString(), report: {
+    ...report(), status: { version: "1.2.61", configured: true },
+    dialogueDiagnostics: { owner: "katya", pairId, repairs: [], conversations: [] },
+  } };
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "peer.json"), JSON.stringify(saved));
+    const support = new RemoteSupport(dir, {
+      context: async () => undefined,
+      snapshot: async () => report(), update: () => {}, record: () => {},
+      observePeerReport: async value => { observed.push(value); },
+    });
+    await support.loadDurableState();
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].status.version, "1.2.61");
+    assert.equal(observed[0].dialogueDiagnostics?.pairId, pairId);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("authenticated support recovery returns a bounded replacement route", async () => {
   const f=await fixture();
   const route:PairRecovery={version:1,logicalPairId:randomUUID(),transportPairId:randomUUID(),creatorAuthId:randomUUID(),creatorAgent:"dima",inviteSecret:"a".repeat(43)};

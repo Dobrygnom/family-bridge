@@ -80,6 +80,7 @@ export class RemoteSupport {
     recover?: () => Promise<PairRecovery>;
     acceptRecovery?: (route: PairRecovery) => Promise<void>;
     reconcileApplication?: (diagnostics: ApplicationDiagnostics) => Promise<void>;
+    observePeerReport?: (report: SupportReport) => Promise<void>;
     record: (event: string, code?: string) => void;
   }, private readonly now = Date.now, private readonly channel?: SupportChannel) {}
 
@@ -96,6 +97,8 @@ export class RemoteSupport {
     return this.latest?.pairId === this.context?.pairId && this.latest && fresh(this.latest.report.at, this.now(), 90_000)
       ? this.latest.report : undefined;
   }
+  /** Reconcile durable support evidence before the renderer receives its first state. */
+  async loadDurableState() { await this.load(); }
 
   private async resolveContext() {
     // A broken support credential must not hide a still-working primary path.
@@ -131,7 +134,10 @@ export class RemoteSupport {
     try {
       const old = JSON.parse(await readFile(path.join(this.directory, "peer.json"), "utf8"));
       const report = sanitizeSupportReport(old.report);
-      if (report && typeof old.pairId === "string") this.latest = { pairId: old.pairId, receivedAt: old.receivedAt, report };
+      if (report && typeof old.pairId === "string") {
+        this.latest = { pairId: old.pairId, receivedAt: old.receivedAt, report };
+        await this.hooks.observePeerReport?.(report);
+      }
     } catch { /* A cached peer report is optional. */ }
     try {
       const saved = JSON.parse(await readFile(path.join(this.directory, "requests.json"), "utf8"));
@@ -257,6 +263,7 @@ export class RemoteSupport {
         this.latest = { pairId: c.pairId, receivedAt: new Date(this.now()).toISOString(), report };
         await this.save("peer.json", this.latest);
       }
+      await this.hooks.observePeerReport?.(report);
       const pending = r.replyTo && this.pending.get(r.replyTo);
       if (pending && pending.pairId === c.pairId && fresh(pending.requestedAt, this.now()) && pending.report?.at !== report.at) {
         let accepted = r.outcome === "accepted";

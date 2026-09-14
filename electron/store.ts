@@ -89,8 +89,10 @@ export interface StoredState {
     inviteSecret?: string;
     peerName?: string;
     peerVersion?: string;
+    peerVersionObservedAt?: string;
     peerExperienceVersion?: string;
     peerLastSeenAt?: string;
+    peerPresenceAt?: string;
     counterpartPersonId?: string;
     recoveryRoute?: PairRecovery;
   };

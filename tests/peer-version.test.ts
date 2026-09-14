@@ -244,7 +244,21 @@ test("old probe replies cannot complete a new request; malformed versions are no
   } finally { await f.cleanup(); }
 });
 
-test("presence requires a fresh matching response, expires, and is not restored from an old saved version", async () => {
+test("an older queued version observation cannot replace newer durable truth", async () => {
+  const f = await fixture();
+  try {
+    const newer = "2026-09-14T12:00:00.000Z";
+    const older = "2026-09-13T12:00:00.000Z";
+    await (f.service as any).receivePeerVersion({ kind: "topic", topic: "new", versionOnly: true, senderVersion: "1.2.61" }, "pair", newer);
+    await (f.service as any).receivePeerVersion({ kind: "topic", topic: "old", versionOnly: true, senderVersion: "1.2.42" }, "pair", older);
+    const remote = (await f.store.read()).remote!;
+    assert.equal(remote.peerVersion, "1.2.61");
+    assert.equal(remote.peerVersionObservedAt, newer);
+    assert.equal(remote.peerLastSeenAt, newer);
+  } finally { await f.cleanup(); }
+});
+
+test("presence requires a fresh matching response, expires, and is restored from durable evidence", async () => {
   const f = await fixture();
   try {
     await f.service.requestPeerVersionCheck();
@@ -262,7 +276,7 @@ test("presence requires a fresh matching response, expires, and is not restored 
     assert.equal(peerIsOnline(undefined), false);
     assert.equal(peerIsOnline("invalid"), false);
     const reopened = new BackgroundService(f.dir, process.cwd(), f.store, () => null, undefined, { backgroundTasks: false });
-    assert.equal((await reopened.state()).remote.peerPresenceAt, undefined);
+    assert.equal((await reopened.state()).remote.peerPresenceAt, snapshot.remote.peerPresenceAt);
     const html = renderToStaticMarkup(createElement(PeerVersionControl, { state: snapshot as AppState, language: "ru", onCheck: () => {} }));
     assert.match(html, /Приложение в сети/);
   } finally { await f.cleanup(); }

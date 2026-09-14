@@ -490,6 +490,7 @@ export class BackgroundService {
       recover: () => this.createRecoveryRoute(),
       acceptRecovery: route => this.acceptRecoveryRoute(route),
       reconcileApplication: diagnostics => this.reconcilePeerApplication(diagnostics),
+      observePeerReport: report => this.persistPeerObservation(report),
       record: (event, code) => this.diagnostics.record(event, { code }),
     }, Date.now, this.options.backgroundTasks === false ? undefined : new SupportChannel(path.join(userData, "support-channel"),
       (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
@@ -500,6 +501,25 @@ export class BackgroundService {
     const state = await this.store.read();
     const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
     return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.());
+  }
+
+  private async persistPeerObservation(report: SupportReport) {
+    const version = validPeerVersion(report.status.version), dialogue = report.dialogueDiagnostics;
+    const observedAt = report.at;
+    if (!version || !dialogue?.pairId || !Number.isFinite(Date.parse(observedAt))) return;
+    let accepted = false;
+    const next = await this.store.mutate(current => {
+      if (!current.remote || current.remote.pairId !== dialogue.pairId || dialogue.owner === current.owner) return {};
+      const previousAt = current.remote.peerVersionObservedAt ?? current.remote.peerLastSeenAt;
+      if (previousAt && Date.parse(previousAt) >= Date.parse(observedAt)) return {};
+      accepted = true;
+      return { remote: { ...current.remote, peerVersion: version, peerVersionObservedAt: observedAt,
+        peerLastSeenAt: observedAt, peerPresenceAt: observedAt } };
+    });
+    if (accepted && next.remote?.pairId === dialogue.pairId && next.remote.peerVersion === version) {
+      this.emit({ type: "peer", peerName: next.remote.peerName, peerVersion: version, peerLastSeenAt: next.remote.peerLastSeenAt });
+      this.windowProvider()?.webContents.send("bridge:event", { type: "peer-presence", peerPresenceAt: next.remote.peerPresenceAt });
+    }
   }
 
   private async reconcilePeerApplication(diagnostic: ApplicationDiagnostics) {
@@ -680,7 +700,10 @@ export class BackgroundService {
     const ownerQuestions = this.publicOwnerQuestions(pendingOwnerQuestions);
     const reportSummaries = conversationState.reportSummaries;
     const dialogueCompatible = !this.options.experienceResetVersion || stored.remote?.peerExperienceVersion === this.options.experienceResetVersion;
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt: this.peerPresence?.pairId === stored.remote?.pairId ? this.peerPresence?.at : undefined, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    const runtimePresenceAt = this.peerPresence && this.peerPresence.pairId === stored.remote?.pairId ? this.peerPresence.at : undefined;
+    const persistedPresenceAt = stored.remote?.peerPresenceAt;
+    const peerPresenceAt = runtimePresenceAt && (!persistedPresenceAt || Date.parse(runtimePresenceAt) > Date.parse(persistedPresenceAt)) ? runtimePresenceAt : persistedPresenceAt;
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerVersionObservedAt: stored.remote?.peerVersionObservedAt, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
@@ -1227,6 +1250,9 @@ export class BackgroundService {
       await this.store.update(recovered);
       this.diagnostics.record("update.checkpoint-reconciled");
     }
+    // The durable peer report may be newer than legacy fields in state.json.
+    // Reconcile it before any renderer can observe the startup state.
+    await this.support.loadDurableState();
     await archiveConversationHistory(this.userData, await this.store.read(), this.options.appVersion ?? "development");
     this.diagnostics.record("conversation.history-archived");
     let { state } = await this.resetExperienceOnce();
@@ -1762,19 +1788,23 @@ export class BackgroundService {
     });
   }
 
-  private async receivePeerVersion(payload: TopicPayload | DialoguePayload, pairId: string) {
+  private async receivePeerVersion(payload: TopicPayload | DialoguePayload, pairId: string, observedAt = new Date().toISOString()) {
     const version = validPeerVersion(payload.senderVersion);
     if (!version) return;
-    const peerLastSeenAt = new Date().toISOString();
+    const peerLastSeenAt = Number.isFinite(Date.parse(observedAt)) ? observedAt : new Date().toISOString();
     const peerExperienceVersion = typeof payload.experienceVersion === "string" ? payload.experienceVersion : undefined;
     let becameCompatible = false;
+    let accepted = false;
     const next = await this.store.mutate((current) => {
       if (current.remote?.pairId !== pairId) return {};
+      const previousAt = current.remote.peerVersionObservedAt ?? current.remote.peerLastSeenAt;
+      if (previousAt && Date.parse(previousAt) > Date.parse(peerLastSeenAt)) return {};
+      accepted = true;
       becameCompatible = current.remote.peerExperienceVersion !== this.options.experienceResetVersion
         && peerExperienceVersion === this.options.experienceResetVersion;
-      return { remote: { ...current.remote, peerVersion: version, peerExperienceVersion, peerLastSeenAt, peerName: payload.senderName?.trim() || current.remote.peerName } };
+      return { remote: { ...current.remote, peerVersion: version, peerVersionObservedAt: peerLastSeenAt, peerExperienceVersion, peerLastSeenAt, peerName: payload.senderName?.trim() || current.remote.peerName } };
     });
-    if (next.remote?.pairId !== pairId) return;
+    if (!accepted || next.remote?.pairId !== pairId) return;
     this.emit({ type: "peer", peerName: next.remote.peerName, peerVersion: version, peerLastSeenAt });
     this.diagnostics.record("peer-version.received", { version });
     if (becameCompatible) this.syncedTopicsForPair = undefined;
@@ -1785,6 +1815,7 @@ export class BackgroundService {
       // response to our current challenge can turn the online indicator green.
       if (age >= 0 && age <= PEER_VERSION_TIMEOUT_MS) {
         this.peerPresence = { pairId, at: peerLastSeenAt };
+        await this.store.mutate(current => current.remote?.pairId === pairId ? { remote: { ...current.remote, peerPresenceAt: peerLastSeenAt } } : {});
         this.windowProvider()?.webContents.send("bridge:event", { type: "peer-presence", peerPresenceAt: peerLastSeenAt });
       }
       this.publishPeerVersionCheck("received");
@@ -2031,7 +2062,7 @@ export class BackgroundService {
           await this.remote.acknowledge(envelope.id);
           return;
         }
-        if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
+        if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId, envelope.created_at);
         if (envelope.payload.kind === "topic" && (envelope.payload.requestVersion || envelope.payload.requestUpdateCheck)) {
           if (!envelope.payload.requestVersion) this.options.requestUpdateCheck?.();
           await this.shareTopicToPair(envelope.payload.topic, await this.store.read(), pair, true, false);
@@ -2039,7 +2070,7 @@ export class BackgroundService {
         await this.remote.acknowledge(envelope.id);
         return;
       }
-      if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId);
+      if (!envelope.historicalDelivery) await this.receivePeerVersion(envelope.payload, stored.remote.pairId, envelope.created_at);
       if (this.options.experienceResetVersion && envelope.payload.experienceVersion !== this.options.experienceResetVersion && !isKnownLegacyReply(stored, envelope, this.options.experienceResetVersion)) {
         this.diagnostics.record("dialogue.incompatible-version");
         await this.remote.acknowledge(envelope.id);
