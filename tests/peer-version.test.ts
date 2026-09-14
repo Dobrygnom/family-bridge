@@ -314,7 +314,7 @@ test("continuation itself exposes version checking and a clear block reason with
     assert.match(html, /Проверить версию собеседника/);
     assert.match(html, /preserved draft/);
     assert.match(html, /Ваш текст не отправлен/);
-    assert.match(html, /disabled="">Продолжить разговор/);
+    assert.match(html, /disabled="">Подготовить реплику/);
   } finally {
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else Reflect.deleteProperty(globalThis, "window");
     if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage); else Reflect.deleteProperty(globalThis, "localStorage");

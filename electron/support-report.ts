@@ -111,7 +111,7 @@ function continuationDiagnostics(value: unknown): Fields[] {
     const safe: Fields = { id: row.id, parentId: row.parentId };
     for (const key of ["prepared", "completed", "active", "ownerQuestion", "connectivityRetryUsed"]) if (typeof row[key] === "boolean") safe[key] = row[key];
     for (const key of ["attempts", "messages"]) if (Number.isSafeInteger(row[key]) && row[key] >= 0) safe[key] = row[key];
-    for (const [key, values] of Object.entries({ mode: ["restart", "clean-continuation", "continuation"], status: ["starting", "waiting", "complete", "error"], failureKind: ["unsafe", "connection", "generation", "delivery"], failureCode: [...codes] })) {
+    for (const [key, values] of Object.entries({ mode: ["restart", "clean-continuation", "continuation"], status: ["starting", "preview", "waiting", "complete", "error"], failureKind: ["unsafe", "connection", "generation", "delivery"], failureCode: [...codes] })) {
       if (typeof row[key] === "string" && values.includes(row[key])) safe[key] = row[key];
     }
     return [safe];

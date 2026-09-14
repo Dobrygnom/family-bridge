@@ -25,7 +25,9 @@ export interface ConversationContinuation {
   pairId: string;
   instruction: string;
   history: SharedMessage[];
-  status: "starting" | "waiting" | "complete" | "error";
+  status: "starting" | "preview" | "waiting" | "complete" | "error";
+  approvalRequired?: boolean;
+  approvedAt?: string;
   preparedMessage?: string;
   preparedSentAt?: string;
 }

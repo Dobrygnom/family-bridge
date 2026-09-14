@@ -204,13 +204,14 @@ function checkForUpdates() {
 let serviceReady = false;
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
-  // NSIS can force-launch the new executable a few seconds before its own
-  // process exits. Starting two Supabase auth runtimes in that overlap races
-  // refresh-token initialization and leaves the new app falsely disconnected
-  // until a manual restart. Keep the UI and all transports closed until the
-  // updater hand-off has settled.
+  // NSIS force-launches the installed executable inside its own hand-off. A
+  // second clean launch is the first one with normal process ownership; never
+  // initialize storage, UI or auth in the transient launch.
   if (process.platform === "win32" && process.argv.includes("--updated")) {
-    await new Promise(resolve => setTimeout(resolve, 8_000));
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+    app.relaunch({ args: [...process.argv.slice(1).filter(arg => arg !== "--updated"), "--update-settled"] });
+    app.exit(0);
+    return;
   }
   const store = new AtomicStore(app.getPath("userData"));
   const uiErrors = new UiErrorDiagnostics(app.getPath("userData"));
@@ -367,6 +368,7 @@ app.whenReady().then(async () => {
   handle("bridge:discuss-all-topics", () => service.discussAllTopics());
   handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
   handle("bridge:continue-report", (_event, input: unknown) => service.continueReport(input));
+  handle("bridge:approve-continuation", (_event, input: unknown) => service.approveContinuation(input));
   handle("bridge:retry-continuation", (_event, id: unknown) => service.retryContinuation(id));
   const trustedDictationSender = (event: IpcMainInvokeEvent) => event.sender === mainWindow?.webContents && event.senderFrame === mainWindow?.webContents.mainFrame;
   handle("bridge:request-microphone", async (event) => {

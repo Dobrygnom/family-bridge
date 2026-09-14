@@ -33,6 +33,24 @@ async function fixture() {
   return { dir, report, store, service, sent, transport };
 }
 
+test("a user continuation is durably previewed and sends only the approved edited text", async () => {
+  const f = await fixture();
+  try {
+    (f.service as any).localRemoteAgent = () => ({ start: async () => response("Черновик агента") });
+    await f.service.continueReport({ reportId:"original-id", requestId:"preview-request", prompt:"Уточни смысл", preview:true });
+    await until(async () => (await f.store.read()).continuations["preview-request"]?.status === "preview");
+    const prepared = await f.store.read();
+    assert.equal(prepared.continuations["preview-request"].preparedMessage, "Черновик агента");
+    assert.equal(f.sent.length, 0);
+    const visible = await f.service.state();
+    assert.equal(visible.continuationStates?.find(item=>item.id==="preview-request")?.previewText, "Черновик агента");
+    await f.service.approveContinuation({ id:"preview-request", text:"Отредактированная реплика" });
+    await until(async () => (await f.store.read()).continuations["preview-request"]?.status === "waiting");
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].payload.text, "Отредактированная реплика");
+  } finally { await rm(f.dir, { recursive:true, force:true }); }
+});
+
 test("migrated repair automatically sends its exact saved reply with a UUID and no model call", async () => {
   const f = await fixture();
   try {

@@ -25,7 +25,7 @@ export interface AppState {
   reports: string[];
   reportSummaries: Array<{ id: string; parentReportId?: string; restarted?: boolean; inheritedMessageCount?: number; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completionState?: "completed" | "needs_follow_up"; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./core/continuation.js").MessageOrigin; sentAt?: string }> }>;
   ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
-  continuationStates?: Array<{ id: string; parentReportId: string; mode?: "restart" | "clean-continuation"; status: "starting" | "waiting" | "complete" | "error" }>;
+  continuationStates?: Array<{ id: string; parentReportId: string; mode?: "restart" | "clean-continuation"; status: "starting" | "preview" | "waiting" | "complete" | "error"; previewText?: string }>;
   conversationRevision?: number;
   repairPendingIds?: string[];
   repairWaiting?: Record<string, "peer" | "version" | "active" | "queued">;
@@ -84,7 +84,8 @@ declare global {
       updateContextTopics(input: { topicIds: string[]; approved: boolean }): Promise<AppState>;
       runRemote(topic: string): Promise<void>;
       discussAllTopics(): Promise<AppState>;
-      continueReport(input: { reportId: string; requestId: string; prompt: string }): Promise<AppState>;
+      continueReport(input: { reportId: string; requestId: string; prompt: string; preview?: boolean }): Promise<AppState>;
+      approveContinuation(input: { id: string; text: string }): Promise<AppState>;
       retryContinuation(id: string): Promise<AppState>;
       answerOwnerQuestion(input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }): Promise<AppState>;
       requestMicrophone(): Promise<boolean>;

@@ -670,7 +670,8 @@ export class BackgroundService {
     });
     return { conversationRevision: this.conversationRevision, topicBriefs: stored.topicBriefs, reports: stored.reports, reportSummaries, liveConversations,
       repairPendingIds: repairs.map(candidate => candidate.rootId), repairWaiting,
-      continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, mode: value.mode, status: completed.has(id) ? "complete" as const : value.status })) };
+      continuationStates: Object.entries(stored.continuations).map(([id, value]) => ({ id, parentReportId: value.parentReportId, mode: value.mode, status: completed.has(id) ? "complete" as const : value.status,
+        ...(value.status === "preview" && value.preparedMessage ? { previewText:value.preparedMessage } : {}) })) };
   }
 
   private dialogueDiagnostics(state: StoredState) {
@@ -1416,7 +1417,7 @@ export class BackgroundService {
 
   async continueReport(input: unknown, connectivityRetry = false) {
     if (this.updating) throw new Error("Устанавливаем обновление. Черновик сохранён; попробуйте через несколько секунд.");
-    const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown; restart?: unknown } | null;
+    const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown; restart?: unknown; preview?: unknown } | null;
     if (typeof value?.reportId !== "string" || typeof value.requestId !== "string" || !/^[a-z0-9-]{8,80}$/i.test(value.requestId) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 8_000) throw new Error("Введите уточнение до 8000 символов");
     let reportId = value.reportId;
     const { requestId } = value;
@@ -1453,7 +1454,7 @@ export class BackgroundService {
       const started = await this.store.mutate((current) => {
         if (inProgress(current)) throw new Error("Этот разговор уже продолжается");
         return {
-        continuations: { ...current.continuations, [requestId]: { ...existing, mode, connectivityRetryUsed: existing?.connectivityRetryUsed || connectivityRetry, failureKind: undefined, failureCode: undefined, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
+        continuations: { ...current.continuations, [requestId]: { ...existing, mode, approvalRequired:existing?.approvalRequired || value.preview === true, connectivityRetryUsed: existing?.connectivityRetryUsed || connectivityRetry, failureKind: undefined, failureCode: undefined, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
         conversationParents: { ...current.conversationParents, [requestId]: reportId },
         conversationModes: mode ? { ...current.conversationModes, [requestId]: mode } : current.conversationModes,
       }; });
@@ -1503,6 +1504,12 @@ export class BackgroundService {
       text = response.message_to_peer.trim();
       if (!text) throw new Error("Empty continuation");
       await this.store.mutate((current) => ({ continuations: { ...current.continuations, [id]: { ...current.continuations[id], preparedMessage: text, preparedSentAt: current.continuations[id].preparedSentAt ?? new Date().toISOString() } } }));
+    }
+    const prepared = (await this.store.read()).continuations[id];
+    if (prepared.approvalRequired && !prepared.approvedAt) {
+      await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:undefined,failureCode:undefined,status:"preview"}}}));
+      this.diagnostics.record("continuation.preview-ready");
+      return;
     }
     await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:"delivery"}}}));
     const current = await this.store.read();
@@ -1757,6 +1764,21 @@ export class BackgroundService {
     this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
     void this.pumpRemote();
     return this.remote;
+  }
+
+  async approveContinuation(input: unknown) {
+    if (this.updating) throw new Error("Устанавливаем обновление. Подготовленная реплика сохранена.");
+    const value=input as {id?:unknown;text?:unknown}|null;
+    if(typeof value?.id!=="string" || typeof value.text!=="string" || !value.text.trim() || value.text.length>8_000) throw new Error("Проверьте текст до 8000 символов");
+    const state=await this.store.read(), request=state.continuations[value.id];
+    if(!request || !request.approvalRequired || !request.preparedMessage) throw new Error("Подготовленная реплика не найдена");
+    if(request.status==="waiting" || request.status==="complete") return this.state();
+    await this.store.mutate(current=>({continuations:{...current.continuations,[value.id as string]:{...current.continuations[value.id as string],preparedMessage:(value.text as string).trim(),approvedAt:new Date().toISOString(),status:"starting"}}}));
+    this.continuing.add(value.id);
+    void this.processContinuation(value.id).catch(async error=>{
+      await this.store.mutate(current=>({continuations:{...current.continuations,[value.id as string]:{...current.continuations[value.id as string],failureCode:supportErrorCode(error),retryAt:Date.now()+60_000,status:"error"}}}));
+    }).finally(async()=>{this.continuing.delete(value.id as string);this.publishConversations(await this.store.read());});
+    return this.state();
   }
 
   private async createRecoveryRoute(): Promise<PairRecovery> {
