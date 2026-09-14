@@ -31,6 +31,10 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
   const request = latestRequest?.mode === "restart" ? undefined : latestRequest;
   const pending = latestRequest?.status === "starting" || latestRequest?.status === "waiting";
   useEffect(() => { try { localStorage.setItem(key, draft); } catch { setError(t.saveError); } }, [key, draft, t.saveError]);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("family-bridge:draft-state", { detail: { key, active: Boolean(draft.trim()) } }));
+    return () => { window.dispatchEvent(new CustomEvent("family-bridge:draft-state", { detail: { key, active: false } })); };
+  }, [key, draft]);
   async function send(retry = false) {
     const api = window.familyBridge;
     if (!api || busy || dictationBusy || recording || pending || conversationBusy) return;

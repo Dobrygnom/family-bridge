@@ -128,6 +128,11 @@ export function App() {
   const [showAllReviewTopics, setShowAllReviewTopics] = useState(false);
   const [selectedPortraitId, setSelectedPortraitId] = useState("owner");
   const [editingObservationId, setEditingObservationId] = useState("");
+  const initialConversationDraftKeys = useMemo(() => { try {
+    return new Set(Object.keys(localStorage).filter(key => (key.startsWith("family-bridge-thread-draft-v2:") || key.startsWith("family-bridge-report-draft-v1:")) && Boolean(localStorage.getItem(key)?.trim())));
+  } catch { return new Set<string>(); } }, []);
+  const [conversationDraftActive, setConversationDraftActive] = useState(initialConversationDraftKeys.size > 0);
+  const conversationDraftKeys = useRef(initialConversationDraftKeys);
   const [observationDraft, setObservationDraft] = useState("");
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("family-bridge-language") as Language) || "ru");
@@ -294,8 +299,20 @@ export function App() {
   }, [ownerAnswers, attentionText.draftError]);
 
   useEffect(() => {
-    void api?.setUpdateBlocked?.(Boolean(newTopicActive || activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim()), activeDictation ? "dictation" : editingTopicId || inviteCode.trim() ? "editing" : "activity").catch(() => undefined);
-  }, [newTopicActive, activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode]);
+    void api?.setUpdateBlocked?.(Boolean(newTopicActive || activeDictation || busy || editingTopicId || refiningTopicId || savingTopicId || answeringQuestionId || inviteCode.trim() || conversationDraftActive), activeDictation ? "dictation" : editingTopicId || inviteCode.trim() || conversationDraftActive ? "editing" : "activity").catch(() => undefined);
+  }, [newTopicActive, activeDictation, busy, editingTopicId, refiningTopicId, savingTopicId, answeringQuestionId, inviteCode, conversationDraftActive]);
+
+  useEffect(() => {
+    const trackDraft = (event: Event) => {
+      const detail = (event as CustomEvent<{ key?: unknown; active?: unknown }>).detail;
+      if (typeof detail?.key !== "string") return;
+      if (detail.active) conversationDraftKeys.current.add(detail.key);
+      else conversationDraftKeys.current.delete(detail.key);
+      setConversationDraftActive(conversationDraftKeys.current.size > 0);
+    };
+    window.addEventListener("family-bridge:draft-state", trackDraft);
+    return () => window.removeEventListener("family-bridge:draft-state", trackDraft);
+  }, []);
   useEffect(() => {
     let active = true;
     let sequence = 0;
