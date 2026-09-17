@@ -419,6 +419,8 @@ export class BackgroundService {
   readonly diagnostics: Diagnostics;
   readonly support: RemoteSupport;
   private lastPollCode?: string;
+  private authRecoveryPending = false;
+  private authRecoveryRequestedAt = 0;
   private lastPollAt = 0;
   private lastAuthTransportRefreshAt = 0;
   private inboxProgress = { received: 0, service: 0, dialogue: 0, staleService: 0, lastReceivedAt: 0, lastDialogueAt: 0 };
@@ -658,7 +660,7 @@ export class BackgroundService {
         continuations: Object.entries(state.continuations).filter(([id, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
         configured: Boolean(state.remote), connected: Date.now() - this.lastPollAt < 30_000 && !this.lastPollCode,
-        recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode,
+        recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode === "AUTH" && this.authRecoveryPending ? undefined : this.lastPollCode,
         codexChecked: Boolean(this.healthCheckedAt), codexInstalled: this.health.installed, codexAuthenticated: this.health.authenticated,
         codexVersion: this.health.version, healthAgeSeconds: this.healthCheckedAt ? Math.floor((Date.now() - this.healthCheckedAt) / 1000) : undefined },
       update: { ...this.updateState, error: Boolean(this.updateState.error) },
@@ -1987,6 +1989,7 @@ export class BackgroundService {
       this.lastPollAt = Date.now();
       if (this.lastPollCode) this.diagnostics.record("connection.poll-ready");
       this.lastPollCode = undefined;
+      this.authRecoveryPending = false;
       if (this.versionProbePair !== topicSyncKey) {
         this.versionProbePair = topicSyncKey;
         this.beginPeerVersionCheck(stored);
@@ -2018,7 +2021,15 @@ export class BackgroundService {
       this.diagnostics.runtime.fail("dialogue", code);
       if (code !== this.lastPollCode) this.diagnostics.record("connection.poll-failed", { code });
       this.lastPollCode = code;
-      this.emit({ type: "error", error: errorMessage(error) });
+      if (code === "AUTH") {
+        this.authRecoveryPending = true;
+        if (Date.now() - this.authRecoveryRequestedAt >= 5 * 60_000) {
+          this.authRecoveryRequestedAt = Date.now();
+          void this.support.request("recover")
+            .then(result => this.diagnostics.record("connection.recovery-requested", { code: result.status }))
+            .catch(() => { this.authRecoveryRequestedAt = 0; this.diagnostics.record("connection.recovery-deferred"); });
+        }
+      } else this.emit({ type: "error", error: errorMessage(error) });
       // During an installer hand-off the new process can initialize Supabase
       // while the old process is still finishing its auth-storage write. A
       // cold restart proves the durable session is intact; refresh only this

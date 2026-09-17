@@ -186,7 +186,8 @@ export class RemoteSupport {
       if (!c) throw new Error("Peer unavailable");
       this.context = c;
       const peerVersion = validPeerVersion(this.peerReport()?.status.version) ?? c.peerVersion;
-      const same = [...this.pending.entries()].find(([,r]) => r.pairId === c.pairId && r.action === action && r.operationId === command?.operationId && r.status === "sent" && fresh(r.requestedAt, this.now(), 30_000));
+      const same = [...this.pending.entries()].find(([,r]) => r.pairId === c.pairId && r.action === action && r.operationId === command?.operationId
+        && r.status === "sent" && fresh(r.requestedAt, this.now(), action === "recover" ? 24 * 60 * 60_000 : 30_000));
       if (same) return { id: same[0], status: same[1].status };
       const id = randomUUID(), sentAt = new Date(this.now()).toISOString();
       const supported = supportsRemoteSupport(peerVersion);

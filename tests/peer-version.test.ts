@@ -244,6 +244,25 @@ test("old probe replies cannot complete a new request; malformed versions are no
   } finally { await f.cleanup(); }
 });
 
+test("broken primary authorization requests durable recovery without treating an offline peer as a user error", async () => {
+  const f = await fixture();
+  let recoveries = 0;
+  try {
+    f.transport.pairState = async () => { throw new Error("Не удалось восстановить авторизацию подключения"); };
+    (f.service as any).support.request = async (action: string) => { assert.equal(action, "recover"); recoveries++; return { status: "sent" }; };
+    await (f.service as any).pumpRemote();
+    await new Promise(resolve => setImmediate(resolve));
+    const snapshot = await f.service.state();
+    assert.equal(recoveries, 1);
+    assert.equal(snapshot.remote.connected, false);
+    assert.equal((snapshot.remote as any).code, undefined);
+    assert.equal(f.events.some(event => event.type === "error"), false);
+    await (f.service as any).pumpRemote();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(recoveries, 1, "The durable request is not spammed while the peer is offline");
+  } finally { await f.cleanup(); }
+});
+
 test("an older queued version observation cannot replace newer durable truth", async () => {
   const f = await fixture();
   try {
