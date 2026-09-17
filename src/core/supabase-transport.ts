@@ -211,16 +211,17 @@ export class SupabaseTransport {
     return result.data.map(row=>({ ...row, payload:decryptPayload(row.encrypted_payload,this.encryptionSecret) }) as RemoteEnvelope);
   }
 
-  async readSupportMessages(pairId: string, since: string): Promise<RemoteEnvelope[]> {
+  async readSupportMessages(pairId: string, after: string): Promise<RemoteEnvelope[]> {
     const me = await this.identity();
-    const result = await this.client.from("bridge_messages").select("*")
-      .eq("pair_id", pairId).eq("recipient_id", me).gte("created_at", since)
-      .like("idempotency_key", "%support-v1:%").order("created_at", { ascending: false }).limit(100);
+    const result = await this.client.from("bridge_messages")
+      .select("id,pair_id,conversation_id,sequence_number,sender_id,recipient_id,sender_agent,status,created_at,encrypted_payload")
+      .eq("pair_id", pairId).eq("recipient_id", me).gt("created_at", after)
+      .like("idempotency_key", "%support-v1:%").order("created_at", { ascending: true }).limit(100);
     if (result.error) throw result.error;
     return result.data.flatMap(row => {
       try { return [{ ...row, payload: decryptPayload(row.encrypted_payload, this.encryptionSecret) } as RemoteEnvelope]; }
       catch { return []; } // One malformed envelope must not disable support.
-    }).reverse();
+    });
   }
 
   async readPendingSent(pairId: string): Promise<Array<RemoteEnvelope & { idempotencyKey: string }>> {

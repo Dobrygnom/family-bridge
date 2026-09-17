@@ -69,6 +69,26 @@ test("loading durable peer evidence reconciles it before support starts", async 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("support polling advances and persists a cursor instead of downloading the same report forever", async () => {
+  const f = await fixture();
+  const after: string[] = [];
+  const original = f.context.transport.readSupportMessages;
+  f.context.transport.readSupportMessages = async (_pairId: string, cursor: string) => {
+    after.push(cursor);
+    return (await original(_pairId, cursor)).filter((row: any) => row.created_at > cursor);
+  };
+  try {
+    f.incoming.push(f.envelope());
+    const createdAt = f.incoming[0].created_at;
+    await f.support.tick();
+    await f.support.tick();
+    assert.equal(after[1], createdAt);
+    const saved = JSON.parse(await readFile(path.join(f.dir, "cursors.json"), "utf8"));
+    assert.equal(saved.pair, createdAt);
+    assert.equal(f.sent.filter(item => item.payload.support?.replyTo).length, 1);
+  } finally { await f.cleanup(); }
+});
+
 test("authenticated support recovery returns a bounded replacement route", async () => {
   const f=await fixture();
   const route:PairRecovery={version:1,logicalPairId:randomUUID(),transportPairId:randomUUID(),creatorAuthId:randomUUID(),creatorAgent:"dima",inviteSecret:"a".repeat(43)};

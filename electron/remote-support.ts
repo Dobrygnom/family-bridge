@@ -71,6 +71,7 @@ export class RemoteSupport {
   private latest?: { pairId: string; receivedAt: string; report: SupportReport };
   private lastError?: string;
   private sending = false;
+  private supportCursors = new Map<string, string>();
   constructor(private readonly directory: string, private readonly hooks: {
     runtime?: RuntimeDiagnostics;
     context: () => Promise<SupportContext | undefined>;
@@ -149,6 +150,11 @@ export class RemoteSupport {
           operationId: supportId(r.operationId) ? r.operationId : undefined, status: r.status === "sending" ? "failed" : r.status, report: sanitizeSupportReport(r.report) });
       }
     } catch { /* Old versions have no operator requests. */ }
+    try {
+      const saved = JSON.parse(await readFile(path.join(this.directory, "cursors.json"), "utf8"));
+      for (const [pairId, at] of Object.entries(saved))
+        if (typeof pairId === "string" && typeof at === "string" && Number.isFinite(Date.parse(at))) this.supportCursors.set(pairId, at);
+    } catch { /* A missing cursor only causes one bounded catch-up. */ }
     this.loaded = true;
   }
   async status() {
@@ -226,9 +232,15 @@ export class RemoteSupport {
       }
       this.context = c;
       this.hooks.runtime?.stage("support", "receive");
-      const incoming = await c.transport.readSupportMessages(c.pairId, new Date(this.now() - 5 * 60_000).toISOString());
+      const after = this.supportCursors.get(c.pairId) ?? new Date(this.now() - 5 * 60_000).toISOString();
+      const incoming = await c.transport.readSupportMessages(c.pairId, after);
       this.hooks.runtime?.stage("support", "dispatch");
       for (const envelope of incoming) await this.receive(c, envelope);
+      const newest = incoming.at(-1)?.created_at;
+      if (newest && (!this.supportCursors.get(c.pairId) || newest > this.supportCursors.get(c.pairId)!)) {
+        this.supportCursors.set(c.pairId, newest);
+        await this.save("cursors.json", Object.fromEntries(this.supportCursors));
+      }
       this.hooks.runtime?.stage("support", "send");
       if (!c.independent && supportsRemoteSupport(c.peerVersion) && this.now() - this.lastOffer >= 60_000) {
         const offer = await this.channel?.offer(c);
