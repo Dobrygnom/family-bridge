@@ -365,6 +365,7 @@ app.whenReady().then(async () => {
     return service.state();
   });
   handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
+  handle("bridge:create-manual-context", (_event, input: unknown) => service.createManualContext(input));
   handle("bridge:set-codex-settings", (_event, input: unknown) => service.setCodexSettings(input));
   handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
   handle("bridge:list-context-threads", () => service.listContextThreads());
@@ -373,6 +374,12 @@ app.whenReady().then(async () => {
   handle("bridge:refresh-context-now", () => service.refreshContextNow());
   handle("bridge:update-portrait-observation", (_event, input: unknown) => service.updatePortraitObservation(input));
   handle("bridge:complete-onboarding", (_event, counterpartPersonId?: string) => service.completeOnboarding(counterpartPersonId));
+  handle("bridge:compute-state", () => service.computeState());
+  handle("bridge:compute-host", (_event, name: unknown) => service.configureComputeHost(name));
+  handle("bridge:compute-invite", (_event, label: unknown) => service.createComputeInvitation(label));
+  handle("bridge:compute-join", (_event, code: unknown) => service.joinComputeChannel(code));
+  handle("bridge:compute-disable", () => service.disableComputeChannel());
+  handle("bridge:compute-revoke", (_event, channelId: unknown) => service.revokeComputeChannel(channelId));
   handle("bridge:open-reports", async () => {
     const internalReports = path.join(app.getPath("userData"), "reports");
     const exportedReports = path.join(app.getPath("documents"), "Family Bridge Reports");

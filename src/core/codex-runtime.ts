@@ -34,6 +34,8 @@ export interface CodexRuntimeOptions {
   /** null explicitly keeps the CLI default; omitted prefers available Astra. */
   model?: string | null;
   reasoningEffort?: CodexReasoningEffort;
+  /** Resume an existing isolated worker session (used by the encrypted compute bridge). */
+  sessionId?: string;
 }
 
 const languageNames = { ru: "русском", en: "английском", cs: "чешском", fr: "французском" } as const;
@@ -150,6 +152,7 @@ export class CodexCliAgent implements AgentRuntime {
 
   constructor(private readonly options: CodexRuntimeOptions) {
     this.id = options.id;
+    this.sessionId = options.sessionId;
   }
 
   get currentSessionId(): string | undefined {

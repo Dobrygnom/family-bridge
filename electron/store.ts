@@ -48,7 +48,7 @@ export interface PendingOwnerQuestion {
 }
 
 export interface StoredState {
-  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; preparedSentAt?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number }>;
+  topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; preparedSentAt?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number; failureCode?: string }>;
   owner: OwnerId;
   onboardingComplete: boolean;
   identityConfigured: boolean;
@@ -106,7 +106,7 @@ const defaults: StoredState = {
   displayName: "",
   language: "ru",
   autoStart: true,
-  codexModel: "gpt-5.6-sol",
+  codexModel: "auto",
   codexReasoningEffort: "medium",
   pendingTopics: [],
   inFlightTopics: [],

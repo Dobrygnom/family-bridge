@@ -31,4 +31,7 @@ test("process progress and private CLI output never become user-facing errors", 
   const unsupported = codexTaskFailure("Разбор", 2, "error: unexpected argument '--ignore-user-config' found");
   assert.equal((unsupported as any).code, "CODEX_ISOLATION_UNSUPPORTED");
   assert.match(unsupported.message, /обновите Codex/);
+  const quota = codexTaskFailure("Ответ", 1, "You have reached your usage limit. Try again later.");
+  assert.equal((quota as any).code, "CODEX_USAGE_LIMIT");
+  assert.match(quota.message, /сохранено/);
 });

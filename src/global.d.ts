@@ -38,9 +38,10 @@ export interface AppState {
   contextSyncProgress: number;
   portraitsUpdating: boolean;
   codex: { installed: boolean; authenticated: boolean; version: string };
+  compute: { mode: "off" | "host" | "client"; sponsorName?: string; connected: boolean; pending: number; channels: Array<{ channelId: string; label: string; enabled: boolean; connected: boolean; createdAt: string }> };
   remote: { configured: boolean; connected: boolean; dialogueCompatible?: boolean; pairId?: string; invite?: string; peerName?: string; peerVersion?: string; peerVersionObservedAt?: string; peerExperienceVersion?: string; peerLastSeenAt?: string; peerPresenceAt?: string; peerVersionCheck?: PeerVersionCheck; counterpartPersonId?: string; counterpartLabel?: string };
   memory: { configured: boolean; messageCount: number; learnedCount: number; lastCheckedAt?: string; status?: string };
-  context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error" | "confirmation"; error?: string };
+  context?: { id: string; title: string; project: string; source?: "codex" | "chatgpt" | "manual"; cwd?: string; updatedAt?: number; lastSyncedAt?: string; messageCount?: number; status?: "ready" | "syncing" | "error" | "confirmation"; error?: string };
   contextAnalysis?: {
     analysisVersion: number;
     sourceId: string;
@@ -72,6 +73,7 @@ declare global {
       setAutoStart(enabled: boolean): Promise<AppState>;
       setCodexSettings(input: { model: import("./core/codex-settings.js").CodexModel; reasoningEffort: import("./core/codex-settings.js").CodexReasoningEffort }): Promise<AppState>;
       setDisplayName(name: string): Promise<AppState>;
+      createManualContext(input: import("./core/manual-context.js").ManualContextInput): Promise<AppState>;
       setLanguage(language: "ru" | "en" | "cs" | "fr"): Promise<AppState>;
       listContextThreads(): Promise<Array<{ id: string; title: string; project: string; source: "codex" | "chatgpt"; cwd?: string; updatedAt?: number }>>;
       selectContextThread(threadId: string): Promise<AppState>;
@@ -79,6 +81,12 @@ declare global {
       refreshContextNow(): Promise<AppState>;
       updatePortraitObservation(input: { personId: string; observationId: string; text?: string; remove?: boolean }): Promise<AppState>;
       completeOnboarding(counterpartPersonId?: string): Promise<AppState>;
+      getComputeState(): Promise<AppState["compute"]>;
+      configureComputeHost(name: string): Promise<AppState["compute"]>;
+      createComputeInvitation(label?: string): Promise<{ code: string; channelId: string; sponsorName: string }>;
+      joinComputeChannel(code: string): Promise<AppState["compute"]>;
+      disableComputeChannel(): Promise<AppState["compute"]>;
+      revokeComputeChannel(channelId: string): Promise<AppState["compute"]>;
       openReports(): Promise<void>;
       createPair(counterpartPersonId: string): Promise<AppState>;
       joinPair(invite: string, counterpartPersonId: string): Promise<AppState>;

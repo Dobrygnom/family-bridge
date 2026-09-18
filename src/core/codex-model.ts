@@ -11,15 +11,17 @@ export const codexReasoningArgs = (effort: CodexReasoningEffort = DEFAULT_CODEX_
 export function createModelResolver(
   listModels: (command: string) => Promise<Array<{ model: string; hidden?: boolean }>>,
   now = Date.now,
+  preferredModel = DEFAULT_CODEX_MODEL,
 ) {
   const cache = new Map<string, { expires: number; pending: Promise<string | undefined> }>();
   return (command: string): Promise<string | undefined> => {
     const current = cache.get(command);
     if (current && current.expires > now()) return current.pending;
+    if (preferredModel === "auto") return Promise.resolve(undefined);
     const entry = { expires: Number.POSITIVE_INFINITY, pending: Promise.resolve(undefined) as Promise<string | undefined> };
     entry.pending = Promise.resolve().then(() => listModels(command)).then((models) => {
       entry.expires = now() + 5 * 60_000;
-      return models.some((model) => model.model === DEFAULT_CODEX_MODEL && !model.hidden) ? DEFAULT_CODEX_MODEL : undefined;
+      return models.some((model) => model.model === preferredModel && !model.hidden) ? preferredModel : undefined;
     }, () => {
       entry.expires = now() + 30_000;
       return undefined;

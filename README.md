@@ -4,6 +4,15 @@ Family Bridge connects two locally running Codex agents for an autonomous, bound
 
 The repository contains a verified two-agent Codex CLI runner, reliable claim/ack queue semantics, an Electron + React desktop UI, a Supabase Realtime transport, client-side payload encryption, and installation/sync instructions.
 
+## Version 2
+
+Family Bridge 2 supports two compute modes without paid API keys:
+
+- **Own account** — Codex chooses an available model for the signed-in ChatGPT account. A temporary usage limit keeps the job on disk and retries later.
+- **Computer helper** — a trusted person creates a separate one-time invitation. Text-only jobs are encrypted, queued in Supabase while the helper is offline, and processed on the helper computer with its existing ChatGPT login. Credentials are never copied to the client. The helper can switch the feature off globally or revoke one client.
+
+A new pair does not need an existing psychologist chat. The owner can create a minimal manual profile with names, relationship, optional background, and optional writing examples, then add topics normally. See [the compute-channel security contract](docs/compute-channel.md) and [2.0.0 release notes](release-notes/v2.0.0.md).
+
 ## Release 1.0.0
 
 [Release notes](docs/RELEASE_1.0.0.md): live continuation messages without tab switching, explicit partner-version checks, and native Electron networking for dictation. Existing context, selected topics, reports, and text drafts are preserved. CI builds a draft release; installers, checksums, and updater metadata are verified before it is published.
@@ -27,7 +36,7 @@ npm run build
 npm run package
 ```
 
-The installer is written to `release/`. On first launch, the app guides the owner through selecting a Codex chat, shows the export/analysis stages, and then opens a compact topic registry grouped by intended counterpart. Codex prepares topic drafts with two distinct fields: who the topic is about and who it may be discussed with. Rows stay collapsed by default; details open only when needed, cross-person topics are raised for review, and safe direct topics can be approved in bulk. Pairing appears only after this review is completed. During pairing, the owner selects which local-context person the other computer represents; only approved topics routed to that person enter the pair. Each pending topic is then discussed in its own parallel agent conversation. Raw context remains local. The interface supports Russian, English, Czech, and French.
+The installer is written to `release/`. On first launch, the app guides the owner through selecting a Codex chat or creating a manual profile, shows the export/analysis stages when a chat exists, and then opens a compact topic registry grouped by intended counterpart. Codex prepares topic drafts with two distinct fields: who the topic is about and who it may be discussed with. Rows stay collapsed by default; details open only when needed, cross-person topics are raised for review, and safe direct topics can be approved in bulk. Pairing appears only after this review is completed. During pairing, the owner selects which local-context person the other computer represents; only approved topics routed to that person enter the pair. Each pending topic is then discussed in its own parallel agent conversation. Raw context remains local. The interface supports Russian, English, Czech, and French.
 
 ## Production transport
 

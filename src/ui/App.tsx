@@ -51,7 +51,7 @@ const fallback: AppState = {
   displayName: "",
   language: "ru",
   autoStart: true,
-  codexModel: "gpt-5.6-sol",
+  codexModel: "auto",
   codexReasoningEffort: "medium",
   appVersion: "preview",
   pendingTopics: [],
@@ -68,6 +68,7 @@ const fallback: AppState = {
   contextSyncProgress: 0,
   portraitsUpdating: false,
   codex: { installed: false, authenticated: false, version: "" },
+  compute: { mode: "off", connected: false, pending: 0, channels: [] },
   remote: { configured: false, connected: false },
   memory: { configured: false, messageCount: 0, learnedCount: 0 },
   update: { available: false, downloading: false },
@@ -103,6 +104,12 @@ export function App() {
   const [inviteCode, setInviteCode] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [contextThreads, setContextThreads] = useState<Array<{ id: string; title: string; project: string; source: "codex" | "chatgpt"; cwd?: string; updatedAt?: number }>>([]);
+  const [manualContext, setManualContext] = useState({ ownerName: "", partnerName: "", relationship: "", background: "", communicationExamples: "" });
+  const [manualContextOpen, setManualContextOpen] = useState(false);
+  const [computeCode, setComputeCode] = useState("");
+  const [computeInvite, setComputeInvite] = useState("");
+  const [computeLabel, setComputeLabel] = useState("");
+  const [computeBusy, setComputeBusy] = useState(false);
   const [selectedContextProject, setSelectedContextProject] = useState("");
   const [selectedContextId, setSelectedContextId] = useState("");
   const [contextLoading, setContextLoading] = useState(false);
@@ -382,6 +389,11 @@ export function App() {
   }, [api, loaded, state.onboardingComplete, state.contextAnalysis?.status]);
 
   useEffect(() => {
+    if (!api || activeSection !== "settings") return;
+    void api.getComputeState().then(compute => setState(current => ({ ...current, compute }))).catch(() => undefined);
+  }, [api, activeSection]);
+
+  useEffect(() => {
     if (!api || state.contextAnalysis?.status !== "analyzing") return;
     let active = true;
     const reconcile = () => void api.getState().then((local) => {
@@ -405,8 +417,8 @@ export function App() {
   }, [api, continuationPending]);
 
   const health = useMemo(
-    () => state.codex.installed && state.codex.authenticated,
-    [state.codex],
+    () => state.codex.installed && state.codex.authenticated || state.compute.mode === "client" && state.compute.connected,
+    [state.codex, state.compute],
   );
 
   async function blockTopic() {
@@ -433,6 +445,26 @@ export function App() {
       setOwnerAnswers((current) => { const next = { ...current }; delete next[id]; return next; });
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setAnsweringQuestionId(""); }
+  }
+
+  async function saveManualContext() {
+    if (!api) return;
+    setContextLoading(true); setError("");
+    try {
+      const next = await api.createManualContext(manualContext);
+      setState(next);
+      setCounterpartPersonId(next.contextAnalysis?.people[0]?.id || "");
+      setReviewPersonId(next.contextAnalysis?.people[0]?.id || "");
+      setManualContextOpen(false);
+    } catch (reason) { setError(errorMessage(reason)); }
+    finally { setContextLoading(false); }
+  }
+
+  async function computeAction(action: () => Promise<AppState["compute"]>) {
+    setComputeBusy(true); setError("");
+    try { const compute = await action(); setState(current => ({ ...current, compute })); }
+    catch (reason) { setError(errorMessage(reason)); }
+    finally { setComputeBusy(false); }
   }
 
   async function loadContextThreads() {
@@ -625,7 +657,9 @@ export function App() {
     if (!state.contextAnalysis?.people.length) return <div className="empty">{onboardingText.noPeople}</div>;
     const unstarted = state.contextAnalysis.topics.filter(topic => !topicAlreadyStarted(topic, state));
     const registryTopics = unstarted.filter(topic => Boolean(topic.dismissed) === (topicFilter === "dismissed"));
-    const topicPeople = state.contextAnalysis.people.filter((person) => unstarted.some((topic) => topic.discussWithPersonId === person.id));
+    const topicPeople = state.context?.source === "manual"
+      ? state.contextAnalysis.people
+      : state.contextAnalysis.people.filter((person) => unstarted.some((topic) => topic.discussWithPersonId === person.id));
     if (!topicPeople.length) return <div className="empty">{registryText.noFilteredTopics}</div>;
     const selectedPerson = topicPeople.find((person) => person.id === reviewPersonId)
       ?? topicPeople.find((person) => person.id === state.preferredCounterpartPersonId)
@@ -644,7 +678,7 @@ export function App() {
         const count = registryTopics.filter((item) => item.discussWithPersonId === person.id).length;
         return <button type="button" role="tab" aria-selected={person.id === selectedPerson.id} className={person.id === selectedPerson.id ? "active" : ""} key={person.id} onClick={() => { setReviewPersonId(person.id); setShowAllReviewTopics(false); }}>{personLabel(person.id)} <span>{count}</span></button>;
       })}</div>
-      <div className="registry-heading"><div><h4>{registryText.topicsFor}: {personLabel(selectedPerson.id)}</h4><p>{allForPerson.length} · {reviewCount} {registryText.needReview}</p></div><div className="registry-controls"><input value={topicSearch} onChange={(event) => setTopicSearch(event.target.value)} placeholder={registryText.search} aria-label={registryText.search} /><div className="registry-filters"><button className={topicFilter === "all" ? "active" : ""} onClick={() => setTopicFilter("all")}>{registryText.all}</button><button className={topicFilter === "review" ? "active" : ""} onClick={() => setTopicFilter("review")}>{registryText.review}</button><button className={topicFilter === "approved" ? "active" : ""} onClick={() => setTopicFilter("approved")}>{registryText.approved}</button><button className={topicFilter === "dismissed" ? "active" : ""} onClick={() => setTopicFilter("dismissed")}>{suggestionText.removed}</button></div></div></div>
+      <div className="registry-heading"><div><h4>{registryText.topicsFor}: {personLabel(selectedPerson.id)}</h4><p>{allForPerson.length} · {reviewCount} {registryText.needReview}</p></div>{allForPerson.length > 0 && <div className="registry-controls"><input value={topicSearch} onChange={(event) => setTopicSearch(event.target.value)} placeholder={registryText.search} aria-label={registryText.search} /><div className="registry-filters"><button className={topicFilter === "all" ? "active" : ""} onClick={() => setTopicFilter("all")}>{registryText.all}</button><button className={topicFilter === "review" ? "active" : ""} onClick={() => setTopicFilter("review")}>{registryText.review}</button><button className={topicFilter === "approved" ? "active" : ""} onClick={() => setTopicFilter("approved")}>{registryText.approved}</button><button className={topicFilter === "dismissed" ? "active" : ""} onClick={() => setTopicFilter("dismissed")}>{suggestionText.removed}</button></div></div>}</div>
       <div className="registry-toolbar"><span>{approvedCount} {registryText.allowedOf} {allForPerson.length}</span>{topicFilter !== "dismissed" && <button className="ghost" onClick={() => void approveSafeTopics(selectedPerson.id)}>{registryText.allowSafe}</button>}</div>
       <div className="topic-rows">{visibleTopics.map((item) => {
         const expanded = expandedTopicIds.has(item.id);
@@ -676,7 +710,7 @@ export function App() {
         </div>;
       })}{!selectedPersonTopics.length && <div className="empty">{registryText.noFilteredTopics}</div>}</div>
       {!topicSearch.trim() && topicFilter === "all" && selectedPersonTopics.length > 6 && <button className="topic-list-toggle" onClick={() => setShowAllReviewTopics((value) => !value)}>{showAllReviewTopics ? registryText.less : `${registryText.more} · ${selectedPersonTopics.length - 6}`}</button>}
-      {!state.onboardingComplete && <div className="onboarding-finish"><button className="primary" disabled={!approvedCount} onClick={() => void completeOnboarding(selectedPerson.id)}>{onboardingText.finish}: {personLabel(selectedPerson.id)}</button></div>}
+      {!state.onboardingComplete && <div className="onboarding-finish"><button className="primary" disabled={!approvedCount && state.context?.source !== "manual"} onClick={() => void completeOnboarding(selectedPerson.id)}>{state.context?.source === "manual" ? `Продолжить с ${personLabel(selectedPerson.id)} — тему можно добавить позже` : `${onboardingText.finish}: ${personLabel(selectedPerson.id)}`}</button></div>}
     </div>;
   }
 
@@ -737,7 +771,9 @@ export function App() {
         {activeSection === "overview" && !state.onboardingComplete && <section className="panel onboarding-panel">
           {state.contextAnalysis?.status !== "ready" && <div className="onboarding-intro"><p>{onboardingText.lead}</p></div>}
           <div className="onboarding-steps"><div className={state.context && state.context.status !== "confirmation" ? "done" : "active"}><span>{state.context && state.context.status !== "confirmation" ? <Check size={16} /> : "1"}</span>{onboardingText.chooseTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "done" : state.context && state.context.status !== "confirmation" ? "active" : ""}><span>{state.contextAnalysis?.status === "ready" ? <Check size={16} /> : "2"}</span>{onboardingText.processingTitle}</div><div className={state.contextAnalysis?.status === "ready" ? "active" : ""}><span>3</span>{onboardingText.reviewTitle}</div></div>
-          {!state.context && <div className="onboarding-stage"><h3>{onboardingText.chooseTitle}</h3><p>{onboardingText.chooseHint}</p><button className="primary" disabled={contextLoading} onClick={() => void loadContextThreads()}>{contextText.choose}</button></div>}
+          {!state.context && <div className="onboarding-stage"><h3>{onboardingText.chooseTitle}</h3><p>{onboardingText.chooseHint}</p><div className="actions"><button className="primary" disabled={contextLoading} onClick={() => void loadContextThreads()}>{contextText.choose}</button><button className="ghost" disabled={contextLoading} onClick={() => setManualContextOpen(value => !value)}>Начать без существующего чата</button></div>
+            {manualContextOpen && <div className="codex-settings"><label><span>Ваше имя</span><input value={manualContext.ownerName} onChange={event => setManualContext(current => ({ ...current, ownerName: event.target.value }))} /></label><label><span>Имя собеседника</span><input value={manualContext.partnerName} onChange={event => setManualContext(current => ({ ...current, partnerName: event.target.value }))} /></label><label><span>Кем он вам приходится</span><input value={manualContext.relationship} onChange={event => setManualContext(current => ({ ...current, relationship: event.target.value }))} placeholder="Например: супруг, друг, коллега" /></label><label><span>Что агенту важно знать</span><textarea value={manualContext.background} onChange={event => setManualContext(current => ({ ...current, background: event.target.value }))} /></label><label><span>Несколько примеров ваших обычных сообщений (необязательно)</span><textarea value={manualContext.communicationExamples} onChange={event => setManualContext(current => ({ ...current, communicationExamples: event.target.value }))} /></label><button className="primary" disabled={contextLoading || !manualContext.ownerName.trim() || !manualContext.partnerName.trim()} onClick={() => void saveManualContext()}>Создать локальный контекст</button></div>}
+          </div>}
           {state.context?.status === "confirmation" && <div className="onboarding-stage context-confirmation"><h3>{onboardingText.chooseTitle}</h3><p>{onboardingText.confirmHint}</p><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="actions"><button className="primary" disabled={contextLoading} onClick={() => void confirmSavedContext()}>{onboardingText.useSaved}</button><button className="ghost" disabled={contextLoading} onClick={() => void loadContextThreads()}>{contextText.change}</button></div></div>}
           {showContextPicker && (!state.context || state.context.status === "confirmation") && <div className="context-picker onboarding-picker">{contextPicker()}</div>}
           {state.context && state.context.status !== "confirmation" && state.contextAnalysis?.status !== "ready" && (() => { if (state.context?.status === "error" || state.contextAnalysis?.status === "error") return <div className="onboarding-stage" role="alert"><p>{state.contextAnalysis?.error || state.context?.error}</p><button onClick={() => void api?.refreshContextNow().then(setState).catch(() => setError(loadingText[1]))}>{loadingText[2]}</button><button className="ghost" onClick={() => void loadContextThreads()}>{contextText.change}</button></div>; const hasSavedAnalysis = Boolean(state.contextAnalysis?.people.length || state.contextAnalysis?.topics.length); const finalizing = state.contextAnalysis?.progress?.stage === "consolidating"; return <div className="onboarding-stage processing-stage"><h3>{hasSavedAnalysis ? onboardingText.resumeTitle : onboardingText.processingTitle}</h3><div className="processing-source"><strong>{state.context.project} · {state.context.title}</strong><small>{state.context.messageCount ?? 0} {contextText.messages.toLowerCase()}</small></div><div className="processing-list"><div className={state.context.status === "ready" ? "done" : "active"}>{state.context.status === "ready" ? <Check size={18} /> : <LoaderCircle className="spin" size={18} />}<span>{onboardingText.export}</span></div><div className={hasSavedAnalysis || finalizing ? "done" : state.contextAnalysis ? "active" : "waiting"}>{hasSavedAnalysis || finalizing ? <Check size={18} /> : <LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} />}<span>{onboardingText.people}</span></div><div className={state.contextAnalysis ? "active" : "waiting"}><LoaderCircle className={state.contextAnalysis ? "spin" : ""} size={18} /><span>{finalizing ? onboardingText.finalizing : onboardingText.topics}{state.contextAnalysis?.progress && !finalizing ? ` · ${state.contextAnalysis.progress.current}/${Math.max(1, state.contextAnalysis.progress.total - 1)}` : ""}</span></div></div><p className="muted">{hasSavedAnalysis ? onboardingText.resumeWaiting : onboardingText.waiting}</p></div>; })()}
@@ -863,9 +899,17 @@ export function App() {
                     const model = event.target.value as CodexModel;
                     const reasoningEffort = supportsCodexConfig(model, state.codexReasoningEffort) ? state.codexReasoningEffort : "medium";
                     setState(await api.setCodexSettings({ model, reasoningEffort }));
-                  }}>{CODEX_MODELS.map(model => <option key={model} value={model}>{model}</option>)}</select></label>
+                  }}>{CODEX_MODELS.map(model => <option key={model} value={model}>{model === "auto" ? "Автоматически (по аккаунту)" : model}</option>)}</select></label>
                   <label><span>Глубина рассуждения</span><select value={state.codexReasoningEffort} onChange={async (event) => api && setState(await api.setCodexSettings({ model: state.codexModel, reasoningEffort: event.target.value as CodexReasoningEffort }))}>{CODEX_REASONING_EFFORTS.filter(effort => supportsCodexConfig(state.codexModel, effort)).map(effort => <option key={effort} value={effort}>{effort}</option>)}</select></label>
                   <small>Применяется к новым запускам агента. Текущий выбор сохраняется на этом компьютере.</small>
+                </div>
+                <div className="codex-settings">
+                  <strong>Вычислительный канал</strong>
+                  <small>Зашифрованные текстовые задания. Логин ChatGPT и доступ к компьютеру никому не передаются. Владелец компьютера-помощника технически может видеть текст заданий и результатов.</small>
+                  <div className="actions"><button className={state.compute.mode === "off" ? "primary" : "ghost"} disabled={computeBusy} onClick={() => api && void computeAction(() => api.disableComputeChannel())}>Выключено</button><button className={state.compute.mode === "host" ? "primary" : "ghost"} disabled={computeBusy || !(displayName || state.displayName).trim()} onClick={() => api && void computeAction(() => api.configureComputeHost((displayName || state.displayName).trim()))}>Этот компьютер помогает</button></div>
+                  {state.compute.mode === "host" && <><label><span>Для кого приглашение</span><input value={computeLabel} onChange={event => setComputeLabel(event.target.value)} placeholder="Например: Анна и Борис" /></label><button disabled={computeBusy || !computeLabel.trim()} onClick={async () => { if (!api) return; setComputeBusy(true); setError(""); try { const result = await api.createComputeInvitation(computeLabel.trim()); setComputeInvite(result.code); setComputeLabel(""); const compute = await api.getComputeState(); setState(current => ({ ...current, compute })); } catch (reason) { setError(errorMessage(reason)); } finally { setComputeBusy(false); } }}>Создать приглашение для человека</button>{computeInvite && <label><span>Одноразовое приглашение</span><textarea readOnly value={computeInvite} onFocus={event => event.currentTarget.select()} /></label>}{state.compute.channels.map(channel => <div className="input-row compact" key={channel.channelId}><span>{channel.label} · {channel.enabled ? channel.connected ? "подключён" : "ждёт подключения" : "отключён"}</span>{channel.enabled && <button className="ghost" disabled={computeBusy} onClick={() => api && void computeAction(() => api.revokeComputeChannel(channel.channelId))}>Отключить</button>}</div>)}</>}
+                  {state.compute.mode !== "host" && <><label><span>Или использовать компьютер-помощник</span><textarea value={computeCode} onChange={event => setComputeCode(event.target.value)} placeholder="Вставьте приглашение" /></label><button disabled={computeBusy || !computeCode.trim()} onClick={() => api && void computeAction(() => api.joinComputeChannel(computeCode.trim()))}>Подключить помощника</button></>}
+                  {state.compute.mode === "client" && <small>Помощник: {state.compute.sponsorName}. В очереди: {state.compute.pending}. Если его компьютер выключен, задания сохраняются до следующего подключения.</small>}
                 </div>
                 <button className="ghost" onClick={() => void api?.openDiagnostics().catch(() => setError(loadingText[1]))}>{loadingText[3]}</button>
                 <label><input type="checkbox" checked={state.autoStart} onChange={async (e) => api && setState(await api.setAutoStart(e.target.checked))} /> Автозапуск приложения</label>

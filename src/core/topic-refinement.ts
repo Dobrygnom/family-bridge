@@ -85,13 +85,15 @@ export interface TopicRefiner {
 }
 
 export class CodexTopicRefiner implements TopicRefiner {
-  constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string) {}
+  constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string,
+    private readonly remoteGenerate?: (prompt: string) => Promise<unknown>) {}
 
   async refine(input: TopicRefinementInput): Promise<TopicRefinement> {
     return this.generate(buildTopicRefinementPrompt(input), normalizeTopicRefinement);
   }
 
   async generate<T>(prompt: string, normalize: (value: unknown) => T): Promise<T> {
+    if (this.remoteGenerate) return normalize(await this.remoteGenerate(prompt));
     await mkdir(this.workspace, { recursive: true });
     const args = ["exec", ...await preferredModelArgs(this.command), ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {

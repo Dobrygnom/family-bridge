@@ -153,7 +153,7 @@ test("restart sends a clean new attempt, preserves files, and survives an idempo
     const before = await readFile(f.report,'utf8');
     let calls=0;
     (f.service as any).localRemoteAgent = (...args:any[])=>({start:async(prompt:string)=>{
-      calls++; assert.equal(args[8],true); assert.equal(args[9],"gpt-5.6-sol"); assert.equal(args[10],"medium"); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
+      calls++; assert.equal(args[8],true); assert.equal(args[9],"auto"); assert.equal(args[10],"medium"); assert.doesNotMatch(prompt,/Давай согласуем время заранее/);
       return response('Давай начнём с того, как нам удобно созваниваться.');
     }});
     const input={reportId:'original-id',requestId:'restart-request'};

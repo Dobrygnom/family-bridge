@@ -148,7 +148,8 @@ export function updatePortraitObservation(
 }
 
 export class CodexPortraitUpdater {
-  constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string) {}
+  constructor(private readonly command: string, private readonly workspace: string, private readonly schemaPath: string,
+    private readonly remoteGenerate?: (prompt: string) => Promise<unknown>) {}
 
   async update(input: {
     portraits: PersonPortrait[];
@@ -206,6 +207,7 @@ ${transcript}
   }
 
   private async run(prompt: string): Promise<RawPortraitUpdates> {
+    if (this.remoteGenerate) return await this.remoteGenerate(prompt) as RawPortraitUpdates;
     const args = ["exec", ...await preferredModelArgs(this.command), ...CODEX_REASONING_ARGS, "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", this.schemaPath, "-C", this.workspace, "-"];
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, isolatedCodexInvocation(args), { cwd: this.workspace, shell: process.platform === "win32" && this.command.toLowerCase().endsWith(".cmd"), windowsHide: true });

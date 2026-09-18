@@ -4,7 +4,7 @@ import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { BrowserWindow } from "electron";
@@ -45,7 +45,9 @@ import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportRep
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
 import { buildApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
 import { createUpdateCheckpoint, recoverMissingCheckpointData } from "./update-checkpoint.js";
-import { CODEX_MODELS, CODEX_REASONING_EFFORTS, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../src/core/codex-settings.js";
+import { CODEX_MODELS, CODEX_REASONING_EFFORTS, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, codexModelArgument, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../src/core/codex-settings.js";
+import { prepareManualContext } from "../src/core/manual-context.js";
+import { ComputeChannelManager } from "./compute-channel.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -342,14 +344,14 @@ export class BackgroundService {
         const recoveryRetry = continuation.mode === "restart" && automaticRepairIds.has(id)
           && (continuation.attempts ?? 0) >= 3 && !continuation.preparedMessage && !continuation.connectivityRetryUsed
           && continuation.failureKind !== "unsafe" && Boolean(peerOnline && this.health.installed && this.health.authenticated);
-        const canRetry = continuation.failureKind !== "unsafe" && ((continuation.attempts ?? 0) < 3 || Boolean(continuation.preparedMessage && peerOnline) || recoveryRetry);
+        const canRetry = continuation.failureKind !== "unsafe" && (continuation.failureCode === "CODEX_USAGE_LIMIT" || continuation.failureCode === "COMPUTE_PENDING" || (continuation.attempts ?? 0) < 3 || Boolean(continuation.preparedMessage && peerOnline) || recoveryRetry);
         if (!(continuation.status === "starting" || continuation.status === "error" && canRetry && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
         try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }, recoveryRetry); }
         catch { this.diagnostics.record("continuation.resume-deferred"); }
       }
       if (this.updating) return;
       await this.repairLegacyConversations();
-      const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && (job.approvedOpening || job.attempts < 3) && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
+      const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && (job.approvedOpening || job.attempts < 3 || job.failureCode === "CODEX_USAGE_LIMIT" || job.failureCode === "COMPUTE_PENDING") && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
       const pending = state.pendingTopics.filter(topic=>state.topicSources[topic]?.includes("local") && !state.activeTopics.includes(topic) && !state.blockedTopics.some(blocked=>topic.toLowerCase().includes(blocked.toLowerCase())) && !Object.values(state.topicLaunches).some(job=>job.pairId===state.remote!.pairId && topicKey(job.topic)===topicKey(topic)));
       for (const topic of mergeTopicCatalog(retry, pending)) {
         if (this.updating || this.launchPromises.size >= 3) break;
@@ -470,6 +472,7 @@ export class BackgroundService {
   private readonly remoteMessages = new Map<string, SharedMessage[]>();
   private readonly answeringQuestions = new ActivitySet<string>(this.updateActivity, "owner_answers");
   private updateState: UpdateState = { available: false, downloading: false };
+  private readonly compute: ComputeChannelManager;
 
   private static readonly supabaseUrl = "https://knqaygvvqrwmtyqucbsz.supabase.co";
   private static readonly supabaseKey = "sb_publishable_igxXq8mdFjW-wKJGSKhtnA_iINygezS";
@@ -483,6 +486,9 @@ export class BackgroundService {
     private readonly options: BackgroundServiceOptions = {},
   ) {
     this.diagnostics = new Diagnostics(userData);
+    this.compute = new ComputeChannelManager(path.join(userData, "compute-channel"), resourcesPath,
+      (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
+      this.options.backgroundTasks !== false);
     this.support = new RemoteSupport(path.join(userData, "diagnostics", "support"), {
       runtime: this.diagnostics.runtime,
       context: async () => {
@@ -716,7 +722,7 @@ export class BackgroundService {
     const runtimePresenceAt = this.peerPresence && this.peerPresence.pairId === stored.remote?.pairId ? this.peerPresence.at : undefined;
     const persistedPresenceAt = stored.remote?.peerPresenceAt;
     const peerPresenceAt = runtimePresenceAt && (!persistedPresenceAt || Date.parse(runtimePresenceAt) > Date.parse(persistedPresenceAt)) ? runtimePresenceAt : persistedPresenceAt;
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerVersionObservedAt: stored.remote?.peerVersionObservedAt, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, compute: this.compute.snapshot(), running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerVersionObservedAt: stored.remote?.peerVersionObservedAt, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
@@ -845,6 +851,7 @@ export class BackgroundService {
   private async performContextSync(latestThread?: ContextThread) {
     const selected = this.readContextSource();
     if (!selected?.id) throw new Error("Сначала выберите базовый чат");
+    if (selected.source === "manual") return this.state();
     const refreshingReadyContext = Boolean(selected.lastSyncedAt);
     if (refreshingReadyContext) {
       this.updateContextSync(true, 5);
@@ -1096,6 +1103,7 @@ export class BackgroundService {
       defaultCodexCommand(),
       path.join(this.userData, "topic-refinement"),
       path.join(this.resourcesPath, "schemas", "topic-refinement.schema.json"),
+      this.compute.isClient() ? prompt => this.computeStructured("topic-refinement", prompt) : undefined,
     );
     this.diagnostics.record("topic.refinement.start", { topicId: topic.id });
     try {
@@ -1332,6 +1340,7 @@ export class BackgroundService {
     if (!force && this.lastContextCheckAt && Date.now() - this.lastContextCheckAt < contextFallbackRefreshMs) return;
     const selected = this.readContextSource();
     if (!selected?.id) return;
+    if (selected.source === "manual") return;
     this.contextCheckBusy = true;
     this.lastContextCheckAt = Date.now();
     try {
@@ -1419,7 +1428,7 @@ export class BackgroundService {
       throw new Error("Сначала выберите базовый чат и проверьте найденных людей и темы");
     }
     const counterpartPersonId = this.requireCounterpartPerson(counterpartPersonIdValue);
-    if (!analysis.topics.some((topic) => topic.approved && topic.discussWithPersonId === counterpartPersonId)) {
+    if (context.source !== "manual" && !analysis.topics.some((topic) => topic.approved && topic.discussWithPersonId === counterpartPersonId)) {
       throw new Error("Выберите хотя бы один разговор с этим человеком");
     }
     await this.store.mutate((current) => ({
@@ -1542,8 +1551,9 @@ export class BackgroundService {
       this.diagnostics.record("continuation.start");
       void this.processContinuation(requestId).catch(async (error) => {
         this.continuing.delete(requestId);
-        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], failureCode: supportErrorCode(error), retryAt:Date.now()+60_000, status: current.continuations[requestId].status === "complete" ? "complete" : "error" } } }));
-        this.diagnostics.record("continuation.failed", { code: supportErrorCode(error) });
+        const failureCode = supportErrorCode(error);
+        await this.store.mutate((current) => ({ continuations: { ...current.continuations, [requestId]: { ...current.continuations[requestId], failureCode, retryAt:Date.now()+(failureCode === "CODEX_USAGE_LIMIT" || failureCode === "COMPUTE_PENDING" ? 15 * 60_000 : 60_000), status: current.continuations[requestId].status === "complete" ? "complete" : "error" } } }));
+        this.diagnostics.record("continuation.failed", { code: failureCode });
       }).finally(async () => { this.continuing.delete(requestId); this.publishConversations(await this.store.read()); });
       return this.state();
     } catch (error) { this.continuing.delete(requestId); throw error; }
@@ -1727,7 +1737,9 @@ export class BackgroundService {
     this.emitTopicState(next);
     this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text, turn: 1 });
     } catch (error) {
-      await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "error",retryAt:Date.now()+60_000}}}));
+      const failureCode = supportErrorCode(error);
+      const retryAt = Date.now() + (failureCode === "CODEX_USAGE_LIMIT" || failureCode === "COMPUTE_PENDING" ? 15 * 60_000 : 60_000);
+      await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "error",failureCode,retryAt}}}));
       throw error;
     }
   }
@@ -1870,6 +1882,30 @@ export class BackgroundService {
     return this.state();
   }
 
+  async createManualContext(input: unknown) {
+    const prepared = prepareManualContext(input);
+    const memoryRoot = path.join(this.userData, "psychologist-memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const writes: Array<[string, string]> = [
+      ["style-samples.jsonl", prepared.samples.map(message => JSON.stringify(message)).join("\n") + (prepared.samples.length ? "\n" : "")],
+      ["personal-profile.md", prepared.profile],
+      ["context-source.json", JSON.stringify(prepared.source, null, 2)],
+      ["context-analysis.json", JSON.stringify(prepared.analysis, null, 2)],
+    ];
+    for (const [name, contents] of writes) {
+      const destination = path.join(memoryRoot, name), temporary = `${destination}.${randomUUID()}.tmp`;
+      await writeFile(temporary, contents, "utf8");
+      await replaceStateFile(temporary, destination);
+    }
+    await this.store.mutate(current => ({ displayName: prepared.ownerName, identityConfigured: true, onboardingComplete: false,
+      preferredCounterpartPersonId: prepared.partnerId,
+      ...(current.remote ? { remote: { ...current.remote, counterpartPersonId: prepared.partnerId, peerName: prepared.partnerName } } : {}) }));
+    this.emit({ type: "context", context: prepared.source });
+    this.emit({ type: "context-analysis", analysis: prepared.analysis });
+    this.diagnostics.record("context.manual-ready", { people: 1, topics: 0 });
+    return this.state();
+  }
+
   async approveContinuation(input: unknown) {
     if (this.updating) throw new Error("Устанавливаем обновление. Подготовленная реплика сохранена.");
     const value=input as {id?:unknown;text?:unknown}|null;
@@ -1976,14 +2012,16 @@ export class BackgroundService {
       ].filter(Boolean).join("\n");
       memory = `${memory}\n\n${currentContext}\nИспользуй только действительно относящиеся к теме сведения. Это односторонняя локальная гипотеза, а не доказанный факт и не разрешение пересказывать исходный чат.`;
     }
-    const agent = new CodexCliAgent({ id: owner, displayName: ownerName,
+    const agentOptions = { id: owner, displayName: ownerName,
       ownerName, peerName: peerName || "Партнёр",
       perspective: `Используй локальную психологическую память как фон, не цитируя её дословно:\n${memory}`,
       language,
       communicationExamples,
-      model,
-      reasoningEffort,
-      workspace: path.join(this.userData, "agents", owner, conversationId), schemaPath, codexCommand: defaultCodexCommand() });
+    } as const;
+    const agent = this.compute.isClient()
+      ? this.compute.createAgent(conversationId, agentOptions)
+      : new CodexCliAgent({ ...agentOptions, model: codexModelArgument(model), reasoningEffort,
+        workspace: path.join(this.userData, "agents", owner, conversationId), schemaPath, codexCommand: defaultCodexCommand() });
     this.remoteAgents.set(conversationId, agent);
     return agent;
   }
@@ -2492,7 +2530,8 @@ export class BackgroundService {
       this.portraitsUpdating = true;
       this.emit({ type: "portraits-updating", updating: true });
       try {
-        const updater = new CodexPortraitUpdater(defaultCodexCommand(), path.join(this.userData, "portrait-updates"), path.join(this.resourcesPath, "schemas", "portrait-updates.schema.json"));
+        const updater = new CodexPortraitUpdater(defaultCodexCommand(), path.join(this.userData, "portrait-updates"), path.join(this.resourcesPath, "schemas", "portrait-updates.schema.json"),
+          this.compute.isClient() ? prompt => this.computeStructured("portrait-updates", prompt) : undefined);
         const preparedMessages = messages.flatMap((message) => {
           const personId = message.from === state.owner ? ownerPortrait.personId : counterpartPersonId;
           const speaker = message.from === state.owner ? ownerPortrait.label : counterpart.label;
@@ -2545,7 +2584,8 @@ export class BackgroundService {
     const prompt = newTopicPrompt(request, stored.displayName, stored.remote.peerName ?? "Партнёр", stored.language,
       this.privateSourceExcerpts(request.description), communicationExamples);
     const compose = this.options.newTopicComposer ?? ((text: string) => new CodexTopicRefiner(defaultCodexCommand(),
-      path.join(this.userData, "new-topic"), path.join(this.resourcesPath, "schemas", "new-topic.schema.json")).generate(text, normalizeNewTopic));
+      path.join(this.userData, "new-topic"), path.join(this.resourcesPath, "schemas", "new-topic.schema.json"),
+      this.compute.isClient() ? prompt => this.computeStructured("new-topic", prompt) : undefined).generate(text, normalizeNewTopic));
     return this.updateActivity.track("topic_edits", compose(prompt).then(normalizeNewTopic));
   }
 
@@ -2651,6 +2691,17 @@ export class BackgroundService {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 
+  configureComputeHost(name: unknown) { return this.compute.configureHost(name); }
+  createComputeInvitation(label: unknown) { return this.compute.createInvitation(label); }
+  joinComputeChannel(code: unknown) { return this.compute.join(code); }
+  disableComputeChannel() { return this.compute.disable(); }
+  revokeComputeChannel(channelId: unknown) { return this.compute.revoke(channelId); }
+  computeState() { return this.compute.state(); }
+  private computeStructured(schema: "new-topic" | "topic-refinement" | "portrait-updates", prompt: string) {
+    const key = createHash("sha256").update(`${schema}\u0000${prompt}`).digest("hex");
+    return this.compute.executeStructured(key, schema, prompt);
+  }
+
   private async codexStatus() {
     try {
       const command = defaultCodexCommand();
@@ -2680,7 +2731,7 @@ export class BackgroundService {
         peerName: secondName,
         perspective: "Demo: владельцу важна предсказуемость и ясность ключевых договорённостей.",
         language: state.language,
-        model: state.codexModel ?? DEFAULT_CODEX_MODEL,
+        model: codexModelArgument(state.codexModel ?? DEFAULT_CODEX_MODEL),
         reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
         workspace: path.join(root, "dima"),
         schemaPath,
@@ -2693,7 +2744,7 @@ export class BackgroundService {
         peerName: firstName,
         perspective: "Demo: владельцу важны гибкость и свобода менять необязательные планы.",
         language: state.language,
-        model: state.codexModel ?? DEFAULT_CODEX_MODEL,
+        model: codexModelArgument(state.codexModel ?? DEFAULT_CODEX_MODEL),
         reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
         workspace: path.join(root, "katya"),
         schemaPath,

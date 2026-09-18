@@ -40,13 +40,13 @@ test("mock conversation follows the selected language", async () => {
   }
 });
 
-test("Codex model settings default to Sol medium and persist only valid choices", async () => {
+test("Codex model settings default to the account-aware model and persist only valid choices", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-model-settings-test-"));
   try {
     const store = new AtomicStore(directory);
     const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { backgroundTasks: false });
     let state = await service.state();
-    assert.equal(state.codexModel, "gpt-5.6-sol");
+    assert.equal(state.codexModel, "auto");
     assert.equal(state.codexReasoningEffort, "medium");
     state = await service.setCodexSettings({ model: "gpt-6-astra", reasoningEffort: "high" });
     assert.equal(state.codexModel, "gpt-6-astra");
@@ -56,6 +56,21 @@ test("Codex model settings default to Sol medium and persist only valid choices"
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a new pair can finish onboarding from a durable manual profile without an existing chat", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-manual-onboarding-"));
+  try {
+    const store = new AtomicStore(directory);
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { backgroundTasks: false });
+    let state = await service.createManualContext({ ownerName: "Анна", partnerName: "Борис", relationship: "супруг", background: "Новый профиль" });
+    assert.equal(state.context?.source, "manual");
+    assert.equal(state.contextAnalysis?.topics.length, 0);
+    state = await service.completeOnboarding(state.contextAnalysis!.people[0].id);
+    assert.equal(state.onboardingComplete, true);
+    assert.equal(state.displayName, "Анна");
+    assert.ok(existsSync(path.join(directory, "psychologist-memory", "personal-profile.md")));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("automatic context sync runs only for a changed or genuinely stale chat", () => {
