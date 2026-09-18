@@ -106,6 +106,9 @@ interface BackgroundServiceOptions {
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
 export const DIALOGUE_FALLBACK_POLL_MS = 5 * 60_000;
+export function dialogueConnectionAvailable(lastSuccessAt: number, failureCode: string | undefined, now = Date.now()) {
+  return lastSuccessAt > 0 && !failureCode && now - lastSuccessAt <= DIALOGUE_FALLBACK_POLL_MS + 30_000;
+}
 
 function timestampMs(value: number | undefined) {
   if (!Number.isFinite(value)) return Number.NaN;
@@ -660,7 +663,7 @@ export class BackgroundService {
         pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
         continuations: Object.entries(state.continuations).filter(([id, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
-        configured: Boolean(state.remote), connected: Date.now() - this.lastPollAt < 30_000 && !this.lastPollCode,
+        configured: Boolean(state.remote), connected: dialogueConnectionAvailable(this.lastPollAt, this.lastPollCode),
         recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode === "AUTH" && this.authRecoveryPending ? undefined : this.lastPollCode,
         codexChecked: Boolean(this.healthCheckedAt), codexInstalled: this.health.installed, codexAuthenticated: this.health.authenticated,
         codexVersion: this.health.version, healthAgeSeconds: this.healthCheckedAt ? Math.floor((Date.now() - this.healthCheckedAt) / 1000) : undefined },

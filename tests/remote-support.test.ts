@@ -8,7 +8,7 @@ import { RemoteSupport, SUPPORT_FALLBACK_POLL_MS, SUPPORT_HEARTBEAT_MS, type Sup
 import { compactSupportHeartbeat, sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "../electron/support-report.js";
 import { Diagnostics } from "../electron/diagnostics.js";
 import { startSupportControl, supportLocatorFiles } from "../electron/support-control.js";
-import { BackgroundService } from "../electron/background-service.js";
+import { BackgroundService, DIALOGUE_FALLBACK_POLL_MS, dialogueConnectionAvailable } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 import { SupabaseTransport } from "../src/core/supabase-transport.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
@@ -121,6 +121,14 @@ test("idle support uses realtime with a one-minute fallback and a compact heartb
     assert.deepEqual(compact.dialogueDiagnostics?.repairs, []);
     assert.ok(Buffer.byteLength(JSON.stringify(compact)) < 1_024);
   } finally { f.support.stop(); await f.cleanup(); }
+});
+
+test("diagnostics keep a successful realtime connection current until the fallback check", () => {
+  const now = 1_000_000;
+  assert.equal(dialogueConnectionAvailable(now - DIALOGUE_FALLBACK_POLL_MS, undefined, now), true);
+  assert.equal(dialogueConnectionAvailable(now - DIALOGUE_FALLBACK_POLL_MS - 31_000, undefined, now), false);
+  assert.equal(dialogueConnectionAvailable(now - 1_000, "NETWORK", now), false);
+  assert.equal(dialogueConnectionAvailable(0, undefined, now), false);
 });
 
 test("authenticated support recovery returns a bounded replacement route", async () => {
