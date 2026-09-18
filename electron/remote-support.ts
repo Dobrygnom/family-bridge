@@ -5,13 +5,16 @@ import type { SupabaseTransport, RemoteEnvelope } from "../src/core/supabase-tra
 import type { OwnerId } from "./store.js";
 import { VERSION_PROBE_PREFIX, validPeerVersion } from "../src/core/peer-version.js";
 import { replaceStateFile } from "./store.js";
-import { sanitizeSupportReport, supportErrorCode, supportId, type SupportReport } from "./support-report.js";
+import { compactSupportHeartbeat, sanitizeSupportReport, supportErrorCode, supportId, type SupportReport } from "./support-report.js";
 import type { SupportChannel, SupportOffer } from "./support-channel.js";
 import type { RuntimeDiagnostics } from "./runtime-diagnostics.js";
 import type { ApplicationDiagnostics } from "./application-diagnostics.js";
 import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 
 export type SupportAction = "snapshot" | "diagnostics" | "update" | "maintenance" | "recover";
+export const SUPPORT_FALLBACK_POLL_MS = 60_000;
+export const SUPPORT_HEARTBEAT_MS = 60_000;
+const RECOVERY_CAPSULE_OFFER_RETRY_MS = 15_000;
 export type SupportMaintenanceCommand =
   | { operationId: string; operation: "delete-conversation"; conversationId: string }
   | { operationId: string; operation: "restart-from-message"; conversationId: string; messageIndex: number };
@@ -72,6 +75,9 @@ export class RemoteSupport {
   private lastError?: string;
   private sending = false;
   private supportCursors = new Map<string, string>();
+  private unsubscribe?: () => Promise<unknown>;
+  private subscriptionKey?: string;
+  private wakePending = false;
   constructor(private readonly directory: string, private readonly hooks: {
     runtime?: RuntimeDiagnostics;
     context: () => Promise<SupportContext | undefined>;
@@ -88,10 +94,31 @@ export class RemoteSupport {
   start() {
     if (this.timer) return;
     void this.tick();
-    this.timer = setInterval(() => void this.tick(), 5_000);
+    // Realtime wakes support immediately. This timer is only a lost-event,
+    // reconnect and presence fallback, so idle pairs do not poll every 5s.
+    this.timer = setInterval(() => void this.tick(), SUPPORT_FALLBACK_POLL_MS);
     this.timer.unref();
   }
-  stop() { clearInterval(this.timer); this.timer = undefined; this.channel?.dispose(); }
+  stop() {
+    clearInterval(this.timer); this.timer = undefined;
+    void this.unsubscribe?.(); this.unsubscribe = undefined; this.subscriptionKey = undefined;
+    this.channel?.dispose();
+  }
+
+  private wake() {
+    if (this.busy) { this.wakePending = true; return; }
+    void this.tick();
+  }
+
+  private async ensureSubscription(c: SupportContext) {
+    const key = `${c.pairId}:${c.me}:${c.peer}:${c.independent === true}`;
+    if (this.subscriptionKey === key) return;
+    await this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.subscriptionKey = undefined;
+    if (typeof c.transport.subscribe === "function") this.unsubscribe = c.transport.subscribe(c.pairId, () => this.wake());
+    this.subscriptionKey = key;
+  }
 
   /** Only authenticated, current peer evidence may affect automatic recovery. */
   peerReport(): SupportReport | undefined {
@@ -227,6 +254,7 @@ export class RemoteSupport {
       this.hooks.runtime?.stage("support", "context");
       const c = await this.resolveContext();
       if (!c) { this.context = undefined; return; }
+      await this.ensureSubscription(c);
       if (this.context?.pairId !== c.pairId || this.context.peer !== c.peer) {
         this.lastHeartbeat = 0;
         if (c.independent) this.hooks.record("support.channel-ready");
@@ -243,13 +271,17 @@ export class RemoteSupport {
         await this.save("cursors.json", Object.fromEntries(this.supportCursors));
       }
       this.hooks.runtime?.stage("support", "send");
-      if (!c.independent && supportsRemoteSupport(c.peerVersion) && this.now() - this.lastOffer >= 60_000) {
+      // Every pair gets its own durable, independently authenticated recovery
+      // capsule. It is generated locally and carried only inside the existing
+      // encrypted pair; no pair-specific capsule or master key is shipped.
+      if (!c.independent && supportsRemoteSupport(c.peerVersion) && this.now() - this.lastOffer >= RECOVERY_CAPSULE_OFFER_RETRY_MS) {
         const offer = await this.channel?.offer(c);
         if (offer) await this.send(c, { protocol: 1, type: "offer", id: randomUUID(), sentAt: new Date(this.now()).toISOString(), offer });
         this.lastOffer = this.now();
       }
-      if (supportsRemoteSupport(c.peerVersion) && this.now() - this.lastHeartbeat >= 60_000) {
-        await this.send(c, { protocol: 1, type: "report", id: randomUUID(), sentAt: new Date(this.now()).toISOString(), report: await this.hooks.snapshot(false) });
+      if (supportsRemoteSupport(c.peerVersion) && this.now() - this.lastHeartbeat >= SUPPORT_HEARTBEAT_MS) {
+        const report = compactSupportHeartbeat(await this.hooks.snapshot(false));
+        await this.send(c, { protocol: 1, type: "report", id: randomUUID(), sentAt: new Date(this.now()).toISOString(), report });
         this.lastHeartbeat = this.now();
       }
       this.lastError = undefined;
@@ -257,7 +289,10 @@ export class RemoteSupport {
       this.lastError = supportErrorCode(error);
       this.hooks.runtime?.fail("support", this.lastError);
       this.hooks.record("support.failed", this.lastError);
-    } finally { this.hooks.runtime?.end("support"); this.busy = false; }
+    } finally {
+      this.hooks.runtime?.end("support"); this.busy = false;
+      if (this.wakePending) { this.wakePending = false; queueMicrotask(() => this.wake()); }
+    }
   }
 
   private async receive(c: SupportContext, envelope: RemoteEnvelope) {

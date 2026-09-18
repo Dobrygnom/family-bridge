@@ -1,18 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { openPairRecovery, recoveryConversationId, sealPairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
+import { recoveryConversationId, validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
 import { encryptPayload } from "../src/core/encryption.js";
 
 const route: PairRecovery = { version: 1, logicalPairId: randomUUID(), transportPairId: randomUUID(),
   creatorAuthId: randomUUID(), creatorAgent: "katya", inviteSecret: "a".repeat(43) };
-test("recovery invitation is scoped to the saved pair and authenticates its existing secret", () => {
-  const capsule = sealPairRecovery(route, "b".repeat(43));
-  assert.deepEqual(openPairRecovery([capsule], "b".repeat(43), route.logicalPairId), route);
-  assert.equal(openPairRecovery([capsule], "wrong", route.logicalPairId), undefined);
-  assert.equal(openPairRecovery([capsule], "b".repeat(43), randomUUID()), undefined);
-  assert.equal(capsule.includes(route.inviteSecret), false);
+test("recovery route is strictly bound to one logical and one physical pair", () => {
+  assert.deepEqual(validatePairRecovery(route), route);
+  assert.throws(() => validatePairRecovery({ ...route, logicalPairId: route.transportPairId }));
+  assert.throws(() => validatePairRecovery({ ...route, inviteSecret: "short" }));
 });
 test("recovered wire conversation ids are deterministic, distinct from old ids, and distinct across pairs", () => {
   const id = randomUUID(), wire = recoveryConversationId(route, id);

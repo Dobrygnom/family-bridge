@@ -19,6 +19,7 @@ import { startSupportControl } from "./support-control.js";
 import { errorMessage } from "../src/core/error-message.js";
 import { supportErrorCode } from "./support-report.js";
 import { UiErrorDiagnostics } from "./ui-error-diagnostics.js";
+import { loginItemSettings, shouldLaunchHidden } from "../src/core/auto-start.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
@@ -34,6 +35,13 @@ let updateInstallIsQuitting = false;
 let rendererUpdateBlocked = true;
 let rendererUpdateReason: "activity" | "dictation" | "editing" = "activity";
 let currentUpdate: UpdateState = { available: false, downloading: false };
+let launchHidden = false;
+
+function setAutoStart(enabled: boolean) {
+  // Electron 44 removed openAsHidden. Windows receives an explicit launch
+  // argument; macOS exposes whether this process was opened as a login item.
+  app.setLoginItemSettings(loginItemSettings(process.platform, enabled));
+}
 
 function publishUpdate(update: UpdateState) {
   currentUpdate = update;
@@ -84,7 +92,10 @@ function showMainWindow() {
 
 function createWindow() {
   rendererUpdateBlocked = true;
+  const showInitially = !launchHidden;
+  launchHidden = false;
   mainWindow = new BrowserWindow({
+    show: showInitially,
     width: 1180,
     height: 780,
     minWidth: 920,
@@ -314,7 +325,11 @@ app.whenReady().then(async () => {
   });
   const state = await store.read();
   // A local verification build must not replace the installed app's login entry.
-  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: state.autoStart, openAsHidden: true });
+  if (app.isPackaged) {
+    launchHidden = shouldLaunchHidden(process.platform, state.autoStart, process.argv,
+      app.getLoginItemSettings().wasOpenedAtLogin === true);
+    setAutoStart(state.autoStart);
+  }
 
   handle("bridge:get-state", () => service.state());
   handle("bridge:ui-error-state", async (_event, input: unknown) => {
@@ -345,7 +360,7 @@ app.whenReady().then(async () => {
     return report;
   });
   handle("bridge:set-autostart", async (_event, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: true });
+    setAutoStart(enabled);
     await store.update({ autoStart: enabled });
     return service.state();
   });

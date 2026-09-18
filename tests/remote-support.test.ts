@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { RemoteSupport, type SupportContext, type SupportMaintenanceCommand } from "../electron/remote-support.js";
-import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "../electron/support-report.js";
+import { RemoteSupport, SUPPORT_FALLBACK_POLL_MS, SUPPORT_HEARTBEAT_MS, type SupportContext, type SupportMaintenanceCommand } from "../electron/remote-support.js";
+import { compactSupportHeartbeat, sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "../electron/support-report.js";
 import { Diagnostics } from "../electron/diagnostics.js";
 import { startSupportControl, supportLocatorFiles } from "../electron/support-control.js";
 import { BackgroundService } from "../electron/background-service.js";
@@ -87,6 +87,40 @@ test("support polling advances and persists a cursor instead of downloading the 
     assert.equal(saved.pair, createdAt);
     assert.equal(f.sent.filter(item => item.payload.support?.replyTo).length, 1);
   } finally { await f.cleanup(); }
+});
+
+test("idle support uses realtime with a one-minute fallback and a compact heartbeat", async () => {
+  const f = await fixture();
+  let wake: (() => void) | undefined;
+  let subscriptions = 0;
+  (f.context.transport as any).subscribe = (_pairId: string, callback: () => void) => {
+    subscriptions++;
+    wake = callback;
+    return async () => undefined;
+  };
+  try {
+    assert.equal(SUPPORT_FALLBACK_POLL_MS, 60_000);
+    assert.equal(SUPPORT_HEARTBEAT_MS, 60_000);
+    await f.support.tick();
+    assert.equal(subscriptions, 1);
+    const heartbeat = f.sent.find(item => item.payload.support?.type === "report")?.payload.support.report as SupportReport;
+    assert.ok(heartbeat);
+    assert.deepEqual(heartbeat.events, []);
+    assert.equal(heartbeat.continuations, undefined);
+    assert.equal(heartbeat.runtimeDiagnostics, undefined);
+    assert.ok(Buffer.byteLength(JSON.stringify(heartbeat)) < 1_024);
+    wake?.();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(subscriptions, 1, "realtime wake reuses one subscription");
+    const oversized = { ...await f.hooks.snapshot(false), dialogueDiagnostics: {
+      owner: "dima", repairs: Array.from({ length: 100 }, () => ({
+        id: randomUUID(), requestId: randomUUID(), initiator: "dima", reason: "waiting",
+      })), conversations: [],
+    } } as SupportReport;
+    const compact = compactSupportHeartbeat(oversized);
+    assert.deepEqual(compact.dialogueDiagnostics?.repairs, []);
+    assert.ok(Buffer.byteLength(JSON.stringify(compact)) < 1_024);
+  } finally { f.support.stop(); await f.cleanup(); }
 });
 
 test("authenticated support recovery returns a bounded replacement route", async () => {

@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "1.2.65",
+  "version": "1.2.66",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",
@@ -38,7 +38,7 @@
     "@vitejs/plugin-react": "^5.0.3",
     "concurrently": "^9.2.1",
     "cross-env": "^10.0.0",
-    "electron": "^38.1.2",
+    "electron": "^44.4.2",
     "electron-builder": "^26.0.12",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
@@ -92,7 +92,6 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "electron@38.8.6": true,
-    "electron-winstaller@5.4.0": true
+    "electron@44.4.2": true
   }
 }

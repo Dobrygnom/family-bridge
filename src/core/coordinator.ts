@@ -12,6 +12,7 @@ import { completionReadiness, conversationOpeningPrompt, MAX_REMOTE_MESSAGES, pr
 export interface CoordinatorOptions {
   maxTurns?: number;
   onEvent?: (event: CoordinatorEvent) => void;
+  initiatorName?: string;
 }
 
 export type CoordinatorEvent =
@@ -23,6 +24,7 @@ export type CoordinatorEvent =
 export class ConversationCoordinator {
   private readonly maxTurns: number;
   private readonly onEvent: (event: CoordinatorEvent) => void;
+  private readonly initiatorName: string;
 
   constructor(
     private readonly dima: AgentRuntime,
@@ -32,6 +34,7 @@ export class ConversationCoordinator {
   ) {
     this.maxTurns = options.maxTurns ?? MAX_REMOTE_MESSAGES;
     this.onEvent = options.onEvent ?? (() => undefined);
+    this.initiatorName = options.initiatorName?.trim() || "владелец";
   }
 
   async run(topic: string, brief?: TopicBrief): Promise<ConversationReport> {
@@ -44,7 +47,7 @@ export class ConversationCoordinator {
     let turns = 0;
 
     this.onEvent({ type: "status", status });
-    const opening = await this.dima.start(conversationOpeningPrompt("Дима", topic, brief));
+    const opening = await this.dima.start(conversationOpeningPrompt(this.initiatorName, topic, brief));
     this.capture("dima", opening, reports, topicSet, (value) => {
       sharedSummary = value || sharedSummary;
     });

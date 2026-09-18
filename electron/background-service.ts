@@ -37,9 +37,8 @@ import { repairCandidates } from "../src/core/conversation-repair.js";
 import { selectCommunicationExamples } from "../src/core/communication-style.js";
 import { messageOrigin, messageSentAt, type SharedMessage, type MessageOrigin } from "../src/core/continuation.js";
 import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
-import { openPairRecovery, validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
+import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
-import { PAIR_RECOVERY_CAPSULES } from "./pair-recovery-capsules.js";
 import { RemoteSupport, type SupportMaintenanceCommand } from "./remote-support.js";
 import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
@@ -106,6 +105,7 @@ interface BackgroundServiceOptions {
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
+export const DIALOGUE_FALLBACK_POLL_MS = 5 * 60_000;
 
 function timestampMs(value: number | undefined) {
   if (!Number.isFinite(value)) return Number.NaN;
@@ -461,6 +461,7 @@ export class BackgroundService {
   private get remoteBusy() { return this.updateActivity.flag("remote_poll"); }
   private set remoteBusy(value: boolean) { this.updateActivity.flag("remote_poll", value); }
   private remoteWorkers = new ActivityMap<string, Promise<void>>(this.updateActivity, "remote_workers");
+  private remoteUnsubscribe?: () => Promise<unknown>;
   private incomingRetryAt = new Map<string, number>();
   private readonly remoteAgents = new Map<string, AgentRuntime>();
   private readonly remoteMessages = new Map<string, SharedMessage[]>();
@@ -1833,16 +1834,25 @@ export class BackgroundService {
 
   private configureRemote(secret: string, preserveIdentity = true, savedState?: StoredState) {
     if (this.remoteTimer) clearInterval(this.remoteTimer);
+    void this.remoteUnsubscribe?.();
+    this.remoteUnsubscribe = undefined;
     this.remote?.dispose();
     let recovery: PairRecovery | undefined;
     try { if (savedState?.remote?.recoveryRoute) recovery = validatePairRecovery(savedState.remote.recoveryRoute); } catch { /* fall through */ }
-    recovery ??= savedState?.remote && openPairRecovery(PAIR_RECOVERY_CAPSULES, secret, savedState.remote.pairId);
     this.remote = recovery
       ? new RecoveryTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), recovery, savedState!.owner)
       : new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, this.authStorage(), preserveIdentity);
     if (recovery) this.diagnostics.record("connection.recovery-route-enabled");
     if (this.options.backgroundTasks !== false) this.support.start();
-    this.remoteTimer = setInterval(() => void this.pumpRemote(), 2_000);
+    const active = this.remote;
+    void (async () => {
+      const state = savedState ?? await this.store.read();
+      if (this.remote !== active || !state.remote) return;
+      this.remoteUnsubscribe = active.subscribe(state.remote.pairId, () => void this.pumpRemote());
+    })().catch(() => this.diagnostics.record("connection.realtime-failed"));
+    // Realtime handles normal delivery. A five-minute fallback heals dropped
+    // subscriptions, offline resumes and providers without Realtime.
+    this.remoteTimer = setInterval(() => void this.pumpRemote(), DIALOGUE_FALLBACK_POLL_MS);
     void this.pumpRemote();
     return this.remote;
   }
@@ -2606,6 +2616,7 @@ export class BackgroundService {
       const coordinator = new ConversationCoordinator(dima, katya, undefined, {
         maxTurns: 8,
         onEvent: (event) => this.emit(event),
+        initiatorName: state.owner === "dima" ? state.displayName : state.remote?.peerName,
       });
       const report = await coordinator.run(topic);
       const reportsDir = path.join(this.userData, "reports");
@@ -2656,10 +2667,14 @@ export class BackgroundService {
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
     const root = path.join(this.userData, "agents");
     const command = defaultCodexCommand();
+    const firstName = (state.owner === "dima" ? state.displayName : state.remote?.peerName)?.trim() || "первый участник";
+    const secondName = (state.owner === "katya" ? state.displayName : state.remote?.peerName)?.trim() || "второй участник";
     return [
       new CodexCliAgent({
         id: "dima",
-        displayName: "Димы",
+        displayName: firstName,
+        ownerName: firstName,
+        peerName: secondName,
         perspective: "Demo: владельцу важна предсказуемость и ясность ключевых договорённостей.",
         language: state.language,
         model: state.codexModel ?? DEFAULT_CODEX_MODEL,
@@ -2670,7 +2685,9 @@ export class BackgroundService {
       }),
       new CodexCliAgent({
         id: "katya",
-        displayName: "Кати",
+        displayName: secondName,
+        ownerName: secondName,
+        peerName: firstName,
         perspective: "Demo: владельцу важны гибкость и свобода менять необязательные планы.",
         language: state.language,
         model: state.codexModel ?? DEFAULT_CODEX_MODEL,

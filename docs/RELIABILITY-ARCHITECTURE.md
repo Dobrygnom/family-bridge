@@ -11,6 +11,13 @@ Family Bridge is a modular desktop application, not a collection of network micr
 - **History projection and archive** reconstruct inherited legacy reports without rewriting them. Readable exports contain each logical message once; raw reports remain available for recovery.
 - **Update service** waits for active writes, dictation and conversations, then installs without user intervention. A release is installed only when a fresh report from that device says so.
 - **Support service** is a separate encrypted operator lane. Periodic heartbeats and ordinary snapshots remain metadata-only. An explicit deep-diagnostics request may additionally expose app-derived personal state needed to identify a stuck workflow, but never credentials, local paths, or the raw selected source chat.
+- **Per-pair recovery capsule** is dynamically provisioned through the authenticated pair and stored only in both local profiles. It uses independent anonymous identities to replace a broken physical transport while preserving logical pair/conversation IDs and all local history. No pair-specific release payload or master key exists.
+
+Realtime insert notifications wake the dialogue and support lanes. The dialogue
+lane polls only every five minutes as a reconnect/lost-event fallback; support
+polls once per minute for presence. Periodic support heartbeats are compact and
+exclude histories, operation timelines and application diagnostics. Detailed
+state is sent only in response to an authenticated explicit request.
 
 ## Diagnostic API
 

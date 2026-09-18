@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { SupabaseTransport, type AuthStorage } from "../src/core/supabase-transport.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
-import { openPairRecovery, sealPairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
+import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 import { generateSharedSecret } from "../src/core/encryption.js";
 const url = "https://knqaygvvqrwmtyqucbsz.supabase.co";
 const key = "sb_publishable_igxXq8mdFjW-wKJGSKhtnA_iINygezS";
@@ -28,7 +28,7 @@ try {
   const replacement = await owner.createPair();
   const route: PairRecovery = { version: 1, logicalPairId: old.pairId, transportPairId: replacement.pairId,
     creatorAuthId: ownerId, creatorAgent: "katya", inviteSecret: replacement.inviteSecret };
-  const opened = openPairRecovery([sealPairRecovery(route, secret)], secret, old.pairId)!;
+  const opened = validatePairRecovery(route);
   owner.dispose(); lostPeer.dispose();
   const a = new RecoveryTransport(url, key, secret, ownerStorage, opened, "katya"); transports.push(a);
   assert.equal((await a.pairState(old.pairId)).partner_id, null);

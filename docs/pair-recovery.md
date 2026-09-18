@@ -4,10 +4,19 @@ Lost anonymous Supabase credentials cannot be repaired by disabling a client-sid
 check. Membership is enforced by the server. This recovery uses the existing
 server APIs and retains RLS and end-to-end encryption.
 
-An authorized surviving participant provisions a replacement server pair. Its
-one-time invitation is encrypted with the existing pair's shared secret and
-included as a recovery capsule in the application. Only the matching saved pair
-can open the capsule. No account credential or encryption secret is published.
+Every successfully connected pair automatically provisions its own recovery
+capsule. The capsule is a separate encrypted support pair with separate anonymous
+Supabase identities, stored only in the two local profiles. Its invitation is
+sent through the already authenticated and encrypted dialogue pair. Nothing
+pair-specific is compiled into the application or committed to the repository,
+and there is no vendor or master recovery key.
+
+When the primary anonymous identity later becomes unusable, an authorized
+surviving recovery participant provisions a replacement physical transport pair
+through that independent capsule. Both applications keep the original logical
+pair and conversation IDs, so existing reports, continuations, prepared replies
+and message history remain the same conversations rather than becoming a new
+chat. Only the physical server route changes.
 The invited participant can join using a surviving identity or, if it has no
 session, a replacement anonymous identity. Network failures alone never create
 accounts. The creator must retain its verified existing identity.
@@ -30,7 +39,8 @@ with isolated anonymous accounts and synthetic text. It tests loss of all guest
 credentials, automatic joining, queued-message recovery, a claimed row abandoned
 before acknowledgement, both directions, history continuity and restart dedupe.
 
-Recovery capsules are pair-specific and must be kept in subsequent releases.
-They are not a general-purpose account recovery service. Losing both account
-identities, losing the shared encryption secret, or an app not running/updating
-cannot be fixed by this mechanism alone.
+Recovery capsules are pair-specific local state and survive ordinary application
+updates. They are not a general-purpose account recovery service. Losing the
+whole local profile (including its shared encryption secret and local history),
+or an app not running/updating, cannot be fixed without a user-held backup. A
+master key is intentionally not present because it would allow cross-pair access.

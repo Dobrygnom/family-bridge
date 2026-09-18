@@ -13,6 +13,12 @@ The diagnostic connection then survives a failure of the conversation session.
 No new server deployment or migration is required. Changing/removing the saved
 conversation pairing detaches its diagnostic channel.
 
+This independent pair is also the universal recovery capsule for that logical
+pair. It is created dynamically for every pair and never embedded in a release.
+If dialogue authorization is lost, the capsule negotiates a replacement physical
+route while retaining the same logical conversations and local history. There is
+no service-role credential, vendor backdoor or master recovery key.
+
 Only application metadata is exchanged: version, platform, process boot ID,
 uptime, Codex availability, preparation status, queue counts, update download/
 installation state, and a strictly filtered lifecycle log on request. Private
@@ -78,6 +84,10 @@ the tooling environment can see an old filesystem snapshot at the same path.
 - `independentChannel: true` proves the separate service connection is selected.
 - A small heartbeat is sent once per minute. A report older than 90 seconds is
   explicitly stale; delayed delivery cannot make an old report current.
+- The serialized heartbeat is regression-limited to less than 1 KiB before
+  encryption. With two continuously running peers this budgets roughly 4 MiB
+  per day of heartbeat payload for the pair; Realtime and sparse empty fallback
+  responses keep expected total Supabase egress within the 10 MiB/day target.
 - Snapshot/update commands expire after five minutes. The receiver validates
   the actual sender, recipient, pair, capture time and operation. Historical
   recovery traffic cannot execute support commands. Durable receipts prevent

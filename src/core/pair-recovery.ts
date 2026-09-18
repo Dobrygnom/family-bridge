@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
-import { decryptPayload, encryptPayload } from "./encryption.js";
 import type { AgentId } from "./types.js";
 
-// A one-time invitation encrypted to an EXISTING pair. No account credential,
-// encryption key, or private conversation is shipped in a release.
+// The route is exchanged only inside the already encrypted per-pair support
+// channel. It is never compiled into a release or decrypted from public data.
 export interface PairRecovery {
   version: 1;
   logicalPairId: string;
@@ -21,19 +20,6 @@ export function validatePairRecovery(value: unknown): PairRecovery {
     throw new Error("Invalid pair recovery invitation");
   }
   return r;
-}
-export function sealPairRecovery(value: PairRecovery, secret: string): string {
-  return encryptPayload(validatePairRecovery(value), secret);
-}
-export function openPairRecovery(capsules: readonly string[], secret: string, pairId: string): PairRecovery | undefined {
-  if (!secret) return undefined;
-  for (const capsule of capsules) {
-    try {
-      const route = validatePairRecovery(decryptPayload(capsule, secret));
-      if (route.logicalPairId === pairId) return route;
-    } catch { /* Not addressed to this installation. */ }
-  }
-  return undefined;
 }
 export function recoveryConversationId(route: PairRecovery, conversationId: string): string {
   if (!uuid.test(conversationId)) throw new Error("Invalid conversation id");

@@ -77,6 +77,32 @@ interface DialogueDiagnostics {
   lastReceivedAt?: number; lastDialogueAt?: number;
   repairs: Fields[]; conversations: Fields[];
 }
+
+/** The once-per-minute presence packet intentionally excludes histories,
+ * operation timelines and application diagnostics. Detailed state is returned
+ * only for an authenticated explicit request. */
+export function compactSupportHeartbeat(value: SupportReport): SupportReport {
+  const report = sanitizeSupportReport(value);
+  if (!report) throw new Error("Invalid support heartbeat");
+  const dialogue = report.dialogueDiagnostics;
+  return {
+    schema: 1,
+    at: report.at,
+    bootId: report.bootId,
+    status: report.status,
+    update: report.update,
+    ...(dialogue ? { dialogueDiagnostics: {
+      owner: dialogue.owner,
+      pairId: dialogue.pairId,
+      peerVersion: dialogue.peerVersion,
+      compatible: dialogue.compatible,
+      probeStatus: dialogue.probeStatus,
+      repairs: [],
+      conversations: [],
+    } } : {}),
+    events: [],
+  };
+}
 export function sanitizeDialogueDiagnostics(value: unknown): DialogueDiagnostics | undefined {
   const r = value as Record<string, any> | null;
   if (!r || typeof r !== "object") return undefined;

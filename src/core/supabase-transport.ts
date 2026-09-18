@@ -38,7 +38,8 @@ export interface PairState {
 export class SupabaseTransport {
   private readonly client: SupabaseClient;
   private readonly authStorageKey?: string;
-  private channel?: RealtimeChannel;
+  private readonly channels = new Set<RealtimeChannel>();
+  private subscriptionSequence = 0;
   private lastPairRefresh = 0;
   private pairRefresh?: Promise<unknown>;
   private identityRefresh?: Promise<string>;
@@ -249,19 +250,24 @@ export class SupabaseTransport {
   }
 
   subscribe(pairId: string, onWake: () => void): () => Promise<unknown> {
-    this.channel = this.client
-      .channel(`family-pair:${pairId}`, { config: { private: true } })
+    const channel = this.client
+      .channel(`family-pair:${pairId}:${++this.subscriptionSequence}`, { config: { private: true } })
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "bridge_messages", filter: `pair_id=eq.${pairId}` },
         () => onWake(),
       )
       .subscribe();
-    return () => this.client.removeChannel(this.channel!);
+    this.channels.add(channel);
+    return async () => {
+      this.channels.delete(channel);
+      return this.client.removeChannel(channel);
+    };
   }
 
   dispose(): void {
     void this.client.auth.stopAutoRefresh();
+    this.channels.clear();
     void this.client.removeAllChannels();
   }
 }
