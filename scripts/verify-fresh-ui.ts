@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const port = process.env.FAMILY_BRIDGE_CDP_PORT ?? "9224";
+const { version } = JSON.parse(await readFile(path.resolve("package.json"), "utf8")) as { version: string };
 const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 let ownedProcess: ChildProcess | undefined;
 let ownedProfile: string | undefined;
@@ -79,7 +80,7 @@ assert.ok(overflow.mainY <= 1, `Fresh first run scrolls as a whole: ${overflow.m
 const openedSettings = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Настройки'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 assert.equal(openedSettings, true, "Could not open update settings");
 const updateText = await evaluate<string>(`document.querySelector('.update-card')?.textContent ?? ''`);
-assert.match(updateText, /Установлена версия 2\.1\.0/);
+assert.match(updateText, new RegExp(`Установлена версия ${version.replaceAll(".", "\\.")}`));
 const settingsText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
 assert.match(settingsText, /Доверенный компьютер/);
 assert.match(settingsText, /Этот компьютер помогает другим/);

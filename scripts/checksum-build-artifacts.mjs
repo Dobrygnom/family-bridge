@@ -5,9 +5,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 const { version } = JSON.parse(await readFile('package.json', 'utf8'));
 assert.match(version, /^\d+\.\d+\.\d+$/);
 assert.ok(['win32', 'darwin'].includes(process.platform));
+const targetArch = process.env.FAMILY_BRIDGE_BUILD_ARCH || process.arch;
+assert.ok(['x64', 'arm64'].includes(targetArch), `Unsupported build architecture: ${targetArch}`);
 const payloads = process.platform === 'win32'
-  ? [`Family-Bridge-${version}-x64.exe`]
-  : ['arm64', 'x64'].flatMap(arch => ['dmg', 'zip'].map(ext => `Family-Bridge-${version}-${arch}.${ext}`));
+  ? [`Family-Bridge-${version}-${targetArch}.exe`]
+  : ['dmg', 'zip'].map(ext => `Family-Bridge-${version}-${targetArch}.${ext}`);
 const files = [...payloads.flatMap(name => [name, name + '.blockmap']), process.platform === 'win32' ? 'latest.yml' : 'latest-mac.yml'].sort();
 const checksums = [];
 for (const name of files) {
