@@ -265,6 +265,9 @@ app.whenReady().then(async () => {
         }, 0);
       },
       uiDiagnostics: () => uiErrors.snapshot(),
+      computeEnrollmentNotifier: requestId => {
+        if (Notification.isSupported()) new Notification({ title: "Новое подключение Family Bridge", body: `Запрос ${requestId.slice(0, 8)} ожидает решения.` }).show();
+      },
     },
   );
   service.diagnostics.record('process.runtime', { version: app.getVersion(), executable: process.execPath, userData: app.getPath('userData'), cwd: process.cwd(), updatedLaunch: process.argv.includes('--updated'), agentLaunched: Boolean(process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID) });
@@ -365,6 +368,8 @@ app.whenReady().then(async () => {
     return service.state();
   });
   handle("bridge:set-display-name", (_event, name: unknown) => service.setDisplayName(name));
+  handle("bridge:codex-status", () => service.refreshCodexStatus());
+  handle("bridge:codex-login", () => service.startCodexLogin());
   handle("bridge:create-manual-context", (_event, input: unknown) => service.createManualContext(input));
   handle("bridge:set-codex-settings", (_event, input: unknown) => service.setCodexSettings(input));
   handle("bridge:set-language", (_event, language: unknown) => service.setLanguage(language));
@@ -375,11 +380,22 @@ app.whenReady().then(async () => {
   handle("bridge:update-portrait-observation", (_event, input: unknown) => service.updatePortraitObservation(input));
   handle("bridge:complete-onboarding", (_event, counterpartPersonId?: string) => service.completeOnboarding(counterpartPersonId));
   handle("bridge:compute-state", () => service.computeState());
-  handle("bridge:compute-host", (_event, name: unknown) => service.configureComputeHost(name));
+  handle("bridge:compute-host", (_event, input: { name?: unknown; policy?: import("../src/core/supabase-transport.js").ComputeApprovalPolicy } | unknown) => {
+    const value = input && typeof input === "object" ? input as { name?: unknown; policy?: import("../src/core/supabase-transport.js").ComputeApprovalPolicy } : { name: input };
+    return service.configureComputeHost(value.name, value.policy ?? "auto_accept");
+  });
+  handle("bridge:compute-policy", (_event, policy: unknown) => service.setComputeApprovalPolicy(policy));
+  handle("bridge:compute-request", () => service.requestTrustedComputer());
+  handle("bridge:compute-decide", (_event, input: { requestId?: unknown; approved?: unknown }) => service.decideComputeEnrollment(input?.requestId, input?.approved));
   handle("bridge:compute-invite", (_event, label: unknown) => service.createComputeInvitation(label));
   handle("bridge:compute-join", (_event, code: unknown) => service.joinComputeChannel(code));
   handle("bridge:compute-disable", () => service.disableComputeChannel());
   handle("bridge:compute-revoke", (_event, channelId: unknown) => service.revokeComputeChannel(channelId));
+  handle("bridge:set-processing-mode", (_event, mode: unknown) => service.setProcessingMode(mode));
+  handle("bridge:intake-start", () => service.startPsychologistIntake());
+  handle("bridge:intake-send", (_event, text: unknown) => service.sendPsychologistIntake(text));
+  handle("bridge:intake-finalize", () => service.finalizePsychologistIntake());
+  handle("bridge:intake-reset", () => service.resetPsychologistIntake());
   handle("bridge:open-reports", async () => {
     const internalReports = path.join(app.getPath("userData"), "reports");
     const exportedReports = path.join(app.getPath("documents"), "Family Bridge Reports");

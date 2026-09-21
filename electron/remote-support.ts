@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SupabaseTransport, RemoteEnvelope } from "../src/core/supabase-transport.js";
@@ -13,8 +13,11 @@ import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recove
 
 export type SupportAction = "snapshot" | "diagnostics" | "update" | "maintenance" | "recover";
 export const SUPPORT_FALLBACK_POLL_MS = 60_000;
-export const SUPPORT_HEARTBEAT_MS = 60_000;
-const RECOVERY_CAPSULE_OFFER_RETRY_MS = 15_000;
+export const SUPPORT_HEARTBEAT_MS = 5 * 60_000;
+export const SUPPORT_REPORT_TTL_MS = 7 * 60_000;
+const RECOVERY_CAPSULE_OFFER_RETRY_MS = 5 * 60_000;
+const SUPPORT_BATCH_SIZE = 500;
+const SUPPORT_BATCHES_PER_TICK = 4;
 export type SupportMaintenanceCommand =
   | { operationId: string; operation: "delete-conversation"; conversationId: string }
   | { operationId: string; operation: "restart-from-message"; conversationId: string; messageIndex: number };
@@ -56,6 +59,10 @@ const maintenanceCommand = (value: unknown): SupportMaintenanceCommand | undefin
 const fresh = (at: unknown, now: number, ttl = 5 * 60_000) => {
   const t = typeof at === "string" ? Date.parse(at) : NaN;
   return Number.isFinite(t) && t <= now + 30_000 && now - t <= ttl;
+};
+const stableOfferId = (pairId: string) => {
+  const hash = createHash("sha256").update(`family-bridge-support-offer:${pairId}`).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 };
 
 /** A bounded application support protocol. No arbitrary command, path, URL,
@@ -122,7 +129,7 @@ export class RemoteSupport {
 
   /** Only authenticated, current peer evidence may affect automatic recovery. */
   peerReport(): SupportReport | undefined {
-    return this.latest?.pairId === this.context?.pairId && this.latest && fresh(this.latest.report.at, this.now(), 90_000)
+    return this.latest?.pairId === this.context?.pairId && this.latest && fresh(this.latest.report.at, this.now(), SUPPORT_REPORT_TTL_MS)
       ? this.latest.report : undefined;
   }
   /** Reconcile durable support evidence before the renderer receives its first state. */
@@ -190,7 +197,7 @@ export class RemoteSupport {
     const latest = this.latest?.pairId === this.context?.pairId ? this.latest : undefined;
     return { local, independentChannel: this.context?.independent === true, transportError: this.lastError, peer: latest ? { ...latest,
       ageSeconds: Math.max(0, Math.floor((this.now() - Date.parse(latest.report.at)) / 1000)),
-      stale: !fresh(latest.report.at, this.now(), 90_000) } : null,
+      stale: !fresh(latest.report.at, this.now(), SUPPORT_REPORT_TTL_MS) } : null,
       requests: [...this.pending.entries()].map(([id, request]) => ({ id, ...request,
         status: request.status === "sent" && !fresh(request.requestedAt, this.now()) ? "timeout" : request.status })) };
   }
@@ -242,6 +249,36 @@ export class RemoteSupport {
         requestUpdateCheck: legacyUpdate, support: legacyUpdate ? undefined : support } });
   }
 
+  private async receiveIndependent(c: SupportContext): Promise<void> {
+    const transport = c.transport as SupabaseTransport & {
+      claimSupportMessages?: (pairId: string, limit?: number) => Promise<RemoteEnvelope[]>;
+      acknowledgeSupportMessages?: (messageIds: string[]) => Promise<void>;
+    };
+    if (typeof transport.claimSupportMessages !== "function" || typeof transport.acknowledgeSupportMessages !== "function") {
+      const after = this.supportCursors.get(c.pairId) ?? new Date(this.now() - 5 * 60_000).toISOString();
+      const incoming = await c.transport.readSupportMessages(c.pairId, after);
+      for (const envelope of incoming) await this.receive(c, envelope);
+      const newest = incoming.at(-1)?.created_at;
+      if (newest && (!this.supportCursors.get(c.pairId) || newest > this.supportCursors.get(c.pairId)!)) {
+        this.supportCursors.set(c.pairId, newest);
+        await this.save("cursors.json", Object.fromEntries(this.supportCursors));
+      }
+      return;
+    }
+    for (let batch = 0; batch < SUPPORT_BATCHES_PER_TICK; batch += 1) {
+      const incoming = await transport.claimSupportMessages(c.pairId, SUPPORT_BATCH_SIZE);
+      if (!incoming.length) return;
+      const acknowledged: string[] = [];
+      for (const envelope of incoming) {
+        await this.receive(c, envelope);
+        acknowledged.push(envelope.id);
+      }
+      await transport.acknowledgeSupportMessages(acknowledged);
+      if (incoming.length < SUPPORT_BATCH_SIZE) return;
+    }
+    this.wakePending = true;
+  }
+
   // Read directly from the service lane, even while the conversation pump is
   // waiting for an LLM. The ordinary pump later acknowledges these envelopes.
   async tick() {
@@ -261,14 +298,17 @@ export class RemoteSupport {
       }
       this.context = c;
       this.hooks.runtime?.stage("support", "receive");
-      const after = this.supportCursors.get(c.pairId) ?? new Date(this.now() - 5 * 60_000).toISOString();
-      const incoming = await c.transport.readSupportMessages(c.pairId, after);
-      this.hooks.runtime?.stage("support", "dispatch");
-      for (const envelope of incoming) await this.receive(c, envelope);
-      const newest = incoming.at(-1)?.created_at;
-      if (newest && (!this.supportCursors.get(c.pairId) || newest > this.supportCursors.get(c.pairId)!)) {
-        this.supportCursors.set(c.pairId, newest);
-        await this.save("cursors.json", Object.fromEntries(this.supportCursors));
+      if (c.independent) await this.receiveIndependent(c);
+      else {
+        const after = this.supportCursors.get(c.pairId) ?? new Date(this.now() - 5 * 60_000).toISOString();
+        const incoming = await c.transport.readSupportMessages(c.pairId, after);
+        this.hooks.runtime?.stage("support", "dispatch");
+        for (const envelope of incoming) await this.receive(c, envelope);
+        const newest = incoming.at(-1)?.created_at;
+        if (newest && (!this.supportCursors.get(c.pairId) || newest > this.supportCursors.get(c.pairId)!)) {
+          this.supportCursors.set(c.pairId, newest);
+          await this.save("cursors.json", Object.fromEntries(this.supportCursors));
+        }
       }
       this.hooks.runtime?.stage("support", "send");
       // Every pair gets its own durable, independently authenticated recovery
@@ -276,7 +316,7 @@ export class RemoteSupport {
       // encrypted pair; no pair-specific capsule or master key is shipped.
       if (!c.independent && supportsRemoteSupport(c.peerVersion) && this.now() - this.lastOffer >= RECOVERY_CAPSULE_OFFER_RETRY_MS) {
         const offer = await this.channel?.offer(c);
-        if (offer) await this.send(c, { protocol: 1, type: "offer", id: randomUUID(), sentAt: new Date(this.now()).toISOString(), offer });
+        if (offer) await this.send(c, { protocol: 1, type: "offer", id: stableOfferId(c.pairId), sentAt: new Date(this.now()).toISOString(), offer });
         this.lastOffer = this.now();
       }
       if (supportsRemoteSupport(c.peerVersion) && this.now() - this.lastHeartbeat >= SUPPORT_HEARTBEAT_MS) {

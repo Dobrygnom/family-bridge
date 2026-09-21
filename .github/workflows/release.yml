@@ -13,7 +13,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            artifact: windows-x64
+            platform: windows
+            arch: x64
+          - os: macos-15-intel
+            artifact: macos-x64
+            platform: macos
+            arch: x64
+          - os: macos-latest
+            artifact: macos-arm64
+            platform: macos
+            arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +35,25 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Install official Codex CLI for the Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CODEX_NON_INTERACTIVE: "1"
+        run: |
+          Invoke-RestMethod https://chatgpt.com/codex/install.ps1 | Invoke-Expression
+          "CODEX_CLI_PATH=$env:USERPROFILE\.codex\packages\standalone\current\bin\codex.exe" >> $env:GITHUB_ENV
+      - name: Install official Codex CLI for the macOS bundle
+        if: runner.os == 'macOS'
+        env:
+          CODEX_NON_INTERACTIVE: "1"
+        run: |
+          curl -fsSL https://chatgpt.com/codex/install.sh | sh
+          echo "CODEX_CLI_PATH=$HOME/.local/bin/codex" >> "$GITHUB_ENV"
       - if: runner.os == 'Windows'
-        run: npm run package
+        run: npm run package -- --${{ matrix.arch }}
       - if: runner.os == 'macOS'
-        run: npm run package -- --x64 --arm64
+        run: npm run package -- --${{ matrix.arch }}
       - name: Verify packaged state (no UI or personal data)
         run: node scripts/verify-packaged-state.mjs
       - name: Verify local crash dumps in isolated test processes
@@ -35,7 +62,7 @@ jobs:
         run: node scripts/checksum-build-artifacts.mjs
       - uses: actions/upload-artifact@v4
         with:
-          name: family-bridge-${{ matrix.os }}
+          name: family-bridge-${{ matrix.artifact }}
           path: |
             release/*.exe
             release/*.dmg
@@ -54,7 +81,7 @@ jobs:
           path: artifacts
       - name: Verify downloaded artifacts against original builds
         run: |
-          for platform in windows-latest macos-latest; do
+          for platform in windows-x64 macos-x64 macos-arm64; do
             (cd "artifacts/family-bridge-$platform" && sha256sum --check --strict build-SHA256SUMS.txt) || exit 1
           done
       - name: Generate checksums

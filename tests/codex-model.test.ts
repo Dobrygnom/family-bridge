@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createModelResolver } from "../src/core/codex-model.js";
+import { codexExecutionModel } from "../src/core/codex-settings.js";
+
+test("the default prefers account-visible Sol while auto and explicit choices keep their meaning", () => {
+  assert.equal(codexExecutionModel(undefined), undefined);
+  assert.equal(codexExecutionModel("gpt-5.6-sol"), undefined);
+  assert.equal(codexExecutionModel("auto"), null);
+  assert.equal(codexExecutionModel("gpt-5.6-luna"), "gpt-5.6-luna");
+});
 
 test("an explicit Sol preference is used only when visible, while account-aware mode leaves selection to Codex", async () => {
   assert.equal(await createModelResolver(async () => [{model:"gpt-5.6-sol"}], Date.now, "gpt-5.6-sol")("client"), "gpt-5.6-sol");

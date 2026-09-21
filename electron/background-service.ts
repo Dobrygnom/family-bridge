@@ -1,7 +1,7 @@
 import { errorMessage } from "../src/core/error-message.js";
 import { newTopicText, normalizeNewTopic, newTopicPrompt, legacyNewTopicWireText, supportsSeparateTopicBrief, NEW_TOPIC_CONTEXT_LIMIT, NEW_TOPIC_DESCRIPTION_LIMIT, type NewTopicPreview, type NewTopicRequest } from "../src/core/new-topic.js";
 import { UpdateActivity, ActivityMap, ActivitySet } from "./update-activity.js";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,7 +13,7 @@ import { CodexCliAgent, defaultCodexCommand, hasRoleVoiceViolation } from "../sr
 import { CodexHistoryClient, type ContextThread } from "../src/core/codex-history.js";
 import { CodexAppHistoryClient } from "../src/core/codex-app-history.js";
 import { dismissedTopicKeys } from "../src/core/topic-suggestions.js";
-import { CONTEXT_ANALYSIS_VERSION, COVERAGE_RECOVERY_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage } from "../src/core/context-analysis.js";
+import { CONTEXT_ANALYSIS_VERSION, COVERAGE_RECOVERY_VERSION, CodexContextAnalyzer, contextAnalysisNeedsRefresh, contextSourceHash, normalizeContextAnalysis, preserveContextAnalysis, routeSensitivity, topicsForCounterpart, type ContextAnalysis, type AnalysisMessage, type RawAnalysis } from "../src/core/context-analysis.js";
 import { ConversationCoordinator, type CoordinatorEvent } from "../src/core/coordinator.js";
 import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
@@ -45,9 +45,11 @@ import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportRep
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
 import { buildApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
 import { createUpdateCheckpoint, recoverMissingCheckpointData } from "./update-checkpoint.js";
-import { CODEX_MODELS, CODEX_REASONING_EFFORTS, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, codexModelArgument, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../src/core/codex-settings.js";
+import { CODEX_MODELS, CODEX_REASONING_EFFORTS, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, codexExecutionModel, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../src/core/codex-settings.js";
 import { prepareManualContext } from "../src/core/manual-context.js";
 import { ComputeChannelManager } from "./compute-channel.js";
+import { PsychologistIntake, type IntakeRoute } from "./psychologist-intake.js";
+import { runPersistentStructuredCodex } from "./persistent-structured-codex.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -104,6 +106,7 @@ interface BackgroundServiceOptions {
   topicRefiner?: TopicRefiner;
   newTopicComposer?: (prompt: string) => Promise<NewTopicPreview>;
   uiDiagnostics?: () => Promise<import("./ui-error-diagnostics.js").UiErrorSnapshot>;
+  computeEnrollmentNotifier?: (requestId: string) => void;
 }
 
 const contextFallbackRefreshMs = 6 * 60 * 60 * 1_000;
@@ -473,6 +476,9 @@ export class BackgroundService {
   private readonly answeringQuestions = new ActivitySet<string>(this.updateActivity, "owner_answers");
   private updateState: UpdateState = { available: false, downloading: false };
   private readonly compute: ComputeChannelManager;
+  private readonly intake: PsychologistIntake;
+  private intakeRecoveryTimer?: ReturnType<typeof setInterval>;
+  private intakeRecovering = false;
 
   private static readonly supabaseUrl = "https://knqaygvvqrwmtyqucbsz.supabase.co";
   private static readonly supabaseKey = "sb_publishable_igxXq8mdFjW-wKJGSKhtnA_iINygezS";
@@ -488,7 +494,23 @@ export class BackgroundService {
     this.diagnostics = new Diagnostics(userData);
     this.compute = new ComputeChannelManager(path.join(userData, "compute-channel"), resourcesPath,
       (secret, storage, preserve) => new SupabaseTransport(BackgroundService.supabaseUrl, BackgroundService.supabaseKey, secret, storage, preserve),
-      this.options.backgroundTasks !== false);
+      this.options.backgroundTasks !== false, undefined,
+      event => this.options.computeEnrollmentNotifier?.(event.requestId));
+    this.intake = new PsychologistIntake(path.join(userData, "psychologist-memory", "intake.json"), {
+      run: async input => {
+        if (input.route === "trusted") return this.compute.executePersistentStructured(input.key, input.schema, input.prompt, input.sessionId);
+        const state = await this.store.read();
+        return runPersistentStructuredCodex({
+          command: defaultCodexCommand(),
+          workspace: path.join(this.userData, "psychologist-memory", "project"),
+          schemaPath: path.join(this.resourcesPath, "schemas", `${input.schema}.schema.json`),
+          prompt: input.prompt,
+          sessionId: input.sessionId,
+          model: codexExecutionModel(state.codexModel),
+          reasoningEffort: state.codexReasoningEffort ?? "medium",
+        });
+      },
+    });
     this.support = new RemoteSupport(path.join(userData, "diagnostics", "support"), {
       runtime: this.diagnostics.runtime,
       context: async () => {
@@ -722,7 +744,7 @@ export class BackgroundService {
     const runtimePresenceAt = this.peerPresence && this.peerPresence.pairId === stored.remote?.pairId ? this.peerPresence.at : undefined;
     const persistedPresenceAt = stored.remote?.peerPresenceAt;
     const peerPresenceAt = runtimePresenceAt && (!persistedPresenceAt || Date.parse(runtimePresenceAt) > Date.parse(persistedPresenceAt)) ? runtimePresenceAt : persistedPresenceAt;
-    return { ...publicStored, appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, compute: this.compute.snapshot(), running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerVersionObservedAt: stored.remote?.peerVersionObservedAt, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+    return { ...publicStored, processingMode: stored.processingMode ?? (stored.identityConfigured ? "local" : undefined), appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, compute: this.compute.snapshot(), intake: this.intake.snapshot(), running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerVersionObservedAt: stored.remote?.peerVersionObservedAt, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {
@@ -851,7 +873,7 @@ export class BackgroundService {
   private async performContextSync(latestThread?: ContextThread) {
     const selected = this.readContextSource();
     if (!selected?.id) throw new Error("Сначала выберите базовый чат");
-    if (selected.source === "manual") return this.state();
+    if (selected.source === "manual" || selected.source === "interview") return this.state();
     const refreshingReadyContext = Boolean(selected.lastSyncedAt);
     if (refreshingReadyContext) {
       this.updateContextSync(true, 5);
@@ -1323,6 +1345,25 @@ export class BackgroundService {
       setTimeout(() => void this.checkContextForUpdates(), 5_000);
       this.contextTimer = setInterval(() => void this.checkContextForUpdates(), 24 * 60 * 60 * 1_000);
     }
+    if (this.options.backgroundTasks !== false && !this.intakeRecoveryTimer) {
+      this.intakeRecoveryTimer = setInterval(() => void this.recoverPendingIntake(), 60_000);
+      this.intakeRecoveryTimer.unref();
+      setTimeout(() => void this.recoverPendingIntake(), 1_000);
+    }
+  }
+
+  private async recoverPendingIntake() {
+    if (this.intakeRecovering || !this.compute.isClient()) return;
+    const pending = this.intake.snapshot();
+    if (pending.route !== "trusted" || !pending.pendingMessageId) return;
+    this.intakeRecovering = true;
+    try {
+      await this.intake.resumePending();
+      this.emit({ type: "intake", intake: this.intake.snapshot() });
+    } catch {
+      // The exact text and compute job remain durable; the next tick retries it.
+      this.emit({ type: "intake", intake: this.intake.snapshot() });
+    } finally { this.intakeRecovering = false; }
   }
 
   private async ensureTopicSources(state: Awaited<ReturnType<AtomicStore["read"]>>) {
@@ -2020,7 +2061,7 @@ export class BackgroundService {
     } as const;
     const agent = this.compute.isClient()
       ? this.compute.createAgent(conversationId, agentOptions)
-      : new CodexCliAgent({ ...agentOptions, model: codexModelArgument(model), reasoningEffort,
+      : new CodexCliAgent({ ...agentOptions, model: codexExecutionModel(model), reasoningEffort,
         workspace: path.join(this.userData, "agents", owner, conversationId), schemaPath, codexCommand: defaultCodexCommand() });
     this.remoteAgents.set(conversationId, agent);
     return agent;
@@ -2687,19 +2728,110 @@ export class BackgroundService {
     this.emit({ type: "topics", topics: state.pendingTopics.filter(topic => !topic.startsWith(VERSION_PROBE_PREFIX)), pairTopics: state.pairTopics.filter(topic => !topic.startsWith(VERSION_PROBE_PREFIX)), activeTopics: state.activeTopics.filter(topic => !topic.startsWith(VERSION_PROBE_PREFIX)), topicSources: state.topicSources });
   }
 
-  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName?: string; peerVersion?: string; peerLastSeenAt?: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "portraits-updating"; updating: boolean } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: Record<string, TopicSource[]> } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
+  private emit(event: CoordinatorEvent | { type: "runtime"; running: boolean } | { type: "peer"; peerName?: string; peerVersion?: string; peerLastSeenAt?: string } | { type: "context"; context: ContextSource } | { type: "context-analysis"; analysis: ContextAnalysis } | { type: "intake"; intake: ReturnType<PsychologistIntake["snapshot"]> } | { type: "context-sync"; syncing: boolean; progress: number } | { type: "portraits-updating"; updating: boolean } | { type: "topics"; topics: string[]; pairTopics?: string[]; activeTopics?: string[]; topicSources?: Record<string, TopicSource[]> } | { type: "reports"; reports: string[]; reportSummaries: ReportSummaryView[] } | { type: "owner-questions"; questions: OwnerQuestionView[] } | ({ type: "update" } & UpdateState)) {
     this.windowProvider()?.webContents.send("bridge:event", event);
   }
 
-  configureComputeHost(name: unknown) { return this.compute.configureHost(name); }
+  configureComputeHost(name?: unknown, policy: import("../src/core/supabase-transport.js").ComputeApprovalPolicy = "auto_accept") { return this.compute.configureHost(name, policy); }
+  setComputeApprovalPolicy(policy: unknown) { return this.compute.setApprovalPolicy(policy); }
+  requestTrustedComputer() { return this.compute.requestTrustedComputer(); }
+  decideComputeEnrollment(requestId: unknown, approved: unknown) { return this.compute.decideEnrollment(requestId, approved); }
   createComputeInvitation(label: unknown) { return this.compute.createInvitation(label); }
   joinComputeChannel(code: unknown) { return this.compute.join(code); }
   disableComputeChannel() { return this.compute.disable(); }
   revokeComputeChannel(channelId: unknown) { return this.compute.revoke(channelId); }
   computeState() { return this.compute.state(); }
+
+  async setProcessingMode(mode: unknown) {
+    if (mode !== "local" && mode !== "trusted") throw new Error("Выберите способ обработки");
+    if (mode === "trusted" && !this.compute.isClient()) await this.compute.requestTrustedComputer();
+    // Do not persist a mode that failed to initialize. A transient server error
+    // must leave first-run recoverable instead of showing a request that never existed.
+    await this.store.update({ processingMode: mode });
+    return this.state();
+  }
+
+  async startPsychologistIntake() {
+    const state = await this.store.read();
+    const route: IntakeRoute = state.processingMode === "trusted" ? "trusted" : "local";
+    if (route === "trusted" && !this.compute.isClient()) throw new Error("Доверенный компьютер ещё не подключён");
+    await this.intake.start(route, state.language);
+    return this.state();
+  }
+
+  async sendPsychologistIntake(text: unknown) {
+    await this.intake.send(text);
+    return this.state();
+  }
+
+  async resetPsychologistIntake() {
+    await this.intake.reset();
+    return this.state();
+  }
+
+  async finalizePsychologistIntake() {
+    const raw = await this.intake.finalize() as RawAnalysis;
+    const intake = this.intake.snapshot();
+    const stored = await this.store.read();
+    const owner = raw.people?.find(person => person.key === "owner" || ["self", "owner", "я"].includes(person.relationship?.toLocaleLowerCase()))?.label?.trim()
+      || stored.displayName.trim() || "Вы";
+    const transcript: AnalysisMessage[] = intake.messages.map(message => ({ text: `${message.role === "user" ? "Человек" : "Психолог"}: ${message.text}`, created_at: message.createdAt }));
+    const samples: AnalysisMessage[] = intake.messages.filter(message => message.role === "user").map(message => ({ text: message.text, created_at: message.createdAt }));
+    const sourceId = `interview-${createHash("sha256").update(intake.sessionId ?? JSON.stringify(transcript)).digest("hex").slice(0, 20)}`;
+    const sourceHash = contextSourceHash(transcript);
+    const analysis = normalizeContextAnalysis(raw, sourceId, sourceHash, undefined, owner);
+    const source: ContextSource = { id: sourceId, title: "Первый разговор с психологом", project: "Family Bridge", source: "interview", status: "ready", lastSyncedAt: new Date().toISOString(), messageCount: transcript.length };
+    const memoryRoot = path.join(this.userData, "psychologist-memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const profile = [
+      "# Контекст первого разговора Family Bridge",
+      "",
+      "Это сведения, рассказанные владельцем в естественном разговоре. Наблюдения о других людях являются его точкой зрения, а не объективно установленными фактами.",
+      "",
+      ...analysis.portraits?.map(portrait => `## ${portrait.label}\n${portrait.observations.map(observation => `- [${observation.kind}] ${observation.text}`).join("\n")}`) ?? [],
+    ].join("\n");
+    const writes: Array<[string, string]> = [
+      ["style-samples.jsonl", samples.map(message => JSON.stringify(message)).join("\n") + (samples.length ? "\n" : "")],
+      ["personal-profile.md", profile],
+      ["context-source.json", JSON.stringify(source, null, 2)],
+      ["context-analysis.json", JSON.stringify(analysis, null, 2)],
+    ];
+    for (const [name, contents] of writes) {
+      const destination = path.join(memoryRoot, name), temporary = `${destination}.${randomUUID()}.tmp`;
+      await writeFile(temporary, contents, "utf8");
+      await replaceStateFile(temporary, destination);
+    }
+    const partner = analysis.people[0];
+    await this.store.mutate(current => ({
+      displayName: owner === "Вы" ? current.displayName : owner,
+      identityConfigured: Boolean((owner !== "Вы" ? owner : current.displayName).trim()),
+      onboardingComplete: false,
+      preferredCounterpartPersonId: partner?.id,
+      ...(current.remote && partner ? { remote: { ...current.remote, counterpartPersonId: partner.id, peerName: partner.label } } : {}),
+    }));
+    this.emit({ type: "context", context: source });
+    this.emit({ type: "context-analysis", analysis });
+    return this.state();
+  }
   private computeStructured(schema: "new-topic" | "topic-refinement" | "portrait-updates", prompt: string) {
     const key = createHash("sha256").update(`${schema}\u0000${prompt}`).digest("hex");
     return this.compute.executeStructured(key, schema, prompt);
+  }
+
+  async refreshCodexStatus() {
+    this.healthCheckedAt = 0;
+    const codex = await this.codexStatus();
+    this.health = codex;
+    this.emit({ type: "health", codex, connected: this.connected } as never);
+    return codex;
+  }
+
+  async startCodexLogin() {
+    const command = defaultCodexCommand();
+    const child = spawn(command, ["login"], { windowsHide: true, shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"), detached: false, stdio: "ignore" });
+    child.unref();
+    this.diagnostics.record("codex.login-started", { executable: command });
+    return { started: true };
   }
 
   private async codexStatus() {
@@ -2731,7 +2863,7 @@ export class BackgroundService {
         peerName: secondName,
         perspective: "Demo: владельцу важна предсказуемость и ясность ключевых договорённостей.",
         language: state.language,
-        model: codexModelArgument(state.codexModel ?? DEFAULT_CODEX_MODEL),
+        model: codexExecutionModel(state.codexModel ?? DEFAULT_CODEX_MODEL),
         reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
         workspace: path.join(root, "dima"),
         schemaPath,
@@ -2744,7 +2876,7 @@ export class BackgroundService {
         peerName: firstName,
         perspective: "Demo: владельцу важны гибкость и свобода менять необязательные планы.",
         language: state.language,
-        model: codexModelArgument(state.codexModel ?? DEFAULT_CODEX_MODEL),
+        model: codexExecutionModel(state.codexModel ?? DEFAULT_CODEX_MODEL),
         reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
         workspace: path.join(root, "katya"),
         schemaPath,

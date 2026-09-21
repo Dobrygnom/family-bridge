@@ -5,7 +5,7 @@ export interface ContextThread {
   id: string;
   title: string;
   project: string;
-  source: "codex" | "chatgpt" | "manual";
+  source: "codex" | "chatgpt" | "manual" | "interview";
   cwd?: string;
   updatedAt?: number;
 }

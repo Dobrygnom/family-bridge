@@ -11,6 +11,15 @@ import { CodexCliAgent, defaultCodexCommand, type CodexRuntimeOptions } from "..
 import type { AgentResponse, AgentRuntime } from "../src/core/types.js";
 import { isolatedCodexInvocation, codexTaskFailure } from "../src/core/codex-isolation.js";
 import { codexReasoningArgs } from "../src/core/codex-model.js";
+import {
+  createEnrollmentKeyPair,
+  openEnrollmentPayload,
+  sealEnrollmentPayload,
+  validEnrollmentPrivateKey,
+  validEnrollmentPublicKey,
+  type EnrollmentKeyPair,
+} from "./compute-enrollment-crypto.js";
+import type { ComputeApprovalPolicy, ComputeEnrollmentRequest } from "../src/core/supabase-transport.js";
 
 const PROTOCOL = 1;
 const REQUEST_LIMIT = 120_000;
@@ -18,8 +27,8 @@ const REQUEST_LIMIT = 120_000;
 // for sleep, dropped subscriptions and long-offline computers.
 const POLL_MS = 60_000;
 
-type ComputeOperation = "start" | "respond" | "owner" | "revise" | "structured";
-type ComputeSchema = "new-topic" | "topic-refinement" | "portrait-updates";
+type ComputeOperation = "start" | "respond" | "owner" | "revise" | "structured" | "persistent-structured";
+type ComputeSchema = "new-topic" | "topic-refinement" | "portrait-updates" | "intake-response" | "context-analysis";
 interface ComputeRequest {
   protocol: 1;
   type: "request";
@@ -50,9 +59,24 @@ interface ComputeResponse {
   code?: "COMPUTE_FAILED" | "COMPUTE_INVALID" | "COMPUTE_LIMIT";
 }
 interface ComputeInvitation { protocol: 1; channelId: string; sponsorName: string; creatorId: string; invite: PairingInvite }
-interface HostChannel extends ComputeInvitation { clientLabel: string; enabled: boolean; createdAt: string }
+interface HostChannel extends ComputeInvitation { clientLabel: string; enabled: boolean; createdAt: string; enrollmentRequestId?: string }
 interface ClientBinding { invitation: ComputeInvitation; joinedAt: string; enabled: boolean }
-interface ComputeSettings { mode: "off" | "host" | "client"; sponsorName?: string; channels: HostChannel[]; client?: ClientBinding }
+interface SavedEnrollmentRequest {
+  id: string;
+  requesterPublicKey: string;
+  providerPublicKey: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: string;
+}
+interface ComputeSettings {
+  mode: "off" | "host" | "client";
+  sponsorName?: string;
+  approvalPolicy?: ComputeApprovalPolicy;
+  providerConfigured?: boolean;
+  channels: HostChannel[];
+  client?: ClientBinding;
+  enrollment?: SavedEnrollmentRequest;
+}
 interface ClientJob { key: string; request: ComputeRequest; sent?: boolean; response?: ComputeResponse; updatedAt: string }
 interface SavedHostResult { response?: ComputeResponse; retryAt?: number; recipientId: string; conversationId: string; createdAt: string }
 
@@ -61,6 +85,9 @@ export interface ComputeState {
   sponsorName?: string;
   connected: boolean;
   pending: number;
+  approvalPolicy: ComputeApprovalPolicy;
+  enrollmentStatus: "idle" | "pending" | "approved" | "rejected" | "unavailable";
+  requests: Array<{ id: string; createdAt: string }>;
   channels: Array<{ channelId: string; label: string; enabled: boolean; connected: boolean; createdAt: string }>;
 }
 
@@ -76,10 +103,10 @@ const validInvitation = (value: unknown): value is ComputeInvitation => {
 const validRequest = (value: unknown): value is ComputeRequest => {
   const item = value as ComputeRequest | null;
   return Boolean(item && item.protocol === PROTOCOL && item.type === "request" && uuid(item.id)
-    && ["start", "respond", "owner", "revise", "structured"].includes(item.operation) && bounded(item.prompt, REQUEST_LIMIT)
+    && ["start", "respond", "owner", "revise", "structured", "persistent-structured"].includes(item.operation) && bounded(item.prompt, REQUEST_LIMIT)
     && (!item.sessionId || bounded(item.sessionId, 200))
-    && (item.operation === "structured"
-      ? ["new-topic", "topic-refinement", "portrait-updates"].includes(String(item.schema)) && !item.agent
+    && (["structured", "persistent-structured"].includes(item.operation)
+      ? ["new-topic", "topic-refinement", "portrait-updates", "intake-response", "context-analysis"].includes(String(item.schema)) && !item.agent
       : item.agent && ["dima", "katya"].includes(item.agent.id)
         && bounded(item.agent.displayName, 80) && optionalBounded(item.agent.ownerName, 80) && optionalBounded(item.agent.peerName, 80)
         && bounded(item.agent.perspective, REQUEST_LIMIT) && optionalBounded(item.agent.communicationExamples, REQUEST_LIMIT)
@@ -121,6 +148,11 @@ export class ComputeChannelManager {
   private subscriptions = new Map<string, () => Promise<unknown>>();
   private clientWaiters = new Map<string, Array<(response: ComputeResponse) => void>>();
   private connectivity = new Map<string, boolean>();
+  private enrollmentTransport?: SupabaseTransport;
+  private enrollmentSubscription?: () => Promise<unknown>;
+  private enrollmentRequests: ComputeEnrollmentRequest[] = [];
+  private enrollmentUnavailable = false;
+  private providerRegistered?: boolean;
 
   constructor(
     private readonly root: string,
@@ -128,18 +160,40 @@ export class ComputeChannelManager {
     private readonly makeTransport: (secret: string, storage: ReturnType<typeof durableAuthStorage>, preserve: boolean) => SupabaseTransport,
     private readonly background = true,
     private readonly testRunner?: (request: ComputeRequest) => Promise<{ response?: AgentResponse; value?: unknown; sessionId?: string }>,
+    private readonly notify?: (event: { type: "compute-enrollment"; requestId: string }) => void,
   ) {
     this.settings = parseJson<ComputeSettings>(path.join(root, "settings.json"), { mode: "off", channels: [] });
     if (this.background) { this.timer = setInterval(() => void this.tick(), POLL_MS); this.timer.unref(); setTimeout(() => void this.tick(), 100); }
   }
 
   private async saveSettings() { await atomicJson(path.join(this.root, "settings.json"), this.settings); }
+  private async enrollmentKeys(): Promise<EnrollmentKeyPair> {
+    const file = path.join(this.root, "enrollment-keys.json");
+    const existing = parseJson<EnrollmentKeyPair | undefined>(file, undefined);
+    if (existing && validEnrollmentPublicKey(existing.publicKey) && validEnrollmentPrivateKey(existing.privateKey)) return existing;
+    const created = createEnrollmentKeyPair();
+    await atomicJson(file, created);
+    return created;
+  }
+  private enrollment(): SupabaseTransport {
+    if (!this.enrollmentTransport) this.enrollmentTransport = this.makeTransport(
+      "family-bridge-compute-enrollment-v1",
+      durableAuthStorage(path.join(this.root, "enrollment")),
+      false,
+    );
+    return this.enrollmentTransport;
+  }
   private resetConnections() {
     for (const unsubscribe of this.subscriptions.values()) void unsubscribe();
     this.subscriptions.clear();
     for (const transport of this.transports.values()) transport.dispose();
     this.transports.clear();
     this.connectivity.clear();
+    void this.enrollmentSubscription?.();
+    this.enrollmentSubscription = undefined;
+    this.enrollmentTransport?.dispose();
+    this.enrollmentTransport = undefined;
+    this.providerRegistered = undefined;
   }
   private channelDirectory(id: string) { return path.join(this.root, "channels", id); }
   private transport(invitation: ComputeInvitation, preserve = true) {
@@ -154,13 +208,55 @@ export class ComputeChannelManager {
       transport.subscribe(invitation.invite.pairId, () => void this.tick()));
   }
 
-  async configureHost(name: unknown) {
-    const sponsorName = typeof name === "string" ? name.trim() : "";
-    if (!sponsorName || sponsorName.length > 80) throw new Error("Укажите имя владельца вычислительного компьютера");
+  async configureHost(name?: unknown, approvalPolicy: ComputeApprovalPolicy = "auto_accept") {
+    const sponsorName = (typeof name === "string" && name.trim() || "Доверенный компьютер").slice(0, 80);
+    if (!["auto_accept", "ask", "reject"].includes(approvalPolicy)) throw new Error("Некорректный режим новых подключений");
     if (this.settings.mode === "client") this.resetConnections();
-    this.settings = { ...this.settings, mode: "host", sponsorName, client: undefined };
+    this.settings = { ...this.settings, mode: "host", sponsorName, approvalPolicy, providerConfigured: true, client: undefined, enrollment: undefined };
     await this.saveSettings();
     if (this.background) setTimeout(() => void this.tick(), 0);
+    return this.snapshot();
+  }
+
+  async setApprovalPolicy(policy: unknown) {
+    if (!["auto_accept", "ask", "reject"].includes(String(policy))) throw new Error("Некорректный режим новых подключений");
+    if (this.settings.mode !== "host") throw new Error("Сначала включите режим доверенного компьютера");
+    this.settings.approvalPolicy = policy as ComputeApprovalPolicy;
+    await this.saveSettings();
+    if (this.background) setTimeout(() => void this.tick(), 0);
+    return this.snapshot();
+  }
+
+  async requestTrustedComputer() {
+    if (this.settings.mode === "host") this.resetConnections();
+    const keys = await this.enrollmentKeys();
+    const request = await this.enrollment().requestDefaultComputeProvider(keys.publicKey);
+    this.settings = {
+      mode: "client",
+      sponsorName: "Доверенный компьютер",
+      channels: [],
+      enrollment: {
+        id: request.id,
+        requesterPublicKey: request.requesterPublicKey,
+        providerPublicKey: request.providerPublicKey,
+        status: request.status,
+        createdAt: request.createdAt,
+      },
+    };
+    this.enrollmentUnavailable = false;
+    await this.saveSettings();
+    if (request.status === "approved") await this.completeEnrollment(request);
+    if (this.background) setTimeout(() => void this.tick(), 0);
+    return this.snapshot();
+  }
+
+  async decideEnrollment(requestId: unknown, approved: unknown) {
+    if (!uuid(requestId) || typeof approved !== "boolean") throw new Error("Некорректный запрос подключения");
+    if (this.settings.mode !== "host") throw new Error("Этот компьютер не принимает подключения");
+    const request = this.enrollmentRequests.find(item => item.id === requestId)
+      ?? (await this.enrollment().pendingComputeEnrollmentRequests()).find(item => item.id === requestId);
+    if (!request) throw new Error("Запрос подключения уже обработан или не найден");
+    await this.resolveEnrollment(request, approved);
     return this.snapshot();
   }
 
@@ -181,6 +277,64 @@ export class ComputeChannelManager {
     return { code: invitationCode(channel), channelId, sponsorName };
   }
 
+  private async createChannel(label: string, enrollmentRequestId?: string): Promise<HostChannel> {
+    const sponsorName = this.settings.sponsorName || "Доверенный компьютер";
+    const channelId = randomUUID();
+    const directory = this.channelDirectory(channelId);
+    const transport = this.makeTransport(generateSharedSecret(), durableAuthStorage(directory), false);
+    const creatorId = await transport.identity();
+    const invite = await transport.createPair();
+    transport.dispose();
+    const channel: HostChannel = {
+      protocol: 1,
+      channelId,
+      sponsorName,
+      clientLabel: label.slice(0, 80),
+      creatorId,
+      invite,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      enrollmentRequestId,
+    };
+    this.settings = { ...this.settings, channels: [...this.settings.channels, channel] };
+    await this.saveSettings();
+    return channel;
+  }
+
+  private async resolveEnrollment(request: ComputeEnrollmentRequest, approved: boolean) {
+    if (!approved) {
+      await this.enrollment().decideComputeEnrollmentRequest(request.id, false);
+      this.enrollmentRequests = this.enrollmentRequests.filter(item => item.id !== request.id);
+      return;
+    }
+    if (!validEnrollmentPublicKey(request.requesterPublicKey)) throw new Error("Некорректный ключ запроса подключения");
+    const keys = await this.enrollmentKeys();
+    const channel = this.settings.channels.find(item => item.enrollmentRequestId === request.id)
+      ?? await this.createChannel(`Подключение ${request.id.slice(0, 8)}`, request.id);
+    const response = sealEnrollmentPayload(channel, keys.privateKey, request.requesterPublicKey);
+    // The request and its channel are idempotent. If the response is lost while the
+    // server is offline, keep the channel enabled and publish the same sealed invite
+    // on the next tick instead of creating a dead connection.
+    await this.enrollment().decideComputeEnrollmentRequest(request.id, true, response);
+    this.enrollmentRequests = this.enrollmentRequests.filter(item => item.id !== request.id);
+  }
+
+  private async completeEnrollment(request: ComputeEnrollmentRequest) {
+    if (!request.responsePayload || !validEnrollmentPublicKey(request.providerPublicKey)) throw new Error("Доверенный компьютер вернул некорректный ответ");
+    const keys = await this.enrollmentKeys();
+    const invitation = openEnrollmentPayload<ComputeInvitation>(request.responsePayload, keys.privateKey, request.providerPublicKey);
+    if (!validInvitation(invitation)) throw new Error("Доверенный компьютер вернул некорректное подключение");
+    await this.join(invitationCode(invitation));
+    this.settings.enrollment = {
+      id: request.id,
+      requesterPublicKey: request.requesterPublicKey,
+      providerPublicKey: request.providerPublicKey,
+      status: "approved",
+      createdAt: request.createdAt,
+    };
+    await this.saveSettings();
+  }
+
   async join(code: unknown) {
     const invitation = parseInvitation(code);
     this.resetConnections();
@@ -198,9 +352,11 @@ export class ComputeChannelManager {
   }
 
   async disable() {
+    const wasProvider = this.settings.mode === "host" || this.settings.providerConfigured === true;
     this.resetConnections();
-    this.settings = { mode: "off", channels: this.settings.channels };
+    this.settings = { mode: "off", channels: this.settings.channels, ...(wasProvider ? { providerConfigured: true, approvalPolicy: this.settings.approvalPolicy } : {}) };
     await this.saveSettings();
+    if (wasProvider) await this.syncProviderRegistration(false).catch(() => undefined);
     return this.snapshot();
   }
 
@@ -256,6 +412,15 @@ export class ComputeChannelManager {
     return result.value;
   }
 
+  async executePersistentStructured(key: string, schema: "intake-response" | "context-analysis", prompt: string, sessionId?: string) {
+    const result = await this.execute(key, { operation: "persistent-structured", schema, prompt, sessionId });
+    if (result.outcome !== "ok" || result.value === undefined) {
+      const pending = result.code === "COMPUTE_LIMIT";
+      throw Object.assign(new Error(pending ? "Лимит доверенного компьютера временно исчерпан. Сообщение сохранено." : "Доверенный компьютер не смог обработать сообщение. Оно сохранено для повтора."), { code: pending ? "CODEX_USAGE_LIMIT" : "COMPUTE_FAILED" });
+    }
+    return { value: result.value, sessionId: result.sessionId };
+  }
+
   async state(): Promise<ComputeState> {
     await this.tick();
     return this.snapshot();
@@ -265,8 +430,14 @@ export class ComputeChannelManager {
     const jobs = parseJson<Record<string, ClientJob>>(path.join(this.root, "client-jobs.json"), {});
     const clientConnected = this.settings.client ? this.connectivity.get(this.settings.client.invitation.channelId) ?? false : false;
     const hostConnected = this.settings.channels.some(channel => this.connectivity.get(channel.channelId));
+    const enrollmentStatus = this.enrollmentUnavailable && this.settings.enrollment?.status === "pending"
+      ? "unavailable"
+      : this.settings.client?.enabled ? "approved" : this.settings.enrollment?.status ?? "idle";
     return { mode: this.settings.mode, sponsorName: this.settings.sponsorName, connected: this.settings.mode === "client" ? clientConnected : this.settings.mode === "host" ? hostConnected : false,
       pending: Object.values(jobs).filter(job => !job.response).length,
+      approvalPolicy: this.settings.approvalPolicy ?? "auto_accept",
+      enrollmentStatus,
+      requests: this.enrollmentRequests.map(request => ({ id: request.id, createdAt: request.createdAt })),
       channels: this.settings.channels.map(channel => ({ channelId: channel.channelId, label: channel.clientLabel || channel.sponsorName,
         enabled: channel.enabled, connected: this.connectivity.get(channel.channelId) ?? false, createdAt: channel.createdAt })) };
   }
@@ -275,10 +446,61 @@ export class ComputeChannelManager {
     if (this.working) return;
     this.working = true;
     try {
-      if (this.settings.mode === "host") await Promise.allSettled(this.settings.channels.filter(item => item.enabled).map(channel => this.pollHost(channel)));
-      if (this.settings.mode === "client" && this.settings.client?.enabled) await this.pollClient(this.settings.client);
+      if (this.settings.providerConfigured) await this.syncProviderRegistration(this.settings.mode === "host").catch(() => undefined);
+      if (this.settings.mode === "host") {
+        await this.pollEnrollments().catch(() => undefined);
+        await Promise.allSettled(this.settings.channels.filter(item => item.enabled).map(channel => this.pollHost(channel)));
+      }
+      if (this.settings.mode === "client") {
+        if (!this.settings.client?.enabled && this.settings.enrollment) await this.pollEnrollmentRequest();
+        if (this.settings.client?.enabled) await this.pollClient(this.settings.client);
+      }
     } catch { /* Offline and sleeping computers are expected. */ }
     finally { this.working = false; }
+  }
+
+  private async syncProviderRegistration(enabled: boolean) {
+    if (this.providerRegistered === enabled) return;
+    const transport = this.enrollment();
+    const keys = await this.enrollmentKeys();
+    await transport.registerDefaultComputeProvider(keys.publicKey, enabled);
+    this.providerRegistered = enabled;
+  }
+
+  private async pollEnrollments() {
+    const transport = this.enrollment();
+    await this.syncProviderRegistration(true);
+    if (!this.enrollmentSubscription) {
+      const providerId = await transport.identity();
+      this.enrollmentSubscription = transport.subscribeComputeEnrollments(providerId, () => void this.tick());
+    }
+    const previous = new Set(this.enrollmentRequests.map(item => item.id));
+    const requests = await transport.pendingComputeEnrollmentRequests();
+    const policy = this.settings.approvalPolicy ?? "auto_accept";
+    if (policy === "auto_accept") {
+      for (const request of requests) await this.resolveEnrollment(request, true);
+      this.enrollmentRequests = [];
+    } else if (policy === "reject") {
+      for (const request of requests) await this.resolveEnrollment(request, false);
+      this.enrollmentRequests = [];
+    } else {
+      this.enrollmentRequests = requests;
+      for (const request of requests) if (!previous.has(request.id)) this.notify?.({ type: "compute-enrollment", requestId: request.id });
+    }
+  }
+
+  private async pollEnrollmentRequest() {
+    const saved = this.settings.enrollment;
+    if (!saved || saved.status !== "pending") return;
+    try {
+      const current = await this.enrollment().computeEnrollmentRequest(saved.id);
+      saved.status = current.status;
+      this.enrollmentUnavailable = false;
+      await this.saveSettings();
+      if (current.status === "approved") await this.completeEnrollment(current);
+    } catch {
+      this.enrollmentUnavailable = true;
+    }
   }
 
   private async pollClient(binding: ClientBinding) {
@@ -344,14 +566,20 @@ export class ComputeChannelManager {
     try {
       if (this.testRunner) {
         const result = await this.testRunner(request);
-        return request.operation === "structured"
-          ? { protocol: 1, type: "response", requestId: request.id, outcome: "ok", value: result.value }
+        return ["structured", "persistent-structured"].includes(request.operation)
+          ? { protocol: 1, type: "response", requestId: request.id, outcome: "ok", value: result.value, sessionId: result.sessionId }
           : { protocol: 1, type: "response", requestId: request.id, outcome: "ok", response: result.response, sessionId: result.sessionId };
       }
-      const workspace = path.join(this.channelDirectory(channel.channelId), "work", request.id);
+      const workspace = request.operation === "persistent-structured"
+        ? path.join(this.channelDirectory(channel.channelId), "project")
+        : path.join(this.channelDirectory(channel.channelId), "work", request.id);
       if (request.operation === "structured") {
-        const value = await this.runStructured(workspace, request.schema!, request.prompt);
+        const { value } = await this.runStructured(workspace, request.schema!, request.prompt, undefined, true);
         return { protocol: 1, type: "response", requestId: request.id, outcome: "ok", value };
+      }
+      if (request.operation === "persistent-structured") {
+        const result = await this.runStructured(workspace, request.schema!, request.prompt, request.sessionId, false);
+        return { protocol: 1, type: "response", requestId: request.id, outcome: "ok", value: result.value, sessionId: result.sessionId };
       }
       const options: CodexRuntimeOptions = {
         ...request.agent!,
@@ -373,11 +601,13 @@ export class ComputeChannelManager {
     }
   }
 
-  private async runStructured(workspace: string, schema: ComputeSchema, prompt: string): Promise<unknown> {
+  private async runStructured(workspace: string, schema: ComputeSchema, prompt: string, sessionId?: string, ephemeral = true): Promise<{ value: unknown; sessionId?: string }> {
     await mkdir(workspace, { recursive: true });
     const command = defaultCodexCommand();
     const schemaPath = path.join(this.resourcesPath, "schemas", `${schema}.schema.json`);
-    const args = isolatedCodexInvocation(["exec", "--model", "gpt-5.6-luna", ...codexReasoningArgs("medium"), "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", schemaPath, "-C", workspace, "-"]);
+    const args = isolatedCodexInvocation(sessionId
+      ? ["exec", "resume", "--model", "gpt-5.6-luna", ...codexReasoningArgs("medium"), "--skip-git-repo-check", "--json", "--output-schema", schemaPath, sessionId, "-"]
+      : ["exec", "--model", "gpt-5.6-luna", ...codexReasoningArgs("medium"), ...(ephemeral ? ["--ephemeral"] : []), "--skip-git-repo-check", "-s", "read-only", "--json", "--output-schema", schemaPath, "-C", workspace, "-"]);
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, { cwd: workspace, windowsHide: true, shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd") });
       child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
@@ -391,15 +621,16 @@ export class ComputeChannelManager {
         clearTimeout(timeout);
         if (code !== 0) { reject(codexTaskFailure("Вычислительное задание", code, stderr || stdout)); return; }
         try {
-          let finalText = "";
+          let finalText = "", threadId: string | undefined;
           for (const line of stdout.split(/\r?\n/)) {
             if (!line.trim().startsWith("{")) continue;
-            const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: string }; message?: string };
+            const event = JSON.parse(line) as { type?: string; thread_id?: string; item?: { type?: string; text?: string }; message?: string };
+            if (event.type === "thread.started") threadId = event.thread_id;
             if (event.type === "item.completed" && event.item?.type === "agent_message") finalText = event.item.text ?? "";
             if (event.type === "error") throw new Error(event.message ?? "Вычислительное задание не выполнено");
           }
           if (!finalText) throw new Error("Вычислительный компьютер не вернул результат");
-          resolve(JSON.parse(finalText));
+          resolve({ value: JSON.parse(finalText), sessionId: sessionId ?? threadId });
         } catch (error) { reject(error); }
       });
     });

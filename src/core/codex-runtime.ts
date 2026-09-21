@@ -308,6 +308,14 @@ export function defaultCodexCommand(): string {
   if (process.env.CODEX_CLI_PATH && existsSync(process.env.CODEX_CLI_PATH)) {
     return process.env.CODEX_CLI_PATH;
   }
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const bundledCandidates = [
+    process.env.FAMILY_BRIDGE_BUNDLED_CODEX_PATH,
+    resourcesPath && path.join(resourcesPath, "codex-runtime", process.platform === "win32" ? "codex.exe" : "codex"),
+    path.resolve(process.cwd(), "build", "codex-runtime", process.platform === "win32" ? "codex.exe" : "codex"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const bundled = bundledCandidates.find(candidate => existsSync(candidate));
+  if (bundled) return bundled;
   if (process.platform === "win32") {
     const desktopExecutable = findWindowsCodexExecutable();
     if (desktopExecutable) return desktopExecutable;

@@ -1,6 +1,6 @@
 {
   "name": "family-bridge",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "main": "dist-electron/electron/main.js",
@@ -14,10 +14,12 @@
     "dev": "concurrently -k \"vite\" \"npm:dev:electron\"",
     "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.electron.json",
-    "package": "npm run build && electron-builder --publish never",
-    "package:dir": "npm run build && electron-builder --dir",
+    "prepare:codex-runtime": "node scripts/prepare-codex-runtime.mjs",
+    "package": "npm run prepare:codex-runtime && npm run build && electron-builder --publish never",
+    "package:dir": "npm run prepare:codex-runtime && npm run build && electron-builder --dir",
     "verify:installed-ui": "tsx scripts/verify-installed-ui.ts",
     "verify:fresh-ui": "tsx scripts/verify-fresh-ui.ts",
+    "verify:compute-live": "tsx scripts/verify-compute-enrollment-live.ts",
     "test:select-context": "tsx scripts/select-context-for-test.ts",
     "verify:context-source": "tsx scripts/verify-context-source.ts",
     "verify:portraits": "tsx scripts/verify-person-portraits.ts",
@@ -58,6 +60,10 @@
       {
         "from": "schemas",
         "to": "schemas"
+      },
+      {
+        "from": "build/codex-runtime",
+        "to": "codex-runtime"
       }
     ],
     "directories": {

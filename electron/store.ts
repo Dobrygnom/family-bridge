@@ -52,6 +52,7 @@ export interface StoredState {
   owner: OwnerId;
   onboardingComplete: boolean;
   identityConfigured: boolean;
+  processingMode?: "local" | "trusted";
   preferredCounterpartPersonId?: string;
   displayName: string;
   language: AppLanguage;
@@ -106,7 +107,7 @@ const defaults: StoredState = {
   displayName: "",
   language: "ru",
   autoStart: true,
-  codexModel: "auto",
+  codexModel: "gpt-5.6-sol",
   codexReasoningEffort: "medium",
   pendingTopics: [],
   inFlightTopics: [],

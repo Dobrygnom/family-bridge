@@ -113,6 +113,8 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
       || Boolean(normalizedOwnerName && [person.label, ...person.aliases].some((value) => normalizeName(value) === normalizedOwnerName));
   };
   const ownerKeys = new Set(["owner", ...raw.people.filter(isOwnerPerson).map((person) => person.key)]);
+  const ownerReferences = new Set(["owner", ...raw.people.filter(isOwnerPerson)
+    .flatMap(person => [person.key, person.label, ...person.aliases]).map(normalizeName)]);
   const rawPeople = raw.people.filter((person) => !isOwnerPerson(person));
   const used = new Set<string>(["owner", ...(previous?.people.map((person) => person.id) ?? [])]);
   const matched = new Set<string>();
@@ -130,11 +132,22 @@ export function normalizeContextAnalysis(raw: RawAnalysis, sourceId: string, sou
     keyToId.set(person.key, id);
     return { id, label: person.label.trim() || person.relationship.trim() || `Человек ${index + 1}`, relationship: person.relationship.trim(), aliases: person.aliases.map((item) => item.trim()).filter(Boolean) };
   });
+  const resolvePersonId = (reference: string): string | undefined => {
+    const exact = keyToId.get(reference);
+    if (exact) return exact;
+    const name = normalizeName(reference);
+    if (!name) return undefined;
+    const matches = rawPeople.filter(person => [person.key, person.label, ...person.aliases].some(value => normalizeName(value) === name));
+    return matches.length === 1 ? keyToId.get(matches[0].key) : undefined;
+  };
   const previousApproval = new Map(previous?.topics.map((topic) => [`${topic.title}\u0000${topic.discussWithPersonId}`, topic.approved]) ?? []);
   const topics = raw.topics.flatMap((topic, index): RoutedTopic[] => {
-    const discussWithPersonId = keyToId.get(topic.discuss_with);
+    const discussWithPersonId = resolvePersonId(topic.discuss_with)
+      // Some model replies use owner as the interlocutor. Only one other named
+      // person makes the intended recipient unambiguous; never guess among many.
+      ?? (rawPeople.length === 1 && ownerReferences.has(normalizeName(topic.discuss_with)) ? people[0]?.id : undefined);
     if (!discussWithPersonId || !topic.title.trim()) return [];
-    const aboutPersonIds = topic.about_people.map((key) => keyToId.get(key)).filter((value): value is string => Boolean(value));
+    const aboutPersonIds = topic.about_people.map(resolvePersonId).filter((value): value is string => Boolean(value));
     const id = `topic-${createHash("sha256").update(`${topic.title}\u0000${discussWithPersonId}`).digest("hex").slice(0, 12)}-${index + 1}`;
     return [{ id, title: topic.title.trim(), aboutPersonIds, discussWithPersonId, sensitivity: topic.sensitivity, reason: topic.reason.trim(), ...(topic.relevance ? { relevance: topic.relevance } : {}), approved: previousApproval.get(`${topic.title.trim()}\u0000${discussWithPersonId}`) ?? false }];
   });

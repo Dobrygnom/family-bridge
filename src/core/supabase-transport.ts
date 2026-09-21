@@ -35,6 +35,19 @@ export interface PairState {
   partner_id: string | null;
 }
 
+export type ComputeApprovalPolicy = "auto_accept" | "ask" | "reject";
+
+export interface ComputeEnrollmentRequest {
+  id: string;
+  requesterId: string;
+  requesterPublicKey: string;
+  providerPublicKey: string;
+  status: "pending" | "approved" | "rejected";
+  responsePayload?: string;
+  createdAt: string;
+  decidedAt?: string;
+}
+
 export class SupabaseTransport {
   private readonly client: SupabaseClient;
   private readonly authStorageKey?: string;
@@ -154,6 +167,50 @@ export class SupabaseTransport {
     return this.ensureAnonymousIdentity();
   }
 
+  async registerDefaultComputeProvider(publicKey: string, enabled: boolean): Promise<void> {
+    await this.ensureAnonymousIdentity();
+    const result = await this.client.rpc("register_default_compute_provider", {
+      requested_public_key: publicKey,
+      requested_enabled: enabled,
+    });
+    if (result.error) throw result.error;
+  }
+
+  async requestDefaultComputeProvider(publicKey: string): Promise<ComputeEnrollmentRequest> {
+    await this.ensureAnonymousIdentity();
+    const result = await this.client.rpc("request_default_compute_provider", {
+      requested_public_key: publicKey,
+    });
+    if (result.error) throw result.error;
+    return normalizeComputeEnrollment(Array.isArray(result.data) ? result.data[0] : result.data);
+  }
+
+  async computeEnrollmentRequest(requestId: string): Promise<ComputeEnrollmentRequest> {
+    await this.ensureAnonymousIdentity();
+    const result = await this.client.rpc("get_compute_connection_request", {
+      requested_request_id: requestId,
+    });
+    if (result.error) throw result.error;
+    return normalizeComputeEnrollment(Array.isArray(result.data) ? result.data[0] : result.data);
+  }
+
+  async pendingComputeEnrollmentRequests(): Promise<ComputeEnrollmentRequest[]> {
+    await this.ensureAnonymousIdentity();
+    const result = await this.client.rpc("list_compute_connection_requests");
+    if (result.error) throw result.error;
+    return (Array.isArray(result.data) ? result.data : []).map(normalizeComputeEnrollment);
+  }
+
+  async decideComputeEnrollmentRequest(requestId: string, approved: boolean, responsePayload?: string): Promise<void> {
+    await this.ensureAnonymousIdentity();
+    const result = await this.client.rpc("decide_compute_connection_request", {
+      requested_request_id: requestId,
+      requested_approved: approved,
+      requested_response_payload: responsePayload ?? null,
+    });
+    if (result.error) throw result.error;
+  }
+
   async send(input: {
     pairId: string;
     conversationId: string;
@@ -225,6 +282,25 @@ export class SupabaseTransport {
     });
   }
 
+  async claimSupportMessages(pairId: string, limit = 100): Promise<RemoteEnvelope[]> {
+    const result = await this.client.rpc("claim_support_bridge_messages", {
+      requested_pair_id: pairId,
+      requested_limit: Math.max(1, Math.min(500, Math.trunc(limit))),
+    });
+    if (result.error) throw result.error;
+    const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+    return rows.map(row => {
+      try { return { ...row, payload: decryptPayload(row.encrypted_payload, this.encryptionSecret) } as RemoteEnvelope; }
+      catch { return { ...row, payload: undefined } as RemoteEnvelope; }
+    });
+  }
+
+  async acknowledgeSupportMessages(messageIds: string[]): Promise<void> {
+    if (!messageIds.length) return;
+    const result = await this.client.rpc("ack_support_bridge_messages", { requested_message_ids: messageIds.slice(0, 500) });
+    if (result.error) throw result.error;
+  }
+
   async readPendingSent(pairId: string): Promise<Array<RemoteEnvelope & { idempotencyKey: string }>> {
     const me = await this.identity();
     const rows: Array<RemoteEnvelope & { idempotencyKey: string }> = [];
@@ -265,9 +341,39 @@ export class SupabaseTransport {
     };
   }
 
+  subscribeComputeEnrollments(providerId: string, onWake: () => void): () => Promise<unknown> {
+    const channel = this.client
+      .channel(`family-compute-enrollment:${providerId}:${++this.subscriptionSequence}`, { config: { private: true } })
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "compute_connection_requests", filter: `provider_id=eq.${providerId}` },
+        () => onWake(),
+      )
+      .subscribe();
+    this.channels.add(channel);
+    return async () => {
+      this.channels.delete(channel);
+      return this.client.removeChannel(channel);
+    };
+  }
+
   dispose(): void {
     void this.client.auth.stopAutoRefresh();
     this.channels.clear();
     void this.client.removeAllChannels();
   }
+}
+
+function normalizeComputeEnrollment(value: any): ComputeEnrollmentRequest {
+  if (!value || typeof value !== "object") throw new Error("Запрос подключения не найден");
+  return {
+    id: String(value.id),
+    requesterId: String(value.requester_id),
+    requesterPublicKey: String(value.requester_public_key),
+    providerPublicKey: String(value.provider_public_key),
+    status: value.status,
+    responsePayload: typeof value.response_payload === "string" ? value.response_payload : undefined,
+    createdAt: String(value.created_at),
+    decidedAt: typeof value.decided_at === "string" ? value.decided_at : undefined,
+  };
 }

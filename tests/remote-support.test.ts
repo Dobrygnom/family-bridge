@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { RemoteSupport, SUPPORT_FALLBACK_POLL_MS, SUPPORT_HEARTBEAT_MS, type SupportContext, type SupportMaintenanceCommand } from "../electron/remote-support.js";
+import { RemoteSupport, SUPPORT_FALLBACK_POLL_MS, SUPPORT_HEARTBEAT_MS, SUPPORT_REPORT_TTL_MS, type SupportContext, type SupportMaintenanceCommand } from "../electron/remote-support.js";
 import { compactSupportHeartbeat, sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "../electron/support-report.js";
 import { Diagnostics } from "../electron/diagnostics.js";
 import { startSupportControl, supportLocatorFiles } from "../electron/support-control.js";
@@ -43,7 +43,7 @@ test("repair decisions never use stale or differently bound peer reports", async
     await f.support.tick(); assert.ok(f.support.peerReport());
     f.context.pairId="other"; await f.support.tick(); assert.equal(f.support.peerReport(),undefined);
     f.context.pairId="pair"; await f.support.tick(); assert.ok(f.support.peerReport());
-    f.advance(90_001); assert.equal(f.support.peerReport(),undefined);
+    f.advance(SUPPORT_REPORT_TTL_MS + 1); assert.equal(f.support.peerReport(),undefined);
   } finally {await f.cleanup();}
 });
 
@@ -89,7 +89,28 @@ test("support polling advances and persists a cursor instead of downloading the 
   } finally { await f.cleanup(); }
 });
 
-test("idle support uses realtime with a one-minute fallback and a compact heartbeat", async () => {
+test("independent support claims and acknowledges bounded batches instead of leaving an unread backlog", async () => {
+  const f = await fixture();
+  const acknowledged: string[][] = [];
+  let claimed = false;
+  f.context.independent = true;
+  f.context.transport.readSupportMessages = async () => { throw new Error("cursor polling must not read the independent queue"); };
+  (f.context.transport as any).claimSupportMessages = async (_pairId: string, limit: number) => {
+    assert.equal(limit, 500);
+    if (claimed) return [];
+    claimed = true;
+    return [f.envelope()];
+  };
+  (f.context.transport as any).acknowledgeSupportMessages = async (ids: string[]) => { acknowledged.push(ids); };
+  try {
+    await f.support.tick();
+    assert.equal(acknowledged.length, 1);
+    assert.equal(acknowledged[0].length, 1);
+    assert.equal(f.sent.filter(item => item.payload.support?.replyTo).length, 1);
+  } finally { await f.cleanup(); }
+});
+
+test("idle support uses realtime, a one-minute fallback and a five-minute compact heartbeat", async () => {
   const f = await fixture();
   let wake: (() => void) | undefined;
   let subscriptions = 0;
@@ -100,7 +121,7 @@ test("idle support uses realtime with a one-minute fallback and a compact heartb
   };
   try {
     assert.equal(SUPPORT_FALLBACK_POLL_MS, 60_000);
-    assert.equal(SUPPORT_HEARTBEAT_MS, 60_000);
+    assert.equal(SUPPORT_HEARTBEAT_MS, 5 * 60_000);
     await f.support.tick();
     assert.equal(subscriptions, 1);
     const heartbeat = f.sent.find(item => item.payload.support?.type === "report")?.payload.support.report as SupportReport;
@@ -109,6 +130,15 @@ test("idle support uses realtime with a one-minute fallback and a compact heartb
     assert.equal(heartbeat.continuations, undefined);
     assert.equal(heartbeat.runtimeDiagnostics, undefined);
     assert.ok(Buffer.byteLength(JSON.stringify(heartbeat)) < 1_024);
+    for (let minute = 1; minute < 5; minute += 1) {
+      f.advance(60_000);
+      await f.support.tick();
+    }
+    assert.equal(f.sent.filter(item => item.payload.support?.type === "report").length, 1,
+      "idle support must not append a diagnostic row every minute");
+    f.advance(60_000);
+    await f.support.tick();
+    assert.equal(f.sent.filter(item => item.payload.support?.type === "report").length, 2);
     wake?.();
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(subscriptions, 1, "realtime wake reuses one subscription");
@@ -221,9 +251,9 @@ test("request IDs correlate reports; freshness uses capture time, and delayed re
     f.incoming.push(f.envelope("snapshot", { type: "report", report: report(), replyTo: requested.id, outcome: "accepted" }));
     await f.support.tick();
     assert.equal((await f.support.status()).requests[0].status, "received");
-    f.advance(100_000);
+    f.advance(SUPPORT_REPORT_TTL_MS + 1);
     assert.equal((await f.support.status()).peer?.stale, true);
-    assert.equal((await f.support.status()).peer?.ageSeconds, 100);
+    assert.equal((await f.support.status()).peer?.ageSeconds, Math.floor((SUPPORT_REPORT_TTL_MS + 1) / 1_000));
     await f.support.request("update");
     f.advance(400_000);
     assert.equal((await f.support.status()).requests.at(-1)?.status, "timeout");

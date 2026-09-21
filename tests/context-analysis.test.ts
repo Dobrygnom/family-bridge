@@ -99,6 +99,39 @@ test("context topics keep subject and intended counterpart separate", () => {
   assert.deepEqual(topicsForCounterpart(analysis, husband.id).map((topic) => topic.title), ["Как говорить о третьем человеке"]);
 });
 
+test("a model's unambiguous person name or alias still routes first-interview topics", () => {
+  const analysis = normalizeContextAnalysis({
+    people: [
+      { key: "owner", label: "Анна", relationship: "self", aliases: [] },
+      { key: "boris", label: "Борис", relationship: "partner", aliases: ["Боря"] },
+    ],
+    portraits: [],
+    topics: [
+      { title: "Домашние дела", about_people: ["owner", "Борис"], discuss_with: "Борис", sensitivity: "direct", reason: "Нужно договориться" },
+      { title: "Паузы", about_people: ["Боря"], discuss_with: "Боря", sensitivity: "direct", reason: "Нужно вернуться к разговору" },
+    ],
+  }, "interview", "hash", undefined, "Анна");
+  assert.deepEqual(analysis.people.map(person => person.label), ["Борис"]);
+  assert.deepEqual(analysis.topics.map(topic => topic.discussWithPersonId), ["boris", "boris"]);
+  assert.deepEqual(analysis.topics.map(topic => topic.aboutPersonIds), [["boris"], ["boris"]]);
+});
+
+test("owner-targeted interview topics recover only with one unambiguous other person", () => {
+  const input = {
+    people: [
+      { key: "owner", label: "Анна", relationship: "self", aliases: [] },
+      { key: "boris", label: "Борис", relationship: "partner", aliases: [] },
+    ],
+    portraits: [],
+    topics: [{ title: "Домашние дела", about_people: ["owner", "boris"], discuss_with: "owner", sensitivity: "direct" as const, reason: "Нужно договориться" }],
+  };
+  const one = normalizeContextAnalysis(input, "interview", "hash", undefined, "Анна");
+  assert.equal(one.topics[0]?.discussWithPersonId, "boris");
+  const many = normalizeContextAnalysis({ ...input, people: [...input.people,
+    { key: "maria", label: "Мария", relationship: "friend", aliases: [] }] }, "interview", "hash", undefined, "Анна");
+  assert.equal(many.topics.length, 0);
+});
+
 test("routing sensitivity follows the corrected subject and counterpart", () => {
   assert.equal(routeSensitivity(["husband"], "husband"), "direct");
   assert.equal(routeSensitivity(["lover"], "husband"), "cross_person");

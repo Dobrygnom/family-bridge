@@ -33,3 +33,23 @@ test("database policies bind reads, writes and diagnostics transport to pair mem
   assert.match(sql, /recipient_id <> auth\.uid\(\)/);
   assert.match(sql, /partner_id is null[\s\S]*invite_hash = requested_invite_hash/);
 });
+
+test("public compute enrollment exposes no master key and only endpoints can approve or read requests", async () => {
+  const sql = await readFile(path.join(process.cwd(), "supabase", "migrations", "002_compute_enrollment.sql"), "utf8");
+  assert.match(sql, /auth\.uid\(\) <> expected_provider/);
+  assert.match(sql, /provider_id = auth\.uid\(\) and status = 'pending'/);
+  assert.match(sql, /requester_id = auth\.uid\(\)/);
+  assert.match(sql, /pg_advisory_xact_lock\(hashtext\(auth\.uid\(\)::text\)\)/);
+  assert.match(sql, /revoke all on function public\.decide_compute_connection_request[\s\S]*from public, anon/);
+  assert.doesNotMatch(sql, /service_role|master_key/i);
+});
+
+test("independent support queue is consumed only by its authenticated recipient in bounded batches", async () => {
+  const sql = await readFile(path.join(process.cwd(), "supabase", "migrations", "003_support_queue.sql"), "utf8");
+  assert.match(sql, /recipient_id = auth\.uid\(\)/);
+  assert.match(sql, /idempotency_key like 'support-v1:%'/);
+  assert.match(sql, /least\(coalesce\(requested_limit, 100\), 500\)/);
+  assert.match(sql, /status = 'claimed'[\s\S]*processed_at = now\(\)/);
+  assert.match(sql, /revoke all on function public\.claim_support_bridge_messages[\s\S]*from public, anon/);
+  assert.doesNotMatch(sql, /delete from|service_role|master_key/i);
+});

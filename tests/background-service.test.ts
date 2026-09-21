@@ -40,13 +40,13 @@ test("mock conversation follows the selected language", async () => {
   }
 });
 
-test("Codex model settings default to the account-aware model and persist only valid choices", async () => {
+test("Codex model settings default to GPT-5.6 SOL medium and persist only valid choices", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-model-settings-test-"));
   try {
     const store = new AtomicStore(directory);
     const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { backgroundTasks: false });
     let state = await service.state();
-    assert.equal(state.codexModel, "auto");
+    assert.equal(state.codexModel, "gpt-5.6-sol");
     assert.equal(state.codexReasoningEffort, "medium");
     state = await service.setCodexSettings({ model: "gpt-6-astra", reasoningEffort: "high" });
     assert.equal(state.codexModel, "gpt-6-astra");
@@ -56,6 +56,30 @@ test("Codex model settings default to the account-aware model and persist only v
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("hosted first conversation publishes an automatically recovered saved reply", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-intake-recovery-event-"));
+  const events: any[] = [];
+  try {
+    const service = new BackgroundService(directory, process.cwd(), new AtomicStore(directory),
+      () => ({ webContents: { send: (_channel: string, event: unknown) => events.push(event) } }) as any,
+      undefined, { backgroundTasks: false });
+    let intake = { version: 1, route: "trusted", status: "error", pendingMessageId: "saved-turn", messages: [{ id: "saved-turn", role: "user", text: "Сохранённый текст", createdAt: "2026-09-19T00:00:00Z" }] };
+    let calls = 0;
+    (service as any).compute = { isClient: () => true };
+    (service as any).intake = {
+      snapshot: () => intake,
+      resumePending: async () => { calls += 1; intake = { ...intake, status: "ready", pendingMessageId: undefined as any,
+        messages: [...intake.messages, { id: "reply", role: "assistant", text: "Ответ", createdAt: "2026-09-19T00:00:01Z" }] }; },
+    };
+    await (service as any).recoverPendingIntake();
+    assert.equal(calls, 1);
+    assert.equal(events.at(-1)?.type, "intake");
+    assert.equal(events.at(-1)?.intake.messages.at(-1)?.text, "Ответ");
+    await (service as any).recoverPendingIntake();
+    assert.equal(calls, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("a new pair can finish onboarding from a durable manual profile without an existing chat", async () => {
