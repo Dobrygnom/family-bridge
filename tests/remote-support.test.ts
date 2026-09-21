@@ -33,7 +33,7 @@ async function fixture() {
       payload: { support: { protocol: 1, type: "request", id, sentAt: new Date(clock).toISOString(), action, ...extra } } };
   };
   return { dir, incoming, sent, context, hooks, support, envelope, updates: () => updates, maintenance, advance: (ms: number) => { clock += ms; },
-    cleanup: () => rm(dir, { recursive: true, force: true }) };
+    cleanup: () => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) };
 }
 
 test("repair decisions never use stale or differently bound peer reports", async () => {
