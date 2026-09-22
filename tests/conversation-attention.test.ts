@@ -50,7 +50,7 @@ test("new continuation badge and real waiting state are separate; receiving a re
   Object.defineProperty(globalThis,"window",{value:{},configurable:true});
   try {
     const html = renderToStaticMarkup(createElement(ConversationThreads, { state: input, language: "ru", selectedReportId: "", onState:()=>{}, activeDictation:"", onDictationBusy:()=>{}, reading }));
-    assert.match(html,/Новое · 2/); assert.match(html,/Отправка отложена/);
+    assert.match(html,/Новое · 2/); assert.match(html,/Сейчас нет связи/);
     assert.doesNotMatch(html, /class="conversation-thread" open/);
     assert.equal(threadMessages(conversationThreads(input)[0]).length, 3);
   } finally { if(beforeWindow)Object.defineProperty(globalThis,"window",beforeWindow);else Reflect.deleteProperty(globalThis,"window"); }

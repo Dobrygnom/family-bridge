@@ -30,12 +30,12 @@ async function evaluate<T>(expression: string): Promise<T> {
 }
 
 const navigation = await evaluate<string[]>(`[...document.querySelectorAll('nav button')].map((button) => button.textContent?.trim() ?? '')`);
-assert.ok(navigation.includes("Исходный чат и темы"), "Source chat and topics is not a separate navigation item");
-assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Что знает мой агент", "Итоги разговоров", "Настройки"]);
+assert.ok(navigation.includes("Исходный разговор"), "Source conversation is not a separate navigation item");
+assert.deepEqual(navigation, ["Начало работы", "Исходный разговор", "Что знает помощник", "Разговоры", "Настройки"]);
 const overviewText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
-assert.match(overviewText, /Подготовка к первому разговору/);
-assert.match(overviewText, /Выберите разговоры/);
-assert.match(overviewText, /Подготовить выбранные разговоры/);
+assert.match(overviewText, /Подготовка первого разговора/);
+assert.match(overviewText, /Выберите темы/);
+assert.match(overviewText, /Сохранить выбранные темы/);
 assert.doesNotMatch(overviewText, /СОЕДИНЕНИЕ|Создать приглашение|Создать новый код/);
 assert.doesNotMatch(overviewText, /Быстрый demo|Запустить через Codex|Поговорить с агентом партнёра/);
 const appSummary = await evaluate<{ project?: string; chat?: string; contextStatus?: string; analysisStatus?: string; people: number; portraits: number; ownerPortraits: number; observations: number; topics: number; approved: number; grouped: number[] }>(`window.familyBridge.getState().then((state) => ({ project: state.context?.project, chat: state.context?.title, contextStatus: state.context?.status, analysisStatus: state.contextAnalysis?.status, people: state.contextAnalysis?.people.length ?? 0, portraits: state.contextAnalysis?.portraits?.length ?? 0, ownerPortraits: state.contextAnalysis?.portraits?.filter((portrait) => portrait.isOwner).length ?? 0, observations: state.contextAnalysis?.portraits?.reduce((sum, portrait) => sum + portrait.observations.length, 0) ?? 0, topics: state.contextAnalysis?.topics.length ?? 0, approved: state.contextAnalysis?.topics.filter((topic) => topic.approved).length ?? 0, grouped: (state.contextAnalysis?.people ?? []).map((person) => state.contextAnalysis?.topics.filter((topic) => topic.discussWithPersonId === person.id).length ?? 0) }))`);
@@ -63,9 +63,9 @@ const expanded = await evaluate<boolean>(`(() => { const button = document.query
 assert.equal(expanded, true, "Could not expand a topic row");
 const detailText = await evaluate<string>(`document.querySelector('.topic-row-detail')?.textContent ?? ''`);
 assert.match(detailText, /О ком/);
-assert.match(detailText, /Обсудить с/);
+assert.match(detailText, /Поговорить с/);
 await evaluate<boolean>(`(() => { const button = document.querySelector('.topic-expand'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
-const clicked = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Исходный чат и темы'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
+const clicked = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Исходный разговор'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 assert.equal(clicked, true, "Could not open the Context screen");
 await new Promise((resolve) => setTimeout(resolve, 4_000));
 const mainText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
@@ -77,13 +77,13 @@ assert.match(mainText, /Разрешить безопасные/);
 assert.doesNotMatch(mainText, /ПОВЕСТКА|СОЕДИНЕНИЕ|ЖИВОЙ ДИАЛОГ|РЕЗУЛЬТАТ/);
 assert.doesNotMatch(mainText, /routed-topic/);
 assert.doesNotMatch(mainText, /ENOENT|JavaScript error/i);
-const portraitClicked = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Что знает мой агент'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
+const portraitClicked = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Что знает помощник'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 assert.equal(portraitClicked, true, "Could not open the portrait screen");
 await new Promise((resolve) => setTimeout(resolve, 500));
 const portraitText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
-assert.match(portraitText, /ПОРТРЕТЫ ЛЮДЕЙ/);
+assert.match(portraitText, /ВАЖНЫЕ ЛЮДИ/);
 assert.ok(await evaluate<number>(`document.querySelectorAll('.portrait-person-tabs button').length`) === appSummary.portraits, "Not every portrait is selectable");
 assert.ok(await evaluate<number>(`document.querySelectorAll('.portrait-observation').length`) > 0, "Selected portrait has no visible observations");
-await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Первый запуск'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
+await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Начало работы'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 console.log(JSON.stringify({ navigation, onboarding: true, compactTopicRows: compactRows.length, contextScreen: true, portraitsScreen: true, project: expectedProject, chat: expectedChat, people: appSummary.people, portraits: appSummary.portraits, observations: appSummary.observations, topics: appSummary.topics, grouped: appSummary.grouped }));
 socket.close();

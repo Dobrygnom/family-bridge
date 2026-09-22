@@ -28,7 +28,7 @@ test("continuation animates preparing and waiting, but stops on completion or fa
     const html = renderToStaticMarkup(createElement(ReportContinuation, { reportId: "parent", state, language: "ru", onState: () => {}, dictationBusy: false, onDictationBusy: () => {} }));
     assert.equal(html.includes('class="pending-status"'), status === "starting" || status === "waiting");
     if (status === "starting") assert.match(html, /Готовим уточнение/);
-    if (status === "waiting") assert.match(html, /Ждём продолжения/);
+    if (status === "waiting") assert.match(html, /Новые реплики появятся здесь автоматически/);
     if (status === "error") assert.match(html, /Повторить отправку/);
   }
   } finally {

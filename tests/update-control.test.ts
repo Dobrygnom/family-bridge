@@ -15,7 +15,7 @@ test('sidebar update is absent without an update and highlights a ready update',
   const ready=compact({available:true,downloading:false,ready:true,version:'1.2.26'});
   assert.match(ready,/update-available/); assert.match(ready,/Обновить сейчас/); assert.doesNotMatch(ready,/disabled/);
   const downloading=compact({available:true,downloading:true,version:'1.2.26',progress:52});
-  assert.match(downloading,/52%/); assert.match(downloading,/disabled/); assert.doesNotMatch(downloading,/Готова версия/);
+  assert.match(downloading,/52%/); assert.match(downloading,/disabled/); assert.doesNotMatch(downloading,/Обновление готово/);
 });
 test('live update events retain installation and waiting fields in the app',()=>{
   const source=readFileSync(new URL('../src/ui/App.tsx',import.meta.url),'utf8');
@@ -29,9 +29,13 @@ test('a downloaded update always exposes an enabled install-now button, includin
     assert.match(html,/Приложение перезапустится/);
   }
 });
+test('sidebar install-now remains available after an earlier request was blocked',()=>{
+  const html=renderToStaticMarkup(createElement(UpdateControl,{compact:true,update:{available:true,downloading:false,ready:true,installRequested:true,waitingFor:'editing',version:'1.2.13'},version:'1.2.12',language:'ru',onCheck:async()=>{},onInstall:async()=>{}}));
+  assert.match(html,/Обновить сейчас/); assert.doesNotMatch(html,/disabled/);
+});
 test('download, install, and safety-block states are distinct; no unverified latest-version claim',()=>{
-  assert.match(render({available:true,downloading:false,ready:true,waitingFor:'dictation'}),/Закончите или отмените запись/);
-  assert.match(render({available:true,downloading:false,ready:true,waitingFor:'editing'}),/Сохраните или отмените редактирование/);
+  assert.match(render({available:true,downloading:false,ready:true,waitingFor:'dictation'}),/завершите запись голоса/);
+  assert.match(render({available:true,downloading:false,ready:true,waitingFor:'editing'}),/закончите текущее редактирование/);
   const installing=render({available:true,downloading:false,ready:true,installing:true});
   assert.match(installing,/Устанавливаем обновление/);assert.match(installing,/disabled/);
   const idle=render({available:false,downloading:false});

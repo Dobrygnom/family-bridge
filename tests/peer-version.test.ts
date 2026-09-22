@@ -297,7 +297,7 @@ test("presence requires a fresh matching response, expires, and is restored from
     const reopened = new BackgroundService(f.dir, process.cwd(), f.store, () => null, undefined, { backgroundTasks: false });
     assert.equal((await reopened.state()).remote.peerPresenceAt, snapshot.remote.peerPresenceAt);
     const html = renderToStaticMarkup(createElement(PeerVersionControl, { state: snapshot as AppState, language: "ru", onCheck: () => {} }));
-    assert.match(html, /Приложение в сети/);
+    assert.match(html, /Приложение на связи/);
   } finally { await f.cleanup(); }
 });
 
@@ -329,12 +329,13 @@ test("automatic heartbeats use metadata only, do not check partner updates or fl
 test("version button remains visible and enabled when version and live connection are unknown", () => {
   const state = { remote: { configured: true, connected: false, peerName: "Катя" } } as AppState;
   const html = renderToStaticMarkup(createElement(PeerVersionControl, { state, language: "ru", onCheck: () => {}, continuation: true }));
-  assert.match(html, /Проверить версию собеседника/);
-  assert.match(html, /Ваш текст не отправлен/);
+  assert.match(html, /Проверить связь/);
+  assert.match(html, /Ваш текст сохранён и не отправлен/);
   assert.doesNotMatch(html, /disabled=/);
   const old = renderToStaticMarkup(createElement(PeerVersionControl, { state: { ...state, remote: { ...state.remote, peerVersion: "0.3.29" } }, language: "ru", onCheck: () => {}, continuation: true }));
   assert.match(old, /v0.3.29/);
-  assert.match(old, /обновиться до 0.3.30/);
+  assert.match(old, /нужно обновить Family Bridge/);
+  assert.doesNotMatch(old, /обновиться до 0\.3|версии до 0\.3/);
 });
 
 test("continuation itself exposes version checking and a clear block reason without consuming the draft", () => {
@@ -344,9 +345,9 @@ test("continuation itself exposes version checking and a clear block reason with
   Object.defineProperty(globalThis, "localStorage", { value: { getItem: () => "preserved draft" }, configurable: true });
   try {
     const html = renderToStaticMarkup(createElement(ReportContinuation, { reportId: "saved", state: { remote: { configured: true, connected: true } } as AppState, language: "ru", onState: () => {}, dictationBusy: false, onDictationBusy: () => {} }));
-    assert.match(html, /Проверить версию собеседника/);
+    assert.match(html, /Проверить связь/);
     assert.match(html, /preserved draft/);
-    assert.match(html, /Ваш текст не отправлен/);
+    assert.match(html, /Ваш текст сохранён и не отправлен/);
     assert.match(html, /disabled="">Подготовить реплику/);
   } finally {
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else Reflect.deleteProperty(globalThis, "window");

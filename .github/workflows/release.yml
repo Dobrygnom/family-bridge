@@ -78,6 +78,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -86,6 +87,8 @@ jobs:
           for platform in windows-x64 macos-x64 macos-arm64; do
             (cd "artifacts/family-bridge-$platform" && sha256sum --check --strict build-SHA256SUMS.txt) || exit 1
           done
+      - name: Merge architecture-specific macOS update feeds
+        run: node scripts/merge-mac-update-feeds.mjs artifacts/family-bridge-macos-x64/latest-mac.yml artifacts/family-bridge-macos-arm64/latest-mac.yml artifacts/latest-mac.yml
       - name: Generate checksums
         run: |
           find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -print0 \
@@ -102,5 +105,6 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.zip
             artifacts/**/*.blockmap
-            artifacts/**/latest*.yml
+            artifacts/family-bridge-windows-x64/latest.yml
+            artifacts/latest-mac.yml
             artifacts/SHA256SUMS.txt

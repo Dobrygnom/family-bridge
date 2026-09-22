@@ -66,13 +66,13 @@ for (let attempt = 0; attempt < 120 && navigation.length < 5; attempt += 1) {
   navigation = await evaluate<string[]>(`[...document.querySelectorAll('nav button')].map((button) => button.textContent?.trim() ?? '')`);
   if (navigation.length < 5) await delay(250);
 }
-assert.deepEqual(navigation, ["Первый запуск", "Исходный чат и темы", "Что знает мой агент", "Разговоры", "Настройки"]);
+assert.deepEqual(navigation, ["Начало работы", "Исходный разговор", "Что знает помощник", "Разговоры", "Настройки"]);
 await evaluate<boolean>(`(() => { const button = document.querySelector('nav button'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 const mainText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
-assert.match(mainText, /Подготовка к первому разговору/);
-assert.match(mainText, /Где будет работать ваш помощник/);
-assert.match(mainText, /Мой ChatGPT/);
-assert.match(mainText, /Доверенный компьютер/);
+assert.match(mainText, /Подготовка первого разговора/);
+assert.match(mainText, /Как будет работать ваш помощник/);
+assert.match(mainText, /На этом компьютере/);
+assert.match(mainText, /Через доверенного помощника/);
 assert.doesNotMatch(mainText, /Темы проверены — перейти к подключению|Создать приглашение|Подключиться/);
 const overflow = await evaluate<{ pageX: number; mainY: number }>(`({ pageX: document.documentElement.scrollWidth - document.documentElement.clientWidth, mainY: (() => { const main = document.querySelector('main'); return main ? main.scrollHeight - main.clientHeight : 1; })() })`);
 assert.ok(overflow.pageX <= 1, `Fresh first run has horizontal overflow: ${overflow.pageX}px`);
@@ -80,13 +80,22 @@ assert.ok(overflow.mainY <= 1, `Fresh first run scrolls as a whole: ${overflow.m
 const openedSettings = await evaluate<boolean>(`(() => { const button = [...document.querySelectorAll('nav button')].find((item) => item.textContent?.trim() === 'Настройки'); if (!(button instanceof HTMLElement)) return false; button.click(); return true; })()`);
 assert.equal(openedSettings, true, "Could not open update settings");
 const updateText = await evaluate<string>(`document.querySelector('.update-card')?.textContent ?? ''`);
-assert.match(updateText, new RegExp(`Установлена версия ${version.replaceAll(".", "\\.")}`));
+assert.match(updateText, new RegExp(`Сейчас установлена ${version.replaceAll(".", "\\.")}`));
 const settingsText = await evaluate<string>(`document.querySelector('main')?.innerText ?? ''`);
-assert.match(settingsText, /Доверенный компьютер/);
-assert.match(settingsText, /Этот компьютер помогает другим/);
-assert.match(settingsText, /Использовать доверенный компьютер/);
+assert.match(settingsText, /Доверенный помощник/);
+assert.match(settingsText, /Помогать другим/);
+assert.match(settingsText, /Использовать доверенного помощника/);
 assert.match(settingsText, /gpt-5\.6-sol/);
-console.log(JSON.stringify({ freshProfile: true, navigation, firstActions: ["my-chatgpt", "trusted-computer"], overflow, updateStatus: true, computeSwitch: true }));
+const localized: string[] = [];
+for (const nextLanguage of ["en", "cs", "fr"]) {
+  const changed = await evaluate<boolean>(`(() => { const select = document.querySelector('.header-tools select'); if (!(select instanceof HTMLSelectElement)) return false; const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set; setter?.call(select, '${nextLanguage}'); select.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  assert.equal(changed, true, `Could not select ${nextLanguage}`);
+  await delay(100);
+  const text = await evaluate<string>(`(() => { const shell = document.querySelector('.shell')?.cloneNode(true); if (!(shell instanceof HTMLElement)) return ''; shell.querySelector('.header-tools select')?.remove(); return shell.textContent ?? ''; })()`);
+  assert.doesNotMatch(text, /[А-Яа-яЁё]/, `${nextLanguage} UI contains untranslated Russian copy`);
+  localized.push(nextLanguage);
+}
+console.log(JSON.stringify({ freshProfile: true, navigation, firstActions: ["this-computer", "trusted-assistant"], overflow, updateStatus: true, computeSwitch: true, localized }));
 socket.close();
 if (ownedProcess && ownedProcess.exitCode === null) {
   const exited = new Promise<void>(resolve => ownedProcess!.once("exit", () => resolve()));
