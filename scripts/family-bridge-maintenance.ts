@@ -11,6 +11,8 @@ const messageIndex = operation === "restart" ? Number(indexOrProfile) : undefine
 if (operation === "restart" && (!Number.isInteger(messageIndex) || messageIndex! < 0 || messageIndex! >= 100)) throw new Error("Message index must be 0..99");
 const profileArg = operation === "restart" ? optionalProfile : indexOrProfile;
 const profile = profileArg || (process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(),"AppData","Roaming"),"family-bridge") : process.platform === "darwin" ? path.join(os.homedir(),"Library","Application Support","family-bridge") : path.join(os.homedir(),".config","family-bridge"));
+const requestedOperationId = process.env.FAMILY_BRIDGE_OPERATION_ID;
+if (requestedOperationId && !/^[0-9a-f-]{36}$/i.test(requestedOperationId)) throw new Error("FAMILY_BRIDGE_OPERATION_ID must be a UUID");
 let completed=false;
 for (const file of supportLocatorFiles(profile)) {
   let locator:{port:number;token:string}; try { locator=JSON.parse(await readFile(file,"utf8")); } catch { continue; }
@@ -19,7 +21,10 @@ for (const file of supportLocatorFiles(profile)) {
   try {
     const probe=await fetch(`http://127.0.0.1:${locator.port}/local/diagnostics`,{headers,signal:AbortSignal.timeout(5000)});
     if (!probe.ok || (await probe.json())?.schema !== 1) continue;
-    const operationId=randomUUID();
+    // A caller may persist this id across retries. The receiver uses it as the
+    // idempotency key, so a lost acknowledgement can never start the same
+    // maintenance operation twice.
+    const operationId=requestedOperationId || randomUUID();
     const command=operation === "delete" ? {operationId,operation:"delete-conversation",conversationId}
       : {operationId,operation:"restart-from-message",conversationId,messageIndex};
     const response=await fetch(`http://127.0.0.1:${locator.port}/${target}/maintenance`,{method:"POST",headers,body:JSON.stringify(command),signal:AbortSignal.timeout(45000)});
