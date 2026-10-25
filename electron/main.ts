@@ -305,6 +305,13 @@ app.whenReady().then(async () => {
     rendererUpdateReason = reason === "dictation" || reason === "editing" ? reason : "activity";
   });
   const conversationNotifications = new Map<string, number>();
+  handle("bridge:set-unread-count", (_event, value: unknown) => {
+    if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > 999) return;
+    const count = Number(value);
+    if (process.platform === "darwin") app.dock?.setBadge(count ? String(count) : "");
+    else app.setBadgeCount(count);
+    mainWindow?.setTitle(count ? `(${count}) Family Bridge` : "Family Bridge");
+  });
   handle("bridge:notify-conversation", async (_event, threadId: unknown) => {
     if (typeof threadId !== "string" || !Notification.isSupported() || mainWindow?.isFocused()) return;
     if (Date.now() - (conversationNotifications.get(threadId) ?? 0) < 60_000) return;

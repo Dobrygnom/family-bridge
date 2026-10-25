@@ -3,7 +3,7 @@ import type { AppState } from "../global.js";
 import { conversationThreads } from "../core/conversation-threads.js";
 import { initialReadingState, parseReadingState, READING_KEY, unreadMessages, type ReadingState } from "../core/conversation-attention.js";
 
-export function useConversationReading(state: AppState, loaded: boolean, notify?: (threadId: string) => Promise<void>) {
+export function useConversationReading(state: AppState, loaded: boolean, notify?: (threadId: string) => Promise<void>, setSystemUnreadCount?: (count: number) => Promise<void>) {
   const [reading, setReading] = useState(() => { try { return parseReadingState(localStorage.getItem(READING_KEY)); } catch { return undefined; } });
   const current = useRef(reading);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -28,6 +28,11 @@ export function useConversationReading(state: AppState, loaded: boolean, notify?
     if (!current.current || !keys.some(key => !current.current!.seen[key])) return;
     commit({ ...current.current, seen: { ...current.current.seen, ...Object.fromEntries(keys.map(key => [key, true as const])) } });
   }, [commit]);
-  const unreadCount = conversationThreads(state).filter(thread => unreadMessages(thread, reading).length > 0).length;
-  return { reading, markRead, unreadCount, saveFailed };
+  const threads = conversationThreads(state);
+  const unreadCount = threads.filter(thread => unreadMessages(thread, reading).length > 0).length;
+  const unreadMessageCount = threads.reduce((count, thread) => count + unreadMessages(thread, reading).length, 0);
+  useEffect(() => {
+    if (loaded) void setSystemUnreadCount?.(unreadMessageCount).catch(() => undefined);
+  }, [loaded, unreadMessageCount, setSystemUnreadCount]);
+  return { reading, markRead, unreadCount, unreadMessageCount, saveFailed };
 }

@@ -65,6 +65,7 @@ declare global {
     familyBridge?: {
       getState(): Promise<AppState>;
       notifyConversation(threadId: string): Promise<void>;
+      setUnreadCount(count: number): Promise<void>;
       diagnoseUi(input: { onboardingComplete: boolean; analysisStatus?: string }): Promise<void>;
       openDiagnostics(): Promise<void>;
       getLocalContextState(): Promise<Pick<AppState, "context" | "contextAnalysis">>;

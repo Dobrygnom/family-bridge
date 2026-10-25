@@ -93,7 +93,7 @@ export function App() {
     dispatchState((current) => typeof action === "function" ? action(current) : keepNewerConversations(current, action));
   }
   const [loaded, setLoaded] = useState(false);
-  const reading = useConversationReading(state, loaded, window.familyBridge?.notifyConversation);
+  const reading = useConversationReading(state, loaded, window.familyBridge?.notifyConversation, window.familyBridge?.setUnreadCount);
   const openConversation = useRef<(id: string) => void>(() => {});
   const [revealToken, setRevealToken] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
