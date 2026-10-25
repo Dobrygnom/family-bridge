@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
-import { access, chmod, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, chmod, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { once } from "node:events";
 import path from "node:path";
@@ -24,7 +24,7 @@ export interface UpdateState {
   waitingFor?: "activity" | "dictation" | "editing" | "background";
 }
 
-interface ReleaseAsset {
+export interface ReleaseAsset {
   name: string;
   browser_download_url: string;
   digest?: string | null;
@@ -85,24 +85,74 @@ export function selectMacAsset(release: GitHubRelease, architecture: string) {
   return { asset, version };
 }
 
-async function downloadAndVerify(asset: ReleaseAsset, destination: string, onProgress: (progress: number) => void) {
-  const response = await fetch(asset.browser_download_url, {
-    headers: { Accept: "application/octet-stream", "User-Agent": "Family-Bridge-Updater" },
+const DOWNLOAD_IDLE_TIMEOUT_MS = 45_000;
+
+async function existingSize(file: string) {
+  try { return (await stat(file)).size; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0; throw error; }
+}
+
+async function hashExisting(file: string, hash: ReturnType<typeof createHash>) {
+  for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+}
+
+export async function downloadAndVerify(
+  asset: ReleaseAsset,
+  destination: string,
+  onProgress: (progress: number) => void,
+  options: { fetch?: typeof fetch; idleTimeoutMs?: number } = {},
+) {
+  const fetchUpdate = options.fetch ?? fetch;
+  const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
+  const expectedSize = Number.isSafeInteger(asset.size) && Number(asset.size) > 0 ? Number(asset.size) : 0;
+  let downloaded = await existingSize(destination);
+  if (expectedSize && downloaded > expectedSize) { await rm(destination, { force: true }); downloaded = 0; }
+  const expectedDigest = asset.digest!.slice("sha256:".length).toLowerCase();
+  if (expectedSize && downloaded === expectedSize) {
+    const completeHash = createHash("sha256");
+    await hashExisting(destination, completeHash);
+    if (completeHash.digest("hex") === expectedDigest) { onProgress(99); return; }
+    await rm(destination, { force: true });
+    downloaded = 0;
+  }
+  const controller = new AbortController();
+  let idleTimer: NodeJS.Timeout | undefined;
+  const refreshIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(new Error("Загрузка обновления остановилась и будет продолжена автоматически")), idleTimeoutMs);
+    idleTimer.unref();
+  };
+  refreshIdleTimer();
+  const requestHeaders: Record<string, string> = { Accept: "application/octet-stream", "User-Agent": "Family-Bridge-Updater" };
+  if (downloaded) requestHeaders.Range = `bytes=${downloaded}-`;
+  let response: Response;
+  try { response = await fetchUpdate(asset.browser_download_url, {
+    headers: requestHeaders,
     redirect: "follow",
-  });
-  if (!response.ok || !response.body) throw new Error(`Не удалось скачать обновление: HTTP ${response.status}`);
+    signal: controller.signal,
+  }); } catch (error) { clearTimeout(idleTimer); throw error; }
+  refreshIdleTimer();
+  if (!response.ok || !response.body) { clearTimeout(idleTimer); throw new Error(`Не удалось скачать обновление: HTTP ${response.status}`); }
   if (!response.url.startsWith(allowedDownloadPrefix) && !response.url.startsWith("https://release-assets.githubusercontent.com/")) {
+    clearTimeout(idleTimer);
     throw new Error("Загрузка обновления была перенаправлена на неизвестный сервер");
   }
-  const total = Number(response.headers.get("content-length")) || asset.size || 0;
-  const output = createWriteStream(destination, { flags: "wx" });
+  const range = response.headers.get("content-range");
+  const rangeAccepted = downloaded > 0 && response.status === 206 && range?.startsWith(`bytes ${downloaded}-`);
+  if (downloaded > 0 && !rangeAccepted) downloaded = 0;
+  const contentLength = Number(response.headers.get("content-length")) || 0;
+  const rangeTotal = Number(range?.match(/\/(\d+)$/)?.[1]) || 0;
+  const total = expectedSize || rangeTotal || downloaded + contentLength;
+  const output = createWriteStream(destination, { flags: downloaded ? "a" : "w" });
   const hash = createHash("sha256");
-  let downloaded = 0;
   try {
+    if (downloaded) await hashExisting(destination, hash);
+    if (total > 0) onProgress(Math.min(99, Math.round((downloaded / total) * 100)));
     const reader = response.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      refreshIdleTimer();
       const bytes = Buffer.from(value);
       hash.update(bytes);
       downloaded += bytes.length;
@@ -114,10 +164,12 @@ async function downloadAndVerify(asset: ReleaseAsset, destination: string, onPro
   } catch (error) {
     output.destroy();
     throw error;
+  } finally {
+    clearTimeout(idleTimer);
   }
+  if (expectedSize && downloaded !== expectedSize) throw new Error("Размер обновления не совпал; загрузка будет продолжена автоматически");
   const actual = hash.digest("hex");
-  const expected = asset.digest!.slice("sha256:".length).toLowerCase();
-  if (actual !== expected) throw new Error("Контрольная сумма обновления не совпала; файл удалён");
+  if (actual !== expectedDigest) { await rm(destination, { force: true }); throw new Error("Контрольная сумма обновления не совпала; файл удалён"); }
 }
 
 async function findExtractedBundle(root: string): Promise<string | undefined> {
@@ -204,12 +256,12 @@ export class MacReleaseUpdater {
       }
       this.onState({ available: true, version, downloading: true, progress: 0 });
       const updateRoot = path.join(this.userData, "updates", version);
-      await rm(updateRoot, { recursive: true, force: true });
       await mkdir(updateRoot, { recursive: true });
-      const archive = path.join(updateRoot, asset.name);
+      const archive = path.join(updateRoot, `${asset.name}.partial`);
       try {
         await downloadAndVerify(asset, archive, (progress) => this.onState({ available: true, version, downloading: true, progress }));
         const extracted = path.join(updateRoot, "extracted");
+        await rm(extracted, { recursive: true, force: true });
         await mkdir(extracted, { recursive: true });
         await execFileAsync("/usr/bin/ditto", ["-x", "-k", archive, extracted]);
         const appBundle = await findExtractedBundle(extracted);
@@ -220,10 +272,7 @@ export class MacReleaseUpdater {
         if (normalizeVersion(stdout) !== version) throw new Error("Версия внутри скачанного приложения не совпадает с релизом");
         this.prepared = { version, appBundle, downloadUrl: asset.browser_download_url };
         this.onState({ available: true, version, downloading: false, progress: 100, ready: true });
-      } catch (error) {
-        await rm(updateRoot, { recursive: true, force: true });
-        throw error;
-      }
+      } catch (error) { throw error; }
     } catch (error) {
       this.onState({ available: false, downloading: false, error: error instanceof Error ? error.message : String(error) });
     } finally {

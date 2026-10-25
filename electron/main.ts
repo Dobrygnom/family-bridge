@@ -1,5 +1,5 @@
 import { UpdateActivity } from "./update-activity.js";
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, shell, systemPreferences, Tray, type MessageBoxOptions, type IpcMainInvokeEvent } from "electron";
 import { conversationThreads } from "../src/core/conversation-threads.js";
 import electronUpdater from "electron-updater";
 import path from "node:path";
@@ -199,7 +199,9 @@ function checkForUpdates() {
   if (updateCheckOperation) return updateCheckOperation;
   updateCheckOperation = (async () => {
     if (process.platform === "darwin" && macUpdater) {
-      await macUpdater.checkForUpdates();
+      const blocker = powerSaveBlocker.start("prevent-app-suspension");
+      try { await macUpdater.checkForUpdates(); }
+      finally { if (powerSaveBlocker.isStarted(blocker)) powerSaveBlocker.stop(blocker); }
       return;
     }
     publishUpdate({ available: false, checking: true, downloading: false });
