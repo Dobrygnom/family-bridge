@@ -33,6 +33,10 @@ and claimed incoming rows addressed to the surviving identity are still drained
 from the old pair; already durable local inbox entries continue normally. Old
 deliveries never replace fresh peer-version/presence information. Old server rows
 are retained, not deleted; history reads merge by logical sequence number.
+When an already recovered route is replaced, the capsule names the immediately
+previous physical route. Each participant migrates only its own undelivered
+non-service envelopes, so an accepted text cannot be stranded between two
+successive repairs.
 
 `scripts/verify-pair-recovery.ts` verifies the protocol against the live service
 with isolated anonymous accounts and synthetic text. It tests loss of all guest

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { recoveryConversationId, validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
+import { recoveryConversationId, supportsRotatedRecovery, validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
-import { encryptPayload } from "../src/core/encryption.js";
+import { decryptPayload, encryptPayload } from "../src/core/encryption.js";
 
 const route: PairRecovery = { version: 1, logicalPairId: randomUUID(), transportPairId: randomUUID(),
   creatorAuthId: randomUUID(), creatorAgent: "katya", inviteSecret: "a".repeat(43) };
@@ -11,11 +11,21 @@ test("recovery route is strictly bound to one logical and one physical pair", ()
   assert.deepEqual(validatePairRecovery(route), route);
   assert.throws(() => validatePairRecovery({ ...route, logicalPairId: route.transportPairId }));
   assert.throws(() => validatePairRecovery({ ...route, inviteSecret: "short" }));
+  const rotated:PairRecovery={...route,version:2,previousTransportPairId:randomUUID()};
+  assert.deepEqual(validatePairRecovery(rotated),rotated);
+  assert.throws(()=>validatePairRecovery({...rotated,previousTransportPairId:rotated.transportPairId}));
+  assert.throws(()=>validatePairRecovery({...route,previousTransportPairId:randomUUID()}));
 });
 test("recovered wire conversation ids are deterministic, distinct from old ids, and distinct across pairs", () => {
   const id = randomUUID(), wire = recoveryConversationId(route, id);
   assert.equal(wire, recoveryConversationId(route, id)); assert.notEqual(id, wire);
   assert.notEqual(wire, recoveryConversationId({ ...route, transportPairId: randomUUID() }, id));
+});
+test("rotated recovery is enabled only after both peers understand the version 2 capsule",()=>{
+  assert.equal(supportsRotatedRecovery("2.1.3"),false);
+  assert.equal(supportsRotatedRecovery("2.1.4"),true);
+  assert.equal(supportsRotatedRecovery("2.2.0"),true);
+  assert.equal(supportsRotatedRecovery("1.2.99"),false);
 });
 
 function fake(participant: "dima" | "katya" = "dima", id: string | undefined = randomUUID()) {
@@ -71,6 +81,30 @@ test("an invited replacement identity stays connected when the inaccessible old 
   await f.transport.pairState(route.logicalPairId);
   f.denyLegacy();
   assert.equal(await f.transport.claimNext(route.logicalPairId), null);
+});
+test("a rotated recovery route migrates the sender's pending dialogue without nesting its old wrapper", async () => {
+  const previousTransportPairId=randomUUID(),logicalConversationId=randomUUID(),originalEnvelopeId=randomUUID(),me=randomUUID();
+  const rotated:PairRecovery={...route,version:2,previousTransportPairId};
+  const transport=new RecoveryTransport("https://example.test","test","secret",undefined,rotated,"dima");
+  let inserted:any;
+  const pending={id:randomUUID(),pair_id:previousTransportPairId,conversation_id:randomUUID(),sequence_number:2,
+    sender_id:me,recipient_id:rotated.creatorAuthId,sender_agent:"dima",status:"pending",created_at:new Date().toISOString(),idempotency_key:"old-send",
+    encrypted_payload:encryptPayload({transport:"recovery-v1",conversationId:logicalConversationId,originalEnvelopeId,payload:{kind:"dialogue",topic:"Тема",text:"Сохранённый ответ"}},"secret")};
+  const auth={getSession:async()=>({data:{session:{user:{id:me}}},error:null}),getUser:async()=>({data:{user:{id:me}},error:null}),
+    refreshSession:async()=>({error:null}),stopAutoRefresh:async()=>undefined};
+  (transport as any).client={auth,rpc:async(name:string)=>name==="get_family_pair"
+    ?{data:[{id:rotated.transportPairId,owner_id:rotated.creatorAuthId,partner_id:me}],error:null}:{data:null,error:null},
+    from:()=>{const q:any={select:()=>q,eq:()=>q,in:()=>q,order:()=>q,range:async()=>({data:[pending],error:null}),
+      insert:(value:any)=>{inserted=value;return{select:()=>({single:async()=>({data:{id:randomUUID()},error:null})})};}};return q;},
+    removeAllChannels:async()=>undefined};
+  try {
+    await transport.pairState(rotated.logicalPairId);
+    assert.equal(inserted.pair_id,rotated.transportPairId);
+    assert.equal(inserted.recipient_id,rotated.creatorAuthId);
+    assert.equal(inserted.conversation_id,recoveryConversationId(rotated,logicalConversationId));
+    assert.deepEqual(decryptPayload(inserted.encrypted_payload,"secret"),{transport:"recovery-v1",conversationId:logicalConversationId,
+      originalEnvelopeId,payload:{kind:"dialogue",topic:"Тема",text:"Сохранённый ответ"}});
+  } finally {transport.dispose();}
 });
 test("unrelated pair is never silently routed through the recovery channel", async () => {
   const f = fake(); await assert.rejects(f.transport.pairState(randomUUID()), /does not match/);

@@ -173,6 +173,13 @@ test("authenticated support recovery returns a bounded replacement route", async
   } finally {await f.cleanup();}
 });
 
+test("pair recovery capability survives a major version bump", async () => {
+  const { supportsPairRecovery } = await import("../electron/remote-support.js");
+  assert.equal(supportsPairRecovery("1.2.46"), false);
+  assert.equal(supportsPairRecovery("1.2.47"), true);
+  assert.equal(supportsPairRecovery("2.1.3"), true);
+});
+
 test("support exports only typed technical fields, including logs from the independent fallback", async () => {
   const f = await fixture();
   try {

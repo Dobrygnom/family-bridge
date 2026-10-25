@@ -37,7 +37,7 @@ import { repairCandidates } from "../src/core/conversation-repair.js";
 import { selectCommunicationExamples } from "../src/core/communication-style.js";
 import { messageOrigin, messageSentAt, type SharedMessage, type MessageOrigin } from "../src/core/continuation.js";
 import { migrateRepairIdentifiers, repairRequestId } from "./repair-identifiers.js";
-import { validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
+import { supportsRotatedRecovery, validatePairRecovery, type PairRecovery } from "../src/core/pair-recovery.js";
 import { RecoveryTransport } from "../src/core/recovery-transport.js";
 import { RemoteSupport, type SupportMaintenanceCommand } from "./remote-support.js";
 import { SupportChannel } from "./support-channel.js";
@@ -1910,6 +1910,10 @@ export class BackgroundService {
     // subscriptions, offline resumes and providers without Realtime.
     this.remoteTimer = setInterval(() => void this.pumpRemote(), DIALOGUE_FALLBACK_POLL_MS);
     void this.pumpRemote();
+    // Route replacement can happen while the old poll still owns the dialogue
+    // lane. Retry after that lane has unwound instead of waiting five minutes
+    // for the fallback timer and leaving an already-durable reply untouched.
+    setTimeout(() => void this.pumpRemote(), 1_000).unref();
     return this.remote;
   }
 
@@ -1966,8 +1970,14 @@ export class BackgroundService {
     const state = await this.store.read(), transport = this.remote;
     if (!state.remote || !transport) throw new Error("No saved primary channel");
     const invite = await transport.createPair();
-    const route = validatePairRecovery({ version:1, logicalPairId:state.remote.pairId, transportPairId:invite.pairId,
-      creatorAuthId:await transport.identity(), creatorAgent:state.owner, inviteSecret:invite.inviteSecret });
+    const shared = { logicalPairId:state.remote.pairId, transportPairId:invite.pairId,
+      creatorAuthId:await transport.identity(), creatorAgent:state.owner, inviteSecret:invite.inviteSecret };
+    // A 2.1.3 peer understands only the original capsule shape. Keep recovery
+    // available during a rolling update; enable route-to-route queue migration
+    // once both installations explicitly support the version 2 capsule.
+    const route = validatePairRecovery(supportsRotatedRecovery(state.remote.peerVersion)
+      ? { version:2, ...shared, previousTransportPairId:state.remote.recoveryRoute?.transportPairId ?? state.remote.pairId }
+      : { version:1, ...shared });
     const next = await this.store.mutate(current => current.remote?.pairId === route.logicalPairId
       ? { remote:{ ...current.remote, recoveryRoute:route } } : {});
     this.configureRemote(next.remote!.encryptionSecret, true, next);
@@ -2330,8 +2340,20 @@ export class BackgroundService {
         ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
         ?? inherited;
       const delivery = currentTopics.incomingDeliveries[envelope.id];
-      const previousMessages = (delivery?.received ? messages.slice(0, delivery.responseSent ? -2 : -1) : messages).map((message) => ({ ...message }));
-      if (!delivery?.received) messages.push({ from: envelope.sender_agent as "dima" | "katya", text: dialogue.text, ...(messageOrigin(dialogue.origin) ? { origin: messageOrigin(dialogue.origin) } : {}), sentAt: messageSentAt(dialogue.sentAt) ?? messageSentAt(envelope.created_at) });
+      const incomingMessage:SharedMessage = { from: envelope.sender_agent as "dima" | "katya", text: dialogue.text,
+        ...(messageOrigin(dialogue.origin) ? { origin: messageOrigin(dialogue.origin) } : {}),
+        sentAt: messageSentAt(dialogue.sentAt) ?? messageSentAt(envelope.created_at) };
+      // An explicit peer diagnostic can reconcile the durable transcript just
+      // before the transport delivers the same envelope. Match only the stable
+      // wire identity (including timestamp) so a genuinely repeated sentence
+      // remains a distinct turn.
+      const reconciledIndex = !delivery?.received && incomingMessage.sentAt
+        ? messages.findIndex(message => message.from === incomingMessage.from && message.text === incomingMessage.text
+          && message.origin === incomingMessage.origin && message.sentAt === incomingMessage.sentAt)
+        : -1;
+      const beforeIncoming = reconciledIndex >= 0 ? messages.filter((_, index) => index !== reconciledIndex) : messages;
+      const previousMessages = (delivery?.received ? messages.slice(0, delivery.responseSent ? -2 : -1) : beforeIncoming).map((message) => ({ ...message }));
+      if (!delivery?.received && reconciledIndex < 0) messages.push(incomingMessage);
       this.remoteMessages.set(envelope.conversation_id, messages);
       const receivedState = await this.store.mutate((current) => ({
         conversationTranscripts: { ...current.conversationTranscripts, [envelope.conversation_id]: { topic: dialogue.topic, messages } },

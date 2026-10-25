@@ -46,17 +46,26 @@ export class RecoveryTransport extends SupabaseTransport {
       pair = await super.pairState(this.route.transportPairId);
     }
     if (pair.owner_id !== this.route.creatorAuthId) throw new Error("Recovery pair owner mismatch");
-    if (pair.partner_id && !this.copiedPending && this.participant === this.route.creatorAgent) {
+    if (pair.partner_id && !this.copiedPending) {
       const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
-      // The still-authorized sender can rescue its undelivered old queue.
-      // The original envelope ID preserves inbox deduplication on the peer.
-      const rows = await super.readPendingSent(this.route.logicalPairId);
-      for (const row of rows) {
-        const payload = row.payload as { topic?: string; versionOnly?: boolean };
-        if (payload.versionOnly || payload.topic?.startsWith("family-bridge:version:")) continue;
-        await this.sendRecovered({ pairId: this.route.logicalPairId, conversationId: row.conversation_id,
-          sequence: row.sequence_number, recipientId, senderAgent: row.sender_agent,
-          payload: row.payload, idempotencyKey: row.idempotencyKey }, row.id);
+      // Every surviving sender rescues its own undelivered queue. Version 2
+      // also names the immediately previous physical route, so rotating an
+      // already-recovered pair cannot strand an accepted owner reply.
+      const sourcePairs = [...new Set([this.route.previousTransportPairId ?? this.route.logicalPairId])];
+      for (const sourcePairId of sourcePairs) {
+        let rows: Awaited<ReturnType<SupabaseTransport["readPendingSent"]>> = [];
+        try { rows = await super.readPendingSent(sourcePairId); }
+        catch { continue; } // A replacement identity may not read the old route.
+        for (const row of rows) {
+          const wrapped = row.payload as RecoveryPayload;
+          const recovered = wrapped?.transport === "recovery-v1" && typeof wrapped.conversationId === "string";
+          const conversationId = recovered ? wrapped.conversationId : row.conversation_id;
+          const payload = (recovered ? wrapped.payload : row.payload) as { topic?: string; versionOnly?: boolean; support?: unknown };
+          if (payload?.versionOnly || payload?.support || payload?.topic?.startsWith("family-bridge:version:")) continue;
+          await this.sendRecovered({ pairId: this.route.logicalPairId, conversationId,
+            sequence: row.sequence_number, recipientId, senderAgent: row.sender_agent,
+            payload, idempotencyKey: row.idempotencyKey }, recovered ? wrapped.originalEnvelopeId ?? row.id : row.id);
+        }
       }
       this.copiedPending = true;
     }

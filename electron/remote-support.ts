@@ -49,6 +49,11 @@ export function supportsRemoteMaintenance(version: string | undefined) {
   const [a,b,c] = version!.split(".").map(Number);
   return a > 1 || a === 1 && (b > 2 || b === 2 && c >= 44);
 }
+export function supportsPairRecovery(version: string | undefined) {
+  if (!validPeerVersion(version)) return false;
+  const [a,b,c] = version!.split(".").map(Number);
+  return a > 1 || a === 1 && (b > 2 || b === 2 && c >= 47);
+}
 const maintenanceCommand = (value: unknown): SupportMaintenanceCommand | undefined => {
   const v = value as Record<string, unknown> | null;
   if (!v || !supportId(v.operationId) || !supportId(v.conversationId)) return;
@@ -228,7 +233,7 @@ export class RemoteSupport {
       if (!supported && action !== "update") return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
       if (action === "diagnostics" && !supportsApplicationDiagnostics(c.peerVersion)) return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
       if (action === "maintenance" && !supportsRemoteMaintenance(c.peerVersion)) return { status: "unsupported", peerVersion: validPeerVersion(c.peerVersion) };
-      if (action === "recover" && (!validPeerVersion(peerVersion) || Number(peerVersion!.split(".")[2]) < 47)) return { status: "unsupported", peerVersion: validPeerVersion(peerVersion) };
+      if (action === "recover" && !supportsPairRecovery(peerVersion)) return { status: "unsupported", peerVersion: validPeerVersion(peerVersion) };
       this.pending.set(id, { pairId: c.pairId, requestedAt: sentAt, action, operationId:command?.operationId, status: "sending" });
       while (this.pending.size > 30) this.pending.delete(this.pending.keys().next().value!);
       await this.save("requests.json", Object.fromEntries(this.pending));

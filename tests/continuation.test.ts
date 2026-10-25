@@ -63,6 +63,23 @@ test("peer reconciliation restores a missing completed report and a longer live 
   } finally { await rm(f.dir,{recursive:true,force:true}); }
 });
 
+test("transport delivery does not duplicate a turn already restored by peer diagnostics", async () => {
+  const f=await fixture();
+  try {
+    const sentAt="2026-09-02T12:00:00.000Z";
+    await (f.service as any).reconcilePeerApplication({identity:{owner:"katya"},reports:[],conversations:[{id:"peer-live",topic:"Звонки",messages:[
+      {from:"dima",text:"Первое",sentAt:"2026-09-02T11:58:00.000Z"},
+      {from:"katya",text:"Третье",origin:"agent",sentAt},
+    ]}]});
+    (f.service as any).localRemoteAgent=()=>({start:async()=>response("Четвёртое")});
+    await (f.service as any).processIncomingDialogue({id:"envelope-three",pair_id:"pair",conversation_id:"peer-live",sequence_number:3,
+      sender_agent:"katya",created_at:sentAt,payload:{kind:"dialogue",topic:"Звонки",text:"Третье",origin:"agent",sentAt,status:"continue",senderVersion:"1.2.20"}});
+    const messages=(await f.store.read()).conversationTranscripts["peer-live"].messages;
+    assert.equal(messages.filter(message=>message.from==="katya"&&message.text==="Третье"&&message.sentAt===sentAt).length,1);
+    assert.deepEqual(messages.map(message=>message.text),["Первое","Третье","Четвёртое"]);
+  } finally {await rm(f.dir,{recursive:true,force:true});}
+});
+
 test("migrated repair automatically sends its exact saved reply with a UUID and no model call", async () => {
   const f = await fixture();
   try {
