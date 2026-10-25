@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completionReadiness, conversationOpeningPrompt, findTopicContext, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief } from "../src/core/conversation-quality.js";
+import { automaticAgentLimitReached, completionReadiness, conversationOpeningPrompt, findTopicContext, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief } from "../src/core/conversation-quality.js";
 import type { ContextAnalysis } from "../src/core/context-analysis.js";
 
 const analysis: ContextAnalysis = {
@@ -67,4 +67,11 @@ test("a first answer is not a finished conversation and an unanswered question c
   assert.match(prematureCompletionInstruction("Границы", firstAnswer.reasons), /Не завершай разговор сейчас/);
   assert.equal(completionReadiness({ sequence: 4, message: "А как это видишь ты?", sharedSummary: "Мы поняли позиции." }).ready, false);
   assert.equal(completionReadiness({ sequence: 4, message: "Да, теперь я понимаю, где мы расходимся.", sharedSummary: "Я вижу это иначе, но теперь понимаю твою позицию." }).ready, true);
+});
+
+test("the automatic safety limit resets after a human reply instead of ending a long conversation", () => {
+  const automatic = Array.from({ length: 12 }, (_, index) => ({ from: index % 2 ? "katya" as const : "dima" as const, text: `agent ${index}`, origin: "agent" as const }));
+  assert.equal(automaticAgentLimitReached(automatic), true);
+  assert.equal(automaticAgentLimitReached([...automatic, { from: "dima", text: "human answer", origin: "owner-answer" }]), false);
+  assert.equal(automaticAgentLimitReached([...automatic, { from: "dima", text: "follow-up", origin: "continuation" }]), false);
 });

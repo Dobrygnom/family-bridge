@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
 import type { RemoteEnvelope } from "../src/core/supabase-transport.js";
 import type { AgentResponse } from "../src/core/types.js";
-import type { SharedMessage } from "../src/core/continuation.js";
+import type { MessageOrigin, SharedMessage } from "../src/core/continuation.js";
 import type { PairRecovery } from "../src/core/pair-recovery.js";
 import type { CodexModel, CodexReasoningEffort } from "../src/core/codex-settings.js";
 
@@ -30,6 +30,7 @@ export interface ConversationContinuation {
   approvalRequired?: boolean;
   approvedAt?: string;
   preparedMessage?: string;
+  replyOrigin?: MessageOrigin;
   preparedSentAt?: string;
 }
 

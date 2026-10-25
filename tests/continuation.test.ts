@@ -96,6 +96,40 @@ test("transport delivery does not duplicate a turn already restored by peer diag
   } finally {await rm(f.dir,{recursive:true,force:true});}
 });
 
+test("a human answer at sequence twelve receives an agent reply instead of being silently finalized", async () => {
+  const f = await fixture();
+  try {
+    const previous = Array.from({ length: 11 }, (_, index) => ({ from: index % 2 ? "dima" as const : "katya" as const, text: `previous ${index + 1}`, origin: "agent" as const }));
+    await f.store.update({ conversationTranscripts: { long: { topic: "Звонки", messages: previous } } });
+    (f.service as any).localRemoteAgent = () => ({ start: async () => response("Ответ после ручной реплики") });
+    await (f.service as any).processIncomingDialogue({ id: "human-twelve", pair_id: "pair", conversation_id: "long", sequence_number: 12,
+      sender_agent: "katya", created_at: new Date().toISOString(), payload: { kind: "dialogue", topic: "Звонки", text: "Это мой личный ответ", origin: "owner-answer", status: "continue", senderVersion: "2.1.5" } });
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].sequence, 13);
+    assert.equal(f.sent[0].payload.text, "Ответ после ручной реплики");
+    assert.equal(readReportSummaries((await f.store.read()).reports).some(report => report.id === "long"), false);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("an old limit-interrupted report automatically resumes once with an agent-labelled continuation", async () => {
+  const f = await fixture();
+  try {
+    const interrupted = path.join(f.dir, "reports", "limit-interrupted.json");
+    await writeFile(interrupted, JSON.stringify({ conversationId: "limit-interrupted", pairId: "pair", topic: "Звонки", completionState: "needs_follow_up",
+      messages: [{ from: "dima", text: "До лимита", origin: "agent" }, { from: "katya", text: "Личный ответ", origin: "owner-answer" }], completedAt: "2026-10-25T15:00:00Z" }));
+    await f.store.update({ reports: [interrupted, f.report], remote: { ...(await f.store.read()).remote!, peerVersion: "2.1.5" } });
+    (f.service as any).options.backgroundTasks = true;
+    (f.service as any).localRemoteAgent = () => ({ start: async () => response("Автоматически продолженный ответ") });
+    await (f.service as any).automaticWork();
+    await until(async () => f.sent.length === 1);
+    assert.equal(f.sent[0].sequence, 1);
+    assert.equal(f.sent[0].payload.origin, "agent");
+    assert.equal(f.sent[0].payload.continuation.parentReportId, "limit-interrupted");
+    await (f.service as any).automaticWork();
+    assert.equal(f.sent.length, 1, "the interrupted report is resumed only once");
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
 test("migrated repair automatically sends its exact saved reply with a UUID and no model call", async () => {
   const f = await fixture();
   try {

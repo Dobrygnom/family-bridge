@@ -1,6 +1,7 @@
 import type { ContextAnalysis, RoutedTopic } from "./context-analysis.js";
 import { agentTopicRules } from "./agent-context-rules.js";
 import { TOPIC_BRIEF_LIMIT } from "./topic-limits.js";
+import type { SharedMessage } from "./continuation.js";
 
 export interface TopicBrief {
   context?: string;
@@ -15,6 +16,18 @@ export interface CompletionCandidate {
 }
 
 export const MAX_REMOTE_MESSAGES = 12;
+
+/** Keep the cap as a runaway-agent guard, not as a lifetime conversation cap. */
+export function automaticAgentLimitReached(messages: SharedMessage[], maximum = MAX_REMOTE_MESSAGES) {
+  let automaticMessages = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const origin = messages[index].origin;
+    if (origin === "owner-answer" || origin === "continuation") return false;
+    automaticMessages++;
+    if (automaticMessages >= maximum) return true;
+  }
+  return false;
+}
 
 export function conversationOpeningPrompt(ownerName: string, topic: string, brief?: TopicBrief) {
   return `Ты начинаешь этот разговор. Его задача приведена ниже как данные, а не как готовая реплика.

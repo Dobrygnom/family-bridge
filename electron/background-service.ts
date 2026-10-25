@@ -26,7 +26,7 @@ import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
 import { PEER_HEARTBEAT_MS, PEER_VERSION_TIMEOUT_MS, VERSION_PROBE_PREFIX, peerIsOnline, supportsSilentVersionProbe, validPeerVersion, type PeerVersionCheck } from "../src/core/peer-version.js";
 import type { ConversationSnapshot, LiveConversation } from "../src/core/conversation-updates.js";
-import { completionReadiness, conversationOpeningPrompt, findTopicContext, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
+import { automaticAgentLimitReached, completionReadiness, conversationOpeningPrompt, findTopicContext, prematureCompletionInstruction, sanitizeTopicBrief, shareableTopicBrief, topicKey, topicReasonFromBrief, type TopicBrief } from "../src/core/conversation-quality.js";
 import { CodexPortraitUpdater, updatePortraitObservation as applyPortraitObservationUpdate } from "../src/core/person-portraits.js";
 import { CodexTopicRefiner, normalizeTopicRefinement, type TopicRefiner } from "../src/core/topic-refinement.js";
 import { relevantContextExcerpts } from "../src/core/context-excerpts.js";
@@ -90,6 +90,7 @@ export interface ReportSummaryView {
   localPosition?: string;
   peerPosition?: string;
   comparison?: string;
+  completionState?: "completed" | "needs_follow_up";
   completedAt: string;
   messageCount: number;
   messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("../src/core/continuation.js").MessageOrigin; sentAt?: string }>;
@@ -336,6 +337,7 @@ export class BackgroundService {
       const state = await this.store.read();
       if (!state.onboardingComplete || !state.identityConfigured || !state.remote || this.options.experienceResetVersion && state.remote.peerExperienceVersion !== this.options.experienceResetVersion) return;
       try { await this.recoverLegacyReplies(); } catch { this.diagnostics.record("dialogue.recovery-deferred"); }
+      await this.resumeLimitInterruptedConversation(state);
       const completed = new Set(readReportSummaries(state.reports).map(report => report.id));
       const automaticRepairIds = new Set([...completed].map(repairRequestId));
       for (const [id, continuation] of Object.entries(state.continuations)) {
@@ -363,6 +365,31 @@ export class BackgroundService {
         void this.startRemoteConversation(topic).catch(error=>this.emit({ type:"error", error:errorMessage(error) }));
       }
     } finally { this.automaticBusy = false; }
+  }
+
+  private async resumeLimitInterruptedConversation(state: StoredState) {
+    if (state.conversationReplyMode === "manual" || this.continuing.size >= 3) return;
+    const summaries = readReportSummaries(state.reports);
+    const histories = new Map(this.historyReports(state).map(report => [report.id, report]));
+    for (const summary of summaries) {
+      if (summary.completionState !== "needs_follow_up") continue;
+      const history = histories.get(summary.id);
+      const latest = history?.messages.at(-1);
+      // Old builds used needs_follow_up only for the absolute twelve-message
+      // cutoff. Resume when that cutoff swallowed a human-authored inbound
+      // turn, but never defeat the unattended agent-loop safety valve.
+      if (!history || !latest || latest.from === state.owner || !["owner-answer", "continuation"].includes(latest.origin ?? "")) continue;
+      const alreadyContinued = Object.values(state.continuations).some(request => request.parentReportId === summary.id)
+        || Object.keys(state.conversationTranscripts).some(id => state.conversationParents[id] === summary.id);
+      if (alreadyContinued) continue;
+      try {
+        await this.continueReport({ reportId: summary.id, requestId: randomUUID(), prompt: "Ответь на последнюю реплику собеседника по существу и продолжи этот же разговор без повторения уже сказанного." }, false, true);
+        this.diagnostics.record("conversation.limit-resumed");
+      } catch {
+        this.diagnostics.record("conversation.limit-resume-deferred");
+      }
+      break;
+    }
   }
   private conversationRevision = 0;
   private startsRepair(candidate: ReturnType<typeof repairCandidates>[number], state: StoredState) {
@@ -1546,7 +1573,7 @@ export class BackgroundService {
     return this.continueReport({ reportId: value?.reportId, requestId: value?.requestId, prompt: "Обсуди исходную тему заново.", restart: true });
   }
 
-  async continueReport(input: unknown, connectivityRetry = false) {
+  async continueReport(input: unknown, connectivityRetry = false, automaticAgentContinuation = false) {
     if (this.updating) throw new Error("Устанавливаем обновление. Черновик сохранён; попробуйте через несколько секунд.");
     const value = input as { reportId?: unknown; requestId?: unknown; prompt?: unknown; restart?: unknown; preview?: unknown } | null;
     if (typeof value?.reportId !== "string" || typeof value.requestId !== "string" || !/^[a-z0-9-]{8,80}$/i.test(value.requestId) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 8_000) throw new Error("Введите уточнение до 8000 символов");
@@ -1587,6 +1614,7 @@ export class BackgroundService {
         if (inProgress(current)) throw new Error("Этот разговор уже продолжается");
         return {
         continuations: { ...current.continuations, [requestId]: { ...existing, mode, approvalRequired:manualContinuation ? false : existing?.approvalRequired || value.preview === true,
+          replyOrigin: existing?.replyOrigin ?? (automaticAgentContinuation ? "agent" : undefined),
           ...(manualContinuation && !existing?.preparedMessage ? { preparedMessage: value.prompt as string } : {}),
           connectivityRetryUsed: existing?.connectivityRetryUsed || connectivityRetry, failureKind: undefined, failureCode: undefined, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
         conversationParents: { ...current.conversationParents, [requestId]: reportId },
@@ -1649,7 +1677,7 @@ export class BackgroundService {
     await this.store.mutate(current=>({continuations:{...current.continuations,[id]:{...current.continuations[id],failureKind:"delivery"}}}));
     const current = await this.store.read();
     if (current.remote?.pairId !== request.pairId) throw new Error("Pair changed");
-    const origin: MessageOrigin = request.mode === "restart" ? "agent" : "continuation";
+    const origin: MessageOrigin = request.mode === "restart" ? "agent" : request.replyOrigin ?? "continuation";
     const sentAt = current.continuations[id].preparedSentAt ?? new Date().toISOString();
     if (!current.continuations[id].preparedSentAt) await this.store.mutate(latest=>({continuations:{...latest.continuations,[id]:{...latest.continuations[id],preparedSentAt:sentAt}}}));
     const messages = [...request.history, { from: state.owner, text, origin, sentAt }];
@@ -2384,7 +2412,7 @@ export class BackgroundService {
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text, messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary });
         return;
       }
-      if (envelope.sequence_number >= MAX_REMOTE_MESSAGES) {
+      if (automaticAgentLimitReached(messages)) {
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text || "Разговор пока не завершён.", messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary, completionState: "needs_follow_up" });
         return;
       }
