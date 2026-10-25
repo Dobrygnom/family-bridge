@@ -66,6 +66,7 @@ interface OwnerQuestionView {
   question: string;
   createdAt: string;
   peerName?: string;
+  manualReply?: boolean;
 }
 
 export interface LearnedContextEntry {
@@ -1555,6 +1556,7 @@ export class BackgroundService {
     const state = await this.store.read();
     const existing = state.continuations[requestId];
     const restart = value.restart === true;
+    const manualContinuation = state.conversationReplyMode === "manual" && !restart;
     if (existing && (existing.mode === "restart") !== restart) throw new Error("Идентификатор уже использован для другого действия");
     if (existing && ((existing.originReportId ?? existing.parentReportId) !== reportId || existing.instruction !== value.prompt.trim())) throw new Error("Это поручение уже сохранено. Отправьте новое уточнение.");
     if (existing && ["waiting", "complete"].includes(existing.status)) return this.state();
@@ -1584,7 +1586,9 @@ export class BackgroundService {
       const started = await this.store.mutate((current) => {
         if (inProgress(current)) throw new Error("Этот разговор уже продолжается");
         return {
-        continuations: { ...current.continuations, [requestId]: { ...existing, mode, approvalRequired:existing?.approvalRequired || value.preview === true, connectivityRetryUsed: existing?.connectivityRetryUsed || connectivityRetry, failureKind: undefined, failureCode: undefined, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
+        continuations: { ...current.continuations, [requestId]: { ...existing, mode, approvalRequired:manualContinuation ? false : existing?.approvalRequired || value.preview === true,
+          ...(manualContinuation && !existing?.preparedMessage ? { preparedMessage: value.prompt as string } : {}),
+          connectivityRetryUsed: existing?.connectivityRetryUsed || connectivityRetry, failureKind: undefined, failureCode: undefined, attempts:(existing?.attempts ?? 0)+1, originReportId: existing?.originReportId ?? value.reportId as string, parentReportId: reportId, topic, pairId: state.remote!.pairId, instruction: (value.prompt as string).trim(), history, status: "starting" } },
         conversationParents: { ...current.conversationParents, [requestId]: reportId },
         conversationModes: mode ? { ...current.conversationModes, [requestId]: mode } : current.conversationModes,
       }; });
@@ -2361,6 +2365,20 @@ export class BackgroundService {
       }));
       this.publishConversations(receivedState);
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
+      const replyMode = (await this.store.read()).conversationReplyMode;
+      if (replyMode === "manual") {
+        await this.queueOwnerQuestion({
+          conversationId: envelope.conversation_id,
+          topic: dialogue.topic,
+          question: `Новое сообщение от ${peerName || "собеседника"}:\n\n${dialogue.text}`,
+          peerName,
+          nextSequence: envelope.sequence_number + 1,
+          transcript: messages,
+          manualReply: true,
+        });
+        this.diagnostics.record("dialogue.manual_reply_waiting");
+        return;
+      }
       const incomingCompletion = completionReadiness({ sequence: envelope.sequence_number, message: dialogue.text, sharedSummary: dialogue.sharedSummary });
       if (dialogue.status === "complete" && incomingCompletion.ready) {
         await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, dialogue.sharedSummary || dialogue.text, messages, { answerFrom: peerName, answerFromOwnerId: envelope.sender_agent as OwnerId, comparisonSummary: dialogue.comparisonSummary });
@@ -2456,7 +2474,8 @@ export class BackgroundService {
       : {};
     const id = typeof value.id === "string" ? value.id : "";
     const disposition = value.disposition as OwnerQuestionDisposition;
-    const answer = typeof value.answer === "string" ? value.answer.trim() : "";
+    const rawAnswer = typeof value.answer === "string" ? value.answer : "";
+    const answer = rawAnswer.trim();
     if (!id || !["answer", "unknown", "decline"].includes(disposition)) throw new Error("Не удалось распознать ответ");
     if (disposition === "answer" && !answer) throw new Error("Введите ответ или выберите «Не знаю»");
     if (this.answeringQuestions.has(id)) throw new Error("Ответ уже обрабатывается");
@@ -2465,7 +2484,8 @@ export class BackgroundService {
       const stored = await this.store.read();
       const pending = stored.pendingOwnerQuestions.find((item) => item.id === id);
       if (!pending) return this.state();
-      if (!pending.ownerResponseRecorded && !pending.preparedResponse) {
+      if (pending.manualReply && disposition !== "answer") throw new Error("В ручном режиме отправляется только ваш собственный текст");
+      if (!pending.manualReply && !pending.ownerResponseRecorded && !pending.preparedResponse) {
         await this.rememberOwnerResponse(pending, disposition, answer);
         await this.store.mutate(current => ({ pendingOwnerQuestions: current.pendingOwnerQuestions.map(item => item.id === id ? { ...item, ownerResponseRecorded: true } : item) }));
       }
@@ -2482,7 +2502,16 @@ export class BackgroundService {
           : "Владелец не хочет отвечать на этот вопрос. Уважай границу, не задавай его снова и продолжи без этого факта.";
       const privacyInstruction = "Используй ответ только для собственного рассуждения. Второму агенту передай лишь минимально необходимый вывод своими словами: не цитируй сырой ответ и не сообщай лишние личные детали. owner_question оставь пустым, если нового действительно необходимого вопроса нет.";
       let response = pending.preparedResponse;
-      if (!response) {
+      if (!response && pending.manualReply) {
+        response = {
+          message_to_peer: rawAnswer,
+          owner_question: "",
+          status: "continue",
+          topics: [pending.topic],
+          private_report: "",
+          shared_summary: "",
+        };
+      } else if (!response) {
         const existingAgent = this.remoteAgents.get(pending.conversationId);
         const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]), stored.codexModel ?? DEFAULT_CODEX_MODEL, stored.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT);
         const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";
@@ -2770,6 +2799,13 @@ export class BackgroundService {
     // Do not persist a mode that failed to initialize. A transient server error
     // must leave first-run recoverable instead of showing a request that never existed.
     await this.store.update({ processingMode: mode });
+    return this.state();
+  }
+
+  async setConversationReplyMode(mode: unknown) {
+    if (mode !== "automatic" && mode !== "manual") throw new Error("Выберите режим ответов");
+    await this.store.update({ conversationReplyMode: mode });
+    this.diagnostics.record(`dialogue.reply_mode.${mode}`);
     return this.state();
   }
 

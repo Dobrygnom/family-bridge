@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -128,6 +129,57 @@ test("old state files get an empty owner-question queue", async () => {
   try {
     const state = await new AtomicStore(directory).read();
     assert.deepEqual(state.pendingOwnerQuestions, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual reply mode never invokes an agent and sends the owner's text verbatim", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-manual-reply-"));
+  try {
+    const store = new AtomicStore(directory);
+    await store.update({
+      owner: "dima",
+      identityConfigured: true,
+      displayName: "Дмитрий",
+      conversationReplyMode: "manual",
+      remote: { pairId: "pair-1", encryptionSecret: "secret", peerName: "Катя" },
+    });
+    const sent: Array<{ payload: { text: string; origin?: string; status?: string }; sequence: number }> = [];
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { appVersion: "2.1.5", backgroundTasks: false });
+    const internal = service as any;
+    internal.remote = {
+      async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
+      async identity() { return "owner-device"; },
+      async send(input: any) { sent.push(input); },
+    };
+    internal.localRemoteAgent = () => assert.fail("Manual reply mode must not invoke the agent");
+    internal.codexStatus = async () => ({ installed: true, authenticated: true, version: "test" });
+
+    const conversationId = randomUUID();
+    const incoming = "Я всё ещё хочу понять, можем ли мы общаться.";
+    await internal.processIncomingDialogue({
+      id: randomUUID(), pair_id: "pair-1", conversation_id: conversationId, sequence_number: 3,
+      sender_agent: "katya", created_at: new Date().toISOString(),
+      payload: { protocol: 2, kind: "dialogue", topic: "Как общаться дальше", text: incoming, status: "complete", senderName: "Катя", senderVersion: "2.1.4" },
+    });
+
+    const waiting = await service.state();
+    assert.equal(sent.length, 0);
+    assert.equal(waiting.ownerQuestions.length, 1);
+    assert.equal(waiting.ownerQuestions[0].manualReply, true);
+    assert.match(waiting.ownerQuestions[0].question, new RegExp(incoming));
+    assert.equal((await store.read()).conversationTranscripts[conversationId].messages.at(-1)?.text, incoming);
+
+    const exact = "  Мой точный ответ.\n\nНичего не переписывать.  ";
+    await service.answerOwnerQuestion({ id: waiting.ownerQuestions[0].id, disposition: "answer", answer: exact });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].sequence, 4);
+    assert.equal(sent[0].payload.text, exact);
+    assert.equal(sent[0].payload.origin, "owner-answer");
+    assert.equal(sent[0].payload.status, "continue");
+    assert.deepEqual((await store.read()).pendingOwnerQuestions, []);
+    assert.equal((await store.read()).conversationTranscripts[conversationId].messages.at(-1)?.text, exact);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -51,6 +51,22 @@ test("a user continuation is durably previewed and sends only the approved edite
   } finally { await rm(f.dir, { recursive:true, force:true }); }
 });
 
+test("manual mode sends a continuation verbatim without invoking the agent or creating a preview", async () => {
+  const f = await fixture();
+  try {
+    await f.store.update({ conversationReplyMode: "manual" });
+    (f.service as any).localRemoteAgent = () => assert.fail("Manual continuation must not invoke the agent");
+    const exact = "  Мне важно ответить самому.\n\nЭто мой точный текст.  ";
+    await f.service.continueReport({ reportId: "original-id", requestId: "manual-request", prompt: exact, preview: true });
+    await until(async () => (await f.store.read()).continuations["manual-request"]?.status === "waiting");
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].payload.text, exact);
+    assert.equal(f.sent[0].payload.origin, "continuation");
+    assert.equal((await f.store.read()).continuations["manual-request"].approvalRequired, false);
+    assert.equal((await f.store.read()).conversationTranscripts["manual-request"].messages.at(-1)?.text, exact);
+  } finally { await rm(f.dir, { recursive:true, force:true }); }
+});
+
 test("peer reconciliation restores a missing completed report and a longer live branch to disk", async () => {
   const f=await fixture();
   try {

@@ -11,6 +11,7 @@ export interface AppState {
   onboardingComplete: boolean;
   identityConfigured: boolean;
   processingMode?: "local" | "trusted";
+  conversationReplyMode: "automatic" | "manual";
   preferredCounterpartPersonId?: string;
   displayName: string;
   language: "ru" | "en" | "cs" | "fr";
@@ -27,7 +28,7 @@ export interface AppState {
   blockedTopics: string[];
   reports: string[];
   reportSummaries: Array<{ id: string; parentReportId?: string; restarted?: boolean; inheritedMessageCount?: number; topic: string; summary: string; answerFrom: string; proposedBy: string[]; localPosition?: string; peerPosition?: string; comparison?: string; completionState?: "completed" | "needs_follow_up"; completedAt: string; messageCount: number; messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./core/continuation.js").MessageOrigin; sentAt?: string }> }>;
-  ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string }>;
+  ownerQuestions: Array<{ id: string; topic: string; question: string; createdAt: string; peerName?: string; manualReply?: boolean }>;
   continuationStates?: Array<{ id: string; parentReportId: string; mode?: "restart" | "clean-continuation"; status: "starting" | "preview" | "waiting" | "complete" | "error"; previewText?: string }>;
   conversationRevision?: number;
   repairPendingIds?: string[];
@@ -95,6 +96,7 @@ declare global {
       disableComputeChannel(): Promise<AppState["compute"]>;
       revokeComputeChannel(channelId: string): Promise<AppState["compute"]>;
       setProcessingMode(mode: "local" | "trusted"): Promise<AppState>;
+      setConversationReplyMode(mode: "automatic" | "manual"): Promise<AppState>;
       startPsychologistIntake(): Promise<AppState>;
       sendPsychologistIntake(text: string): Promise<AppState>;
       finalizePsychologistIntake(): Promise<AppState>;

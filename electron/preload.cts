@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   disableComputeChannel: () => ipcRenderer.invoke("bridge:compute-disable"),
   revokeComputeChannel: (channelId: string) => ipcRenderer.invoke("bridge:compute-revoke", channelId),
   setProcessingMode: (mode: "local" | "trusted") => ipcRenderer.invoke("bridge:set-processing-mode", mode),
+  setConversationReplyMode: (mode: "automatic" | "manual") => ipcRenderer.invoke("bridge:set-conversation-reply-mode", mode),
   startPsychologistIntake: () => ipcRenderer.invoke("bridge:intake-start"),
   sendPsychologistIntake: (text: string) => ipcRenderer.invoke("bridge:intake-send", text),
   finalizePsychologistIntake: () => ipcRenderer.invoke("bridge:intake-finalize"),

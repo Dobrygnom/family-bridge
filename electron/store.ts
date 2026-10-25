@@ -45,6 +45,7 @@ export interface PendingOwnerQuestion {
   ownerResponseRecorded?: boolean;
   preparedResponse?: AgentResponse;
   preparedSentAt?: string;
+  manualReply?: boolean;
 }
 
 export interface StoredState {
@@ -53,6 +54,7 @@ export interface StoredState {
   onboardingComplete: boolean;
   identityConfigured: boolean;
   processingMode?: "local" | "trusted";
+  conversationReplyMode: "automatic" | "manual";
   preferredCounterpartPersonId?: string;
   displayName: string;
   language: AppLanguage;
@@ -107,6 +109,7 @@ const defaults: StoredState = {
   displayName: "",
   language: "ru",
   autoStart: true,
+  conversationReplyMode: "automatic",
   codexModel: "gpt-5.6-sol",
   codexReasoningEffort: "medium",
   pendingTopics: [],

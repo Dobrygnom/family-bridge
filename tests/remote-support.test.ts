@@ -346,9 +346,9 @@ test("local control requires its secret, rejects browser origins and exposes onl
 });
 
 test("local blocker and application diagnostics remain readable when normal state reporting is stuck",async()=>{
-  const f=await fixture(); let installs=0,refreshes=0,maintenance=0;
+  const f=await fixture(); let installs=0,refreshes=0,maintenance=0,replyMode="",continuation:unknown;
   f.support.status=()=>new Promise(()=>{});
-  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};},maintenance:async()=>{maintenance++;return {accepted:true};}});
+  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};},setReplyMode:mode=>{replyMode=String(mode);return {accepted:true};},continueConversation:input=>{continuation=input;return {accepted:true};},maintenance:async()=>{maintenance++;return {accepted:true};}});
   try {
     const locator=JSON.parse(await readFile(supportLocatorFiles(f.dir)[0],'utf8'));
     const url=`http://127.0.0.1:${locator.port}`, headers={Authorization:`Bearer ${locator.token}`};
@@ -364,6 +364,15 @@ test("local blocker and application diagnostics remain readable when normal stat
     assert.equal(refreshes,0);
     assert.equal((await fetch(`${url}/local/refresh-context`,{method:'POST',headers})).status,200);
     assert.equal(refreshes,1);
+    assert.equal((await fetch(`${url}/local/reply-mode`,{method:'POST',headers:{...headers,Origin:'https://evil.test'},body:JSON.stringify({mode:'manual'})})).status,403);
+    assert.equal(replyMode,'');
+    assert.equal((await fetch(`${url}/local/reply-mode`,{method:'POST',headers,body:JSON.stringify({mode:'manual'})})).status,200);
+    assert.equal(replyMode,'manual');
+    const direct={reportId:'report',requestId:randomUUID(),prompt:'Exact text'};
+    assert.equal((await fetch(`${url}/local/continue-conversation`,{method:'POST',headers:{...headers,Origin:'https://evil.test'},body:JSON.stringify(direct)})).status,403);
+    assert.equal(continuation,undefined);
+    assert.equal((await fetch(`${url}/local/continue-conversation`,{method:'POST',headers,body:JSON.stringify(direct)})).status,200);
+    assert.deepEqual(continuation,direct);
     const command={operationId:randomUUID(),operation:'delete-conversation',conversationId:randomUUID()};
     assert.equal((await fetch(`${url}/local/maintenance`,{method:'POST',headers,body:JSON.stringify(command)})).status,200);
     assert.equal(maintenance,1);

@@ -48,6 +48,7 @@ const fallback: AppState = {
   owner: "dima",
   onboardingComplete: false,
   identityConfigured: false,
+  conversationReplyMode: "automatic",
   displayName: "",
   language: "ru",
   autoStart: true,
@@ -241,6 +242,18 @@ export function App() {
     en: { eyebrow: "YOUR ANSWER IS NEEDED", title: "The agent does not want to guess", paused: "The conversation is paused", privacy: "Only your agent receives the raw answer. The other agent receives a careful paraphrased conclusion.", placeholder: "Your answer", answer: "Answer and continue", unknown: "I don't know", decline: "I don't want to answer", processing: "Continuing the conversation…" },
     cs: { eyebrow: "JE POTŘEBA VAŠE ODPOVĚĎ", title: "Agent nechce hádat", paused: "Rozhovor je pozastaven", privacy: "Původní odpověď obdrží pouze váš agent. Druhý agent dostane jen opatrně formulovaný závěr.", placeholder: "Vaše odpověď", answer: "Odpovědět a pokračovat", unknown: "Nevím", decline: "Nechci odpovědět", processing: "Pokračujeme v rozhovoru…" },
     fr: { eyebrow: "VOTRE RÉPONSE EST NÉCESSAIRE", title: "L’agent ne veut pas deviner", paused: "La conversation est en pause", privacy: "Seul votre agent reçoit la réponse brute. L’autre agent reçoit uniquement une conclusion reformulée avec précaution.", placeholder: "Votre réponse", answer: "Répondre et continuer", unknown: "Je ne sais pas", decline: "Je ne veux pas répondre", processing: "Reprise de la conversation…" },
+  }[language];
+  const manualReplyText = {
+    ru: { title: "Ответ отправите только вы", privacy: "Текст уйдёт собеседнику дословно. Помощник не будет его переписывать или отвечать вместо вас.", answer: "Отправить дословно", processing: "Отправляем…" },
+    en: { title: "Only you will reply", privacy: "Your text will be sent verbatim. The assistant will not rewrite it or reply for you.", answer: "Send verbatim", processing: "Sending…" },
+    cs: { title: "Odpovíte pouze vy", privacy: "Váš text bude odeslán doslova. Pomocník ho nepřepíše ani neodpoví za vás.", answer: "Odeslat doslova", processing: "Odesílání…" },
+    fr: { title: "Vous seul répondrez", privacy: "Votre texte sera envoyé mot pour mot. L’assistant ne le reformulera pas et ne répondra pas à votre place.", answer: "Envoyer mot pour mot", processing: "Envoi…" },
+  }[language];
+  const replyModeText = {
+    ru: { title: "Кто отвечает в разговорах", automatic: "Помощник отвечает автоматически", manual: "Отвечаю только я", hint: "В ручном режиме каждое входящее сообщение сначала сохраняется и ждёт вашего точного текста. Без него ничего не отправляется." },
+    en: { title: "Who replies in conversations", automatic: "Assistant replies automatically", manual: "Only I reply", hint: "In manual mode, every incoming message is saved and waits for your exact text. Nothing is sent without it." },
+    cs: { title: "Kdo odpovídá v rozhovorech", automatic: "Pomocník odpovídá automaticky", manual: "Odpovídám pouze já", hint: "V ručním režimu se každá příchozí zpráva uloží a čeká na váš přesný text. Bez něj se nic neodešle." },
+    fr: { title: "Qui répond dans les conversations", automatic: "L’assistant répond automatiquement", manual: "Moi seul je réponds", hint: "En mode manuel, chaque message reçu est enregistré et attend votre texte exact. Rien n’est envoyé sans celui-ci." },
   }[language];
   const contextRefreshText = {
     ru: { title: "Ваш контекст на месте", body: "Проверяем, появились ли в выбранном чате новые сообщения. Уже найденные люди и темы не сбрасываются." },
@@ -475,7 +488,7 @@ export function App() {
     if (!api || activeDictation || answeringQuestionId) return;
     setAnsweringQuestionId(id); setError("");
     try {
-      const answer = ownerAnswers[id]?.trim() || "";
+      const answer = ownerAnswers[id] || "";
       setState(await api.answerOwnerQuestion({ id, disposition, answer }));
       setOwnerAnswers((current) => { const next = { ...current }; delete next[id]; return next; });
     } catch (reason) { setError(errorMessage(reason)); }
@@ -826,16 +839,16 @@ export function App() {
         {activeSection !== "overview" && state.ownerQuestions.length > 0 && <div className="attention-note" role="status"><Bell size={18} /><span>{attentionText.waiting} · {state.ownerQuestions.length}</span><button className="ghost" onClick={() => goTo("overview")}>{attentionText.open}</button></div>}
 
         {activeSection === "overview" && state.ownerQuestions.map((item) => <section className="panel owner-question-panel" key={item.id}>
-          <div className="owner-question-heading"><div><p className="eyebrow">{ownerQuestionText.eyebrow}</p><h3>{ownerQuestionText.title}</h3></div><Bell size={21} /></div>
+          <div className="owner-question-heading"><div><p className="eyebrow">{ownerQuestionText.eyebrow}</p><h3>{item.manualReply ? manualReplyText.title : ownerQuestionText.title}</h3></div><Bell size={21} /></div>
           <div className="owner-question-topic"><span>{ownerQuestionText.paused}</span><strong>{item.topic}</strong></div>
           <p className="owner-question">{item.question}</p>
-          <p className="owner-question-privacy"><ShieldCheck size={15} />{ownerQuestionText.privacy}</p>
+          <p className="owner-question-privacy"><ShieldCheck size={15} />{item.manualReply ? manualReplyText.privacy : ownerQuestionText.privacy}</p>
           <textarea aria-label={`${ownerQuestionText.placeholder}: ${item.topic}`} value={ownerAnswers[item.id] || ""} onChange={(event) => setOwnerAnswers((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={ownerQuestionText.placeholder} disabled={answeringQuestionId === item.id} />
           <DictationControl language={language} disabled={Boolean(answeringQuestionId) || Boolean(activeDictation && activeDictation !== item.id)} onText={(text) => setOwnerAnswers((current) => ({ ...current, [item.id]: appendDictation(current[item.id] || "", text) }))} onBusyChange={(value) => setActiveDictation((current) => value ? item.id : current === item.id ? "" : current)} />
           <div className="owner-question-actions">
-            <button className="primary" aria-busy={answeringQuestionId === item.id} disabled={!ownerAnswers[item.id]?.trim() || Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id && <LoaderCircle className="spin" size={16} />}{answeringQuestionId === item.id ? ownerQuestionText.processing : ownerQuestionText.answer}</button>
-            <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "unknown")}>{ownerQuestionText.unknown}</button>
-            <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "decline")}>{ownerQuestionText.decline}</button>
+            <button className="primary" aria-busy={answeringQuestionId === item.id} disabled={!ownerAnswers[item.id]?.trim() || Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "answer")}>{answeringQuestionId === item.id && <LoaderCircle className="spin" size={16} />}{answeringQuestionId === item.id ? (item.manualReply ? manualReplyText.processing : ownerQuestionText.processing) : (item.manualReply ? manualReplyText.answer : ownerQuestionText.answer)}</button>
+            {!item.manualReply && <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "unknown")}>{ownerQuestionText.unknown}</button>}
+            {!item.manualReply && <button className="ghost" disabled={Boolean(answeringQuestionId) || Boolean(activeDictation)} onClick={() => void answerOwnerQuestion(item.id, "decline")}>{ownerQuestionText.decline}</button>}
           </div>
         </section>)}
 
@@ -966,6 +979,11 @@ export function App() {
               <div className="panel-title"><div><p className="eyebrow">{t.settings}</p><h3>{deviceText.question}</h3></div><Settings2 size={20} /></div>
               <div className="input-row"><input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={deviceText.placeholder} /><button disabled={!displayName.trim()} onClick={async () => api && setState(await api.setDisplayName(displayName))}>{deviceText.save}</button></div>
               <div className="settings-actions">
+                <div className="codex-settings">
+                  <strong>{replyModeText.title}</strong>
+                  <label><select value={state.conversationReplyMode} onChange={async (event) => api && setState(await api.setConversationReplyMode(event.target.value as AppState["conversationReplyMode"]))}><option value="automatic">{replyModeText.automatic}</option><option value="manual">{replyModeText.manual}</option></select></label>
+                  <small>{replyModeText.hint}</small>
+                </div>
                 <div className="codex-settings">
                   <label><span>{settingsText.model}</span><select value={state.codexModel} onChange={async (event) => {
                     if (!api) return;

@@ -4,9 +4,11 @@ import os from "node:os";
 import { supportLocatorFiles } from "../electron/support-control.js";
 
 const [command = "status", ...args] = process.argv.slice(2);
-const commands = { "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "application-diagnostics": ["GET", "/local/application-diagnostics"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], "peer-diagnostics": ["POST", "/peer/diagnostics"], update: ["POST", "/peer/update"], recover: ["POST", "/peer/recover"] } as const;
-if (!(command in commands) || args.length > 1) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts status|diagnostics|application-diagnostics|local-update|refresh-context|snapshot|peer-diagnostics|update|recover [profile-directory]");
-const profile = args[0] || (process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "family-bridge")
+const commands = { "reply-mode": ["POST", "/local/reply-mode"], "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "application-diagnostics": ["GET", "/local/application-diagnostics"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], "peer-diagnostics": ["POST", "/peer/diagnostics"], update: ["POST", "/peer/update"], recover: ["POST", "/peer/recover"] } as const;
+const replyMode = command === "reply-mode" ? args[0] : undefined;
+const profileArg = command === "reply-mode" ? args[1] : args[0];
+if (!(command in commands) || command === "reply-mode" && !["automatic", "manual"].includes(replyMode ?? "") || args.length > (command === "reply-mode" ? 2 : 1)) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts reply-mode automatic|manual [profile-directory] | status|diagnostics|application-diagnostics|local-update|refresh-context|snapshot|peer-diagnostics|update|recover [profile-directory]");
+const profile = profileArg || (process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "family-bridge")
   : process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "family-bridge") : path.join(os.homedir(), ".config", "family-bridge"));
 let success = false;
 for (const file of supportLocatorFiles(profile)) {
@@ -16,7 +18,7 @@ for (const file of supportLocatorFiles(profile)) {
   // Authenticate the discovered process with a read before sending a command.
   const headers = { Authorization: `Bearer ${locator.token}` };
   try {
-    const probeRoute = command === "diagnostics" || command === "application-diagnostics" || command === "local-update" || command === "refresh-context" ? "/local/diagnostics" : "/status";
+    const probeRoute = command === "diagnostics" || command === "application-diagnostics" || command === "local-update" || command === "refresh-context" || command === "reply-mode" ? "/local/diagnostics" : "/status";
     const probe = await fetch(`http://127.0.0.1:${locator.port}${probeRoute}`, { headers, signal: AbortSignal.timeout(5_000) });
     if (!probe.ok) continue;
     const local = await probe.json();
@@ -27,7 +29,7 @@ for (const file of supportLocatorFiles(profile)) {
   const [method, route] = commands[command as keyof typeof commands];
   // Never retry a mutation against another locator after an uncertain response.
   try {
-    const response = await fetch(`http://127.0.0.1:${locator.port}${route}`, { method, headers, signal: AbortSignal.timeout(45_000) });
+    const response = await fetch(`http://127.0.0.1:${locator.port}${route}`, { method, headers, ...(command === "reply-mode" ? { body: JSON.stringify({ mode: replyMode }) } : {}), signal: AbortSignal.timeout(45_000) });
     console.log(JSON.stringify(await response.json(), null, 2));
     process.exitCode = response.ok ? 0 : 1; success = true;
   } catch { console.error("Response unknown. Inspect status before retrying the request."); process.exitCode = 1; success = true; }

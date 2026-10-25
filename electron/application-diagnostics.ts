@@ -4,6 +4,7 @@ import type { UiErrorSnapshot } from "./ui-error-diagnostics.js";
 
 export interface ApplicationDiagnostics {
   schema: 1; at: string;
+  conversationReplyMode?: "automatic" | "manual";
   identity: { owner: string; displayName: string; peerName?: string; peerVersion?: string; counterpartPersonId?: string };
   topics: Array<Record<string, unknown>>;
   topicLaunches: Array<Record<string, unknown>>;
@@ -45,7 +46,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
     }
     return false;
   });
-  return { schema:1, at:new Date().toISOString(), identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
+  return { schema:1, at:new Date().toISOString(), conversationReplyMode:state.conversationReplyMode, identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions,
     conversations, continuations, deliveries, quarantined, reports, uiErrors,
     invariants:[

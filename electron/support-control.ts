@@ -17,7 +17,7 @@ export function supportLocatorFiles(userData: string) {
     path.join(os.tmpdir(), `family-bridge-support-${key}.json`)];
 }
 /** Local operator access without Electron Inspector or a second profile writer. */
-export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; applicationDiagnostics?: () => unknown; update: () => unknown; refreshContext?: () => unknown; maintenance?: (command:SupportMaintenanceCommand)=>Promise<unknown> }): Promise<Server> {
+export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; applicationDiagnostics?: () => unknown; update: () => unknown; refreshContext?: () => unknown; setReplyMode?: (mode: unknown) => unknown; continueConversation?: (input: unknown) => unknown; maintenance?: (command:SupportMaintenanceCommand)=>Promise<unknown> }): Promise<Server> {
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   const server = createServer((req, res) => {
@@ -32,6 +32,8 @@ export async function startSupportControl(userData: string, support: RemoteSuppo
       if (local?.applicationDiagnostics && req.method === "GET" && req.url === "/local/application-diagnostics") return local.applicationDiagnostics();
       if (local && req.method === "POST" && req.url === "/local/update") return local.update();
       if (local?.refreshContext && req.method === "POST" && req.url === "/local/refresh-context") return local.refreshContext();
+      if (local?.setReplyMode && req.method === "POST" && req.url === "/local/reply-mode") return local.setReplyMode((await jsonBody(req) as { mode?: unknown }).mode);
+      if (local?.continueConversation && req.method === "POST" && req.url === "/local/continue-conversation") return local.continueConversation(await jsonBody(req));
       if (req.method === "GET" && req.url === "/status") return support.status();
       if (req.method === "POST" && req.url === "/peer/snapshot") return support.request("snapshot");
       if (req.method === "POST" && req.url === "/peer/diagnostics") return support.request("diagnostics");

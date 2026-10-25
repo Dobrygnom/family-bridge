@@ -5,7 +5,7 @@ import type { StoredState } from "../electron/store.js";
 
 test("application diagnostics expose prepared app state but never source chat or pairing secrets", () => {
   const state = {
-    owner: "katya", displayName: "Катя", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true,
+    owner: "katya", displayName: "Катя", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true, conversationReplyMode: "manual",
     remote: { pairId: "pair", encryptionSecret: "PAIR_SECRET", inviteSecret: "INVITE_SECRET", peerName: "Дима", peerVersion: "1.2.38" },
     pendingTopics: ["Неотправленная тема"], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [],
     topicSources: { "Неотправленная тема": ["local"] }, topicBriefs: {}, reports: [], completedIncoming: [], ignoredConversationIds: [],
@@ -20,6 +20,7 @@ test("application diagnostics expose prepared app state but never source chat or
   assert.equal(diagnostics.topics[0].pending, true);
   assert.equal(diagnostics.topicLaunches[0].preparedMessage, "Подготовленный текст");
   assert.equal(diagnostics.uiErrors.currentlyVisible, false);
+  assert.equal(diagnostics.conversationReplyMode, "manual");
   assert.ok(diagnostics.invariants.every(item => item.ok));
   const json = JSON.stringify(diagnostics);
   assert.match(json, /Неотправленная тема|Подготовленный текст/);
@@ -33,7 +34,7 @@ test("application diagnostics reject unbounded peer payloads", () => {
 });
 
 test("missing historical parents are valid, but a cycle in conversation parents fails its invariant", () => {
-  const base = { owner: "dima", displayName: "Дима", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true,
+  const base = { owner: "dima", displayName: "Дима", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true, conversationReplyMode: "automatic" as const,
     pendingTopics: [], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [], topicSources: {}, topicBriefs: {}, reports: [],
     topicLaunches: {}, pendingOwnerQuestions: [], conversationInheritedCounts: {}, continuations: {}, conversationModes: {}, incomingDeliveries: {},
     quarantinedDeliveries: {}, completedIncoming: [], ignoredConversationIds: [] } satisfies Omit<StoredState, "conversationTranscripts" | "conversationParents">;
