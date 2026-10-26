@@ -3,6 +3,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Diagnostics } from "./diagnostics.js";
 import { powerEvents, runtimeStages } from "./runtime-diagnostics.js";
 import { sanitizeApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
+import { sanitizeReadingReceiptSnapshot, type ReadingReceiptSnapshot } from "../src/core/conversation-attention.js";
 
 // This is a separate, stricter boundary than the LOCAL lifecycle log. Never
 // serialize local paths, arbitrary exception text or crash dumps. Application
@@ -67,6 +68,7 @@ export interface SupportReport {
   dialogueDiagnostics?: ReturnType<typeof sanitizeDialogueDiagnostics>;
   runtimeDiagnostics?: ReturnType<typeof sanitizeRuntimeDiagnostics>;
   applicationDiagnostics?: ApplicationDiagnostics;
+  readingReceipts?: ReadingReceiptSnapshot;
   events: Array<{ at: string; event: string; fields: Fields }>;
 }
 const iso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
@@ -91,6 +93,7 @@ export function compactSupportHeartbeat(value: SupportReport): SupportReport {
     bootId: report.bootId,
     status: report.status,
     update: report.update,
+    ...(report.readingReceipts ? { readingReceipts: report.readingReceipts } : {}),
     ...(dialogue ? { dialogueDiagnostics: {
       owner: dialogue.owner,
       pairId: dialogue.pairId,
@@ -168,6 +171,7 @@ export function sanitizeSupportReport(value: unknown): SupportReport | undefined
     ...(r.dialogueDiagnostics ? { dialogueDiagnostics: sanitizeDialogueDiagnostics(r.dialogueDiagnostics) } : {}),
     ...(r.runtimeDiagnostics ? { runtimeDiagnostics: sanitizeRuntimeDiagnostics(r.runtimeDiagnostics) } : {}),
     ...(r.applicationDiagnostics ? { applicationDiagnostics: sanitizeApplicationDiagnostics(r.applicationDiagnostics) } : {}),
+    ...(r.readingReceipts ? { readingReceipts: sanitizeReadingReceiptSnapshot(r.readingReceipts) } : {}),
     ...(Array.isArray(r.continuations) ? { continuations: continuationDiagnostics(r.continuations) } : {}),
     events: (Array.isArray(r.events) ? r.events : []).slice(-120).filter(e => e && iso(e.at) && events.has(e.event))
       .map(e => ({ at: e.at, event: e.event, fields: sanitizeSupportFields(e.fields) })) };

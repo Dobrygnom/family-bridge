@@ -121,6 +121,8 @@ export class RemoteSupport {
     if (this.busy) { this.wakePending = true; return; }
     void this.tick();
   }
+  /** Publish a changed durable diagnostic fact without waiting for the five-minute presence heartbeat. */
+  publishState() { this.lastHeartbeat = 0; this.wake(); }
 
   private async ensureSubscription(c: SupportContext) {
     const key = `${c.pairId}:${c.me}:${c.peer}:${c.independent === true}`;

@@ -31,6 +31,19 @@ test("malformed renderer telemetry is ignored", async () => {
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("renderer diagnostic snapshot persists counters but never draft contents", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fb-ui-state-"));
+  try {
+    const tracker = new UiErrorDiagnostics(dir);
+    await tracker.recordRenderer({ onboardingComplete: true, analysisStatus: "ready", activeSection: "reports", focused: true, visible: true,
+      draftKeys: 3, draftCharacters: 412, readingMarkers: 19, draftText: "PRIVATE DRAFT" });
+    const snapshot = await new UiErrorDiagnostics(dir).snapshot();
+    assert.equal(snapshot.renderer?.activeSection, "reports");
+    assert.equal(snapshot.renderer?.draftCharacters, 412);
+    assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE DRAFT|draftText/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("a new application session clears stale current visibility without deleting history", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fb-ui-errors-session-"));
   try {

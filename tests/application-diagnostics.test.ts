@@ -11,7 +11,7 @@ test("application diagnostics expose prepared app state but never source chat or
     topicSources: { "Неотправленная тема": ["local"] }, topicBriefs: {}, reports: [], completedIncoming: [], ignoredConversationIds: [],
     topicLaunches: { launch: { topic: "Неотправленная тема", pairId: "pair", status: "waiting", preparedMessage: "Подготовленный текст", attempts: 1 } },
     pendingOwnerQuestions: [], pendingManualReplies: [], conversationTranscripts: {}, conversationInheritedCounts: {}, continuations: {}, conversationParents: {}, conversationModes: {},
-    incomingDeliveries: {}, quarantinedDeliveries: {},
+    incomingDeliveries: {}, quarantinedDeliveries: {}, conversationReading: { version: 1, seen: { "stage:0": true }, notifiedStages: ["stage"], updatedAt: "2026-10-26T08:00:00.000Z" },
   } satisfies StoredState;
   const analysis = { analysisVersion: 5, sourceId: "SOURCE_CHAT_ID", sourceHash: "SOURCE_CHAT_HASH", analyzedAt: new Date().toISOString(), status: "ready" as const,
     people: [], topics: [{ id: "topic", title: "Неотправленная тема", aboutPersonIds: [], discussWithPersonId: "dima", sensitivity: "direct" as const,
@@ -21,6 +21,7 @@ test("application diagnostics expose prepared app state but never source chat or
   assert.equal(diagnostics.topicLaunches[0].preparedMessage, "Подготовленный текст");
   assert.equal(diagnostics.uiErrors.currentlyVisible, false);
   assert.equal(diagnostics.conversationReplyMode, "manual");
+  assert.deepEqual(diagnostics.reading?.local?.stages.stage, [[0, 0]]);
   assert.ok(diagnostics.invariants.every(item => item.ok));
   const json = JSON.stringify(diagnostics);
   assert.match(json, /Неотправленная тема|Подготовленный текст/);

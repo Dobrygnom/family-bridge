@@ -8,6 +8,7 @@ import type { AgentResponse } from "../src/core/types.js";
 import type { MessageOrigin, SharedMessage } from "../src/core/continuation.js";
 import type { PairRecovery } from "../src/core/pair-recovery.js";
 import type { CodexModel, CodexReasoningEffort } from "../src/core/codex-settings.js";
+import type { ReadingReceiptSnapshot, ReadingState } from "../src/core/conversation-attention.js";
 
 export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
@@ -62,6 +63,8 @@ export interface PendingManualReply {
 }
 
 export interface StoredState {
+  conversationReading?: ReadingState;
+  peerConversationReading?: { pairId: string; owner: OwnerId; receivedAt: string; receipt: ReadingReceiptSnapshot };
   topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; preparedSentAt?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number; failureCode?: string }>;
   owner: OwnerId;
   onboardingComplete: boolean;

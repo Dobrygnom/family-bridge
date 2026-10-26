@@ -24,8 +24,9 @@ contextBridge.exposeInMainWorld("familyBridge", {
   getState: () => ipcRenderer.invoke("bridge:get-state"),
   notifyConversation: (threadId: string) => ipcRenderer.invoke("bridge:notify-conversation", threadId),
   setUnreadCount: (count: number) => ipcRenderer.invoke("bridge:set-unread-count", count),
+  setConversationReading: (reading: unknown) => ipcRenderer.invoke("bridge:set-conversation-reading", reading),
   setUpdateBlocked: (blocked: boolean, reason?: "dictation" | "editing" | "activity") => ipcRenderer.invoke("bridge:update-blocked", blocked, reason),
-  diagnoseUi: (input: { onboardingComplete: boolean; analysisStatus?: string }) => ipcRenderer.invoke("bridge:diagnose-ui", input),
+  diagnoseUi: (input: { onboardingComplete: boolean; analysisStatus?: string; activeSection?: string; focused?: boolean; visible?: boolean; draftKeys?: number; draftCharacters?: number; readingMarkers?: number }) => ipcRenderer.invoke("bridge:diagnose-ui", input),
   openDiagnostics: () => ipcRenderer.invoke("bridge:open-diagnostics"),
   getLocalContextState: () => ipcRenderer.invoke("bridge:get-local-context-state"),
   runConversation: (topic: string, realCodex: boolean) =>

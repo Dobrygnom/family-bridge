@@ -50,6 +50,8 @@ import { prepareManualContext } from "../src/core/manual-context.js";
 import { ComputeChannelManager } from "./compute-channel.js";
 import { PsychologistIntake, type IntakeRoute } from "./psychologist-intake.js";
 import { runPersistentStructuredCodex } from "./persistent-structured-codex.js";
+import { mergeReadingState, parseReadingState, readingReceiptSeen, readingReceiptSnapshot, sanitizeReadingReceiptSnapshot, threadMessages, type ReadingState } from "../src/core/conversation-attention.js";
+import { conversationThreads } from "../src/core/conversation-threads.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -588,15 +590,17 @@ export class BackgroundService {
   private async persistPeerObservation(report: SupportReport) {
     const version = validPeerVersion(report.status.version), dialogue = report.dialogueDiagnostics;
     const observedAt = report.at;
-    if (!version || !dialogue?.pairId || !Number.isFinite(Date.parse(observedAt))) return;
+    const receipt = sanitizeReadingReceiptSnapshot(report.readingReceipts);
+    if (!version || !dialogue?.pairId || !Number.isFinite(Date.parse(observedAt)) || dialogue.owner !== "dima" && dialogue.owner !== "katya") return;
     let accepted = false;
     const next = await this.store.mutate(current => {
       if (!current.remote || current.remote.pairId !== dialogue.pairId || dialogue.owner === current.owner) return {};
       const previousAt = current.remote.peerVersionObservedAt ?? current.remote.peerLastSeenAt;
-      if (previousAt && Date.parse(previousAt) >= Date.parse(observedAt)) return {};
+      const previousReceiptAt = current.peerConversationReading?.pairId === dialogue.pairId ? current.peerConversationReading.receivedAt : undefined;
+      if (previousAt && Date.parse(previousAt) > Date.parse(observedAt) || previousAt === observedAt && (!receipt || previousReceiptAt && Date.parse(previousReceiptAt) >= Date.parse(observedAt))) return {};
       accepted = true;
       return { remote: { ...current.remote, peerVersion: version, peerVersionObservedAt: observedAt,
-        peerLastSeenAt: observedAt, peerPresenceAt: observedAt } };
+        peerLastSeenAt: observedAt, peerPresenceAt: observedAt }, ...(receipt ? { peerConversationReading: { pairId: dialogue.pairId, owner: dialogue.owner, receivedAt: observedAt, receipt } } : {}) };
     });
     if (accepted && next.remote?.pairId === dialogue.pairId && next.remote.peerVersion === version) {
       this.emit({ type: "peer", peerName: next.remote.peerName, peerVersion: version, peerLastSeenAt: next.remote.peerLastSeenAt });
@@ -740,6 +744,7 @@ export class BackgroundService {
       updateDiagnostics: { ...this.updateDiagnostics(), ...this.options.updateDiagnostics?.() },
       dialogueDiagnostics: this.dialogueDiagnostics(state),
       runtimeDiagnostics: this.diagnostics.runtime.snapshot(),
+      ...(readingReceiptSnapshot(state.conversationReading) ? { readingReceipts: readingReceiptSnapshot(state.conversationReading) } : {}),
       ...(application ? { applicationDiagnostics: await this.applicationDiagnostics() } : {}),
       continuations: Object.entries(state.continuations).filter(([, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId).map(([id, c]) => ({
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
@@ -786,6 +791,24 @@ export class BackgroundService {
     const persistedPresenceAt = stored.remote?.peerPresenceAt;
     const peerPresenceAt = runtimePresenceAt && (!persistedPresenceAt || Date.parse(runtimePresenceAt) > Date.parse(persistedPresenceAt)) ? runtimePresenceAt : persistedPresenceAt;
     return { ...publicStored, processingMode: stored.processingMode ?? (stored.identityConfigured ? "local" : undefined), appVersion: this.options.appVersion ?? "development", lastConversationAt: reportSummaries[0]?.completedAt || undefined, reportSummaries, ownerQuestions, codex, compute: this.compute.snapshot(), intake: this.intake.snapshot(), running: this.running, contextSyncing: this.contextSyncing, contextSyncProgress: this.contextSyncProgress, portraitsUpdating: this.portraitsUpdating, memory, context, contextAnalysis, update: this.updateState, remote: { configured: Boolean(stored.remote), connected, dialogueCompatible, pairId: stored.remote?.pairId, invite, peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion, peerVersionObservedAt: stored.remote?.peerVersionObservedAt, peerExperienceVersion: stored.remote?.peerExperienceVersion, peerLastSeenAt: stored.remote?.peerLastSeenAt, peerPresenceAt, peerVersionCheck: !this.versionProbe?.automatic && this.versionProbe?.pairId === stored.remote?.pairId ? this.versionProbe?.state : undefined, counterpartPersonId: stored.remote?.counterpartPersonId, counterpartLabel: counterpart?.label } };
+  }
+
+  async setConversationReading(value: unknown) {
+    const parsed = parseReadingState(typeof value === "string" ? value : JSON.stringify(value));
+    if (!parsed) throw new Error("Invalid reading state");
+    await this.store.mutate(current => ({ conversationReading: mergeReadingState(current.conversationReading, parsed) }));
+    this.support.publishState();
+  }
+
+  async readStatus() {
+    const stored = await this.store.read();
+    const publicState = await this.state();
+    const peer = stored.peerConversationReading?.pairId === stored.remote?.pairId ? stored.peerConversationReading : undefined;
+    const conversations = conversationThreads(publicState).map(thread => ({ id: thread.id, topic: thread.topic,
+      messages: threadMessages(thread).filter(message => message.local).map(message => ({ key: message.key, speaker: message.speaker, text: message.text,
+        ...(message.sentAt ? { sentAt: message.sentAt } : {}), readByPeer: peer ? readingReceiptSeen(peer.receipt, message.key) : null })) }));
+    return { schema: 1, at: new Date().toISOString(), peerName: stored.remote?.peerName, peerVersion: stored.remote?.peerVersion,
+      peerReceiptAt: peer?.receipt.updatedAt, receivedAt: peer?.receivedAt, available: Boolean(peer), conversations };
   }
 
   private conversationSnapshot(stored: Awaited<ReturnType<AtomicStore["read"]>>): ConversationSnapshot {

@@ -3,7 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { conversationThreads } from "../src/core/conversation-threads.js";
-import { initialReadingState, parseReadingState, readingReceipt, threadMessages, unreadMessages } from "../src/core/conversation-attention.js";
+import { initialReadingState, mergeReadingState, parseReadingState, readingReceipt, readingReceiptSeen, readingReceiptSnapshot, sanitizeReadingReceiptSnapshot, threadMessages, unreadMessages } from "../src/core/conversation-attention.js";
 import { ConversationThreads } from "../src/ui/ConversationThreads.js";
 import type { AppState } from "../src/global.js";
 
@@ -27,6 +27,21 @@ test("unfocused, collapsed, briefly visible and unmounted messages are not marke
   assert.equal(reads, 1);
   const unmounted = readingReceipt(() => reads++, action => { pending.push({ action, cancelled: false }); return () => {}; });
   unmounted.update(true, true); unmounted.dispose(); pending.at(-1)!.action(); assert.equal(reads, 1);
+});
+
+test("durable reading markers merge monotonically and compress into bounded peer receipts", () => {
+  const first = { version: 1 as const, seen: { "root:0": true as const, "root:2": true as const }, notifiedStages: ["root"], updatedAt: "2026-10-26T08:00:00.000Z" };
+  const second = { version: 1 as const, seen: { "root:1": true as const, "child:4": true as const }, notifiedStages: ["child"], updatedAt: "2026-10-26T09:00:00.000Z" };
+  const merged = mergeReadingState(first, second)!;
+  assert.equal(merged.updatedAt, second.updatedAt);
+  assert.deepEqual(Object.keys(merged.seen).sort(), ["child:4", "root:0", "root:1", "root:2"]);
+  const receipt = readingReceiptSnapshot(merged)!;
+  assert.deepEqual(receipt.stages.root, [[0, 2]]);
+  assert.deepEqual(receipt.stages.child, [[4, 4]]);
+  assert.equal(readingReceiptSeen(receipt, "root:1"), true);
+  assert.equal(readingReceiptSeen(receipt, "root:3"), false);
+  assert.deepEqual(sanitizeReadingReceiptSnapshot(receipt), receipt);
+  assert.equal(sanitizeReadingReceiptSnapshot({ ...receipt, stages: { root: [[2, 1]] } }), undefined);
 });
 
 test("read markers survive live -> report, inherited history is not new, and message visibility marks only that message", () => {

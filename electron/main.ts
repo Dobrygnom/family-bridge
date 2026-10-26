@@ -282,6 +282,7 @@ app.whenReady().then(async () => {
   void startSupportControl(app.getPath("userData"), service.support, {
       diagnostics: () => ({ schema: 1, at: new Date().toISOString(), bootId: service.diagnostics.bootId, version: app.getVersion(), update: service.updateDiagnostics(), gate: updateGate?.snapshot(), ipc: [...activeChannels.values()].map(row => ({ ...row, elapsedMs: Math.max(0, Date.now() - row.startedAt) })), rendererBlocked: rendererUpdateBlocked, rendererReason: rendererUpdateReason }),
       applicationDiagnostics: () => service.applicationDiagnostics(),
+      readStatus: () => service.readStatus(),
       maintenance: command => service.runMaintenance(command),
       setReplyMode: mode => service.setConversationReplyMode(mode),
       continueConversation: input => service.continueReport(input),
@@ -317,6 +318,7 @@ app.whenReady().then(async () => {
     else app.setBadgeCount(count);
     mainWindow?.setTitle(count ? `(${count}) Family Bridge` : "Family Bridge");
   });
+  handle("bridge:set-conversation-reading", (_event, value: unknown) => service.setConversationReading(value));
   handle("bridge:notify-conversation", async (_event, threadId: unknown) => {
     if (typeof threadId !== "string" || !Notification.isSupported() || mainWindow?.isFocused()) return;
     if (Date.now() - (conversationNotifications.get(threadId) ?? 0) < 60_000) return;
@@ -356,6 +358,7 @@ app.whenReady().then(async () => {
     const shown = input as { onboardingComplete?: unknown; analysisStatus?: unknown } | null;
     service.diagnostics.record("renderer.snapshot", { onboarding: shown?.onboardingComplete === true, analysisStatus: ["ready", "analyzing", "error"].includes(String(shown?.analysisStatus)) ? String(shown?.analysisStatus) : "none" });
     service.diagnostics.snapshotProfile(app.getPath('userData'), 'renderer-snapshot');
+    await uiErrors.recordRenderer(input);
     const actual = await service.state();
     service.diagnostics.record('renderer.backend-state', { onboarding: actual.onboardingComplete, analysisStatus: actual.contextAnalysis?.status, topics: actual.contextAnalysis?.topics.length, reports: actual.reports.length });
   });

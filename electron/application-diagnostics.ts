@@ -1,6 +1,7 @@
 import type { ContextAnalysis } from "../src/core/context-analysis.js";
 import type { StoredState } from "./store.js";
 import type { UiErrorSnapshot } from "./ui-error-diagnostics.js";
+import { readingReceiptSnapshot } from "../src/core/conversation-attention.js";
 
 export interface ApplicationDiagnostics {
   schema: 1; at: string;
@@ -16,6 +17,7 @@ export interface ApplicationDiagnostics {
   quarantined: Array<Record<string, unknown>>;
   reports: Array<Record<string, unknown>>;
   uiErrors: UiErrorSnapshot;
+  reading?: { local?: ReturnType<typeof readingReceiptSnapshot>; peer?: StoredState["peerConversationReading"] };
   invariants: Array<{ name: string; ok: boolean; details?: string }>;
 }
 
@@ -51,6 +53,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
   return { schema:1, at:new Date().toISOString(), conversationReplyMode:state.conversationReplyMode, identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions, manualReplies,
     conversations, continuations, deliveries, quarantined, reports, uiErrors,
+    reading: { ...(readingReceiptSnapshot(state.conversationReading) ? { local: readingReceiptSnapshot(state.conversationReading) } : {}), ...(state.peerConversationReading ? { peer: state.peerConversationReading } : {}) },
     invariants:[
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },
       { name:"conversation-parents-acyclic", ok:cyclicParents.length===0, ...(cyclicParents.length ? {details:cyclicParents.join(" | ")} : {}) },

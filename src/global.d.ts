@@ -7,6 +7,7 @@ import type { PersonPortrait } from "./core/person-portraits.js";
 import type { RoutedTopic } from "./core/context-analysis.js";
 
 export interface AppState {
+  conversationReading?: import("./core/conversation-attention.js").ReadingState;
   owner: "dima" | "katya";
   onboardingComplete: boolean;
   identityConfigured: boolean;
@@ -66,7 +67,8 @@ declare global {
       getState(): Promise<AppState>;
       notifyConversation(threadId: string): Promise<void>;
       setUnreadCount(count: number): Promise<void>;
-      diagnoseUi(input: { onboardingComplete: boolean; analysisStatus?: string }): Promise<void>;
+      setConversationReading(reading: import("./core/conversation-attention.js").ReadingState): Promise<void>;
+      diagnoseUi(input: { onboardingComplete: boolean; analysisStatus?: string; activeSection?: string; focused?: boolean; visible?: boolean; draftKeys?: number; draftCharacters?: number; readingMarkers?: number }): Promise<void>;
       openDiagnostics(): Promise<void>;
       getLocalContextState(): Promise<Pick<AppState, "context" | "contextAnalysis">>;
       runConversation(topic: string, realCodex: boolean): Promise<ConversationReport>;

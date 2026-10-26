@@ -93,7 +93,7 @@ export function App() {
     dispatchState((current) => typeof action === "function" ? action(current) : keepNewerConversations(current, action));
   }
   const [loaded, setLoaded] = useState(false);
-  const reading = useConversationReading(state, loaded, window.familyBridge?.notifyConversation, window.familyBridge?.setUnreadCount);
+  const reading = useConversationReading(state, loaded, window.familyBridge?.notifyConversation, window.familyBridge?.setUnreadCount, window.familyBridge?.setConversationReading);
   const openConversation = useRef<(id: string) => void>(() => {});
   const [revealToken, setRevealToken] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
@@ -424,8 +424,19 @@ export function App() {
   }, [api, reload]);
 
   useEffect(() => {
-    if (loaded) void api?.diagnoseUi({ onboardingComplete: state.onboardingComplete, analysisStatus: state.contextAnalysis?.status }).catch(() => undefined);
-  }, [api, loaded, state.onboardingComplete, state.contextAnalysis?.status]);
+    if (!loaded) return;
+    let draftKeys = 0, draftCharacters = 0;
+    try {
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (!key || !key.startsWith("family-bridge-") || !key.includes("draft")) continue;
+        draftKeys += 1; draftCharacters += localStorage.getItem(key)?.length ?? 0;
+      }
+    } catch { /* Diagnostic counters must never affect the UI. */ }
+    void api?.diagnoseUi({ onboardingComplete: state.onboardingComplete, analysisStatus: state.contextAnalysis?.status, activeSection,
+      focused: document.hasFocus(), visible: document.visibilityState === "visible", draftKeys, draftCharacters,
+      readingMarkers: Object.keys(reading.reading?.seen ?? {}).length }).catch(() => undefined);
+  }, [api, loaded, state.onboardingComplete, state.contextAnalysis?.status, activeSection, ownerAnswers, reading.reading]);
 
   useEffect(() => {
     if (!api || activeSection !== "settings") return;

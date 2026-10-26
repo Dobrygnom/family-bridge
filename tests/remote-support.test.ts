@@ -153,6 +153,13 @@ test("idle support uses realtime, a one-minute fallback and a five-minute compac
   } finally { f.support.stop(); await f.cleanup(); }
 });
 
+test("compact support heartbeat carries only bounded read receipts", () => {
+  const receipt = { version: 1 as const, updatedAt: new Date(now).toISOString(), stages: { [randomUUID()]: [[0, 4] as [number, number]] } };
+  const compact = compactSupportHeartbeat({ ...report(), readingReceipts: receipt });
+  assert.deepEqual(compact.readingReceipts, receipt);
+  assert.equal(sanitizeSupportReport({ ...report(), readingReceipts: { ...receipt, stages: { bad: [[4, 1]] } } })?.readingReceipts, undefined);
+});
+
 test("diagnostics keep a successful realtime connection current until the fallback check", () => {
   const now = 1_000_000;
   assert.equal(dialogueConnectionAvailable(now - DIALOGUE_FALLBACK_POLL_MS, undefined, now), true);
@@ -348,7 +355,7 @@ test("local control requires its secret, rejects browser origins and exposes onl
 test("local blocker and application diagnostics remain readable when normal state reporting is stuck",async()=>{
   const f=await fixture(); let installs=0,refreshes=0,maintenance=0,replyMode="",continuation:unknown;
   f.support.status=()=>new Promise(()=>{});
-  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};},setReplyMode:mode=>{replyMode=String(mode);return {accepted:true};},continueConversation:input=>{continuation=input;return {accepted:true};},maintenance:async()=>{maintenance++;return {accepted:true};}});
+  const server=await startSupportControl(f.dir,f.support,{diagnostics:()=>({schema:1,bootId:'boot',blockers:['state_writes']}),applicationDiagnostics:()=>({schema:1,topics:[{title:'prepared'}],invariants:[]}),readStatus:()=>({schema:1,available:true,conversations:[{id:'one'}]}),update:()=>{installs++;return {accepted:true};},refreshContext:()=>{refreshes++;return {accepted:true};},setReplyMode:mode=>{replyMode=String(mode);return {accepted:true};},continueConversation:input=>{continuation=input;return {accepted:true};},maintenance:async()=>{maintenance++;return {accepted:true};}});
   try {
     const locator=JSON.parse(await readFile(supportLocatorFiles(f.dir)[0],'utf8'));
     const url=`http://127.0.0.1:${locator.port}`, headers={Authorization:`Bearer ${locator.token}`};
@@ -356,6 +363,8 @@ test("local blocker and application diagnostics remain readable when normal stat
     assert.deepEqual(result.blockers,['state_writes']);
     const application=await (await fetch(`${url}/local/application-diagnostics`,{headers,signal:AbortSignal.timeout(1000)})).json();
     assert.equal(application.topics[0].title,'prepared');
+    const reading=await (await fetch(`${url}/local/read-status`,{headers,signal:AbortSignal.timeout(1000)})).json();
+    assert.equal(reading.available,true); assert.equal(reading.conversations[0].id,'one');
     assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers:{...headers,Origin:'https://evil.test'}})).status,403);
     assert.equal(installs,0);
     assert.equal((await fetch(`${url}/local/update`,{method:'POST',headers})).status,200);

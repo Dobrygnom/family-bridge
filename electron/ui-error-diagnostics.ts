@@ -6,6 +6,7 @@ import { replaceStateFile } from "./store.js";
 export interface UiErrorSnapshot {
   schema: 1; totalShown: number; currentlyVisible: boolean; visibleCount: number;
   lastShownAt?: string; lastClearedAt?: string;
+  renderer?: { at: string; onboardingComplete: boolean; analysisStatus: "ready" | "analyzing" | "error" | "none"; activeSection: string; focused: boolean; visible: boolean; draftKeys: number; draftCharacters: number; readingMarkers: number };
   recent: Array<{ at: string; state: "shown" | "updated" | "cleared"; occurrenceId?: string; visibleCount: number }>;
 }
 const empty = (): UiErrorSnapshot => ({ schema: 1, totalShown: 0, currentlyVisible: false, visibleCount: 0, recent: [] });
@@ -34,9 +35,27 @@ export class UiErrorDiagnostics {
       const previousOccurrence = [...current.recent].reverse().find(item => item.state !== "cleared")?.occurrenceId;
       if (current.currentlyVisible === visible && current.visibleCount === visibleCount && (!visible || previousOccurrence === occurrenceId)) return;
       const state: "shown" | "updated" | "cleared" = !visible ? "cleared" : current.currentlyVisible ? "updated" : "shown";
-      const next: UiErrorSnapshot = { schema: 1, totalShown: current.totalShown + (state === "shown" ? 1 : 0), currentlyVisible: visible, visibleCount,
+      const next: UiErrorSnapshot = { schema: 1, totalShown: current.totalShown + (state === "shown" ? 1 : 0), currentlyVisible: visible, visibleCount, ...(current.renderer ? { renderer: current.renderer } : {}),
         lastShownAt: state === "shown" ? at : current.lastShownAt, lastClearedAt: state === "cleared" ? at : current.lastClearedAt,
         recent: [...current.recent, { at, state, ...(occurrenceId ? { occurrenceId } : {}), visibleCount }].slice(-100) };
+      await mkdir(path.dirname(this.file), { recursive: true });
+      const temporary = `${this.file}.${randomUUID()}.tmp`;
+      await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
+      await replaceStateFile(temporary, this.file);
+    });
+    return this.pending;
+  }
+  recordRenderer(input: unknown): Promise<void> {
+    const row = input as Record<string, unknown> | null;
+    const analysisStatus = ["ready", "analyzing", "error"].includes(String(row?.analysisStatus)) ? String(row?.analysisStatus) as "ready" | "analyzing" | "error" : "none";
+    const activeSection = typeof row?.activeSection === "string" && /^[a-z-]{1,40}$/i.test(row.activeSection) ? row.activeSection : "unknown";
+    const bounded = (value: unknown, max: number) => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max ? Number(value) : 0;
+    if (typeof row?.onboardingComplete !== "boolean" || typeof row.focused !== "boolean" || typeof row.visible !== "boolean") return Promise.resolve();
+    const renderer: NonNullable<UiErrorSnapshot["renderer"]> = { at: new Date().toISOString(), onboardingComplete: row.onboardingComplete, analysisStatus, activeSection,
+      focused: row.focused, visible: row.visible, draftKeys: bounded(row.draftKeys, 1_000), draftCharacters: bounded(row.draftCharacters, 10_000_000), readingMarkers: bounded(row.readingMarkers, 100_000) };
+    this.pending = this.pending.catch(() => undefined).then(async () => {
+      const current = await this.snapshotUnlocked();
+      const next = { ...current, renderer };
       await mkdir(path.dirname(this.file), { recursive: true });
       const temporary = `${this.file}.${randomUUID()}.tmp`;
       await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });

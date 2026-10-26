@@ -1,16 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppState } from "../global.js";
 import { conversationThreads } from "../core/conversation-threads.js";
-import { initialReadingState, parseReadingState, READING_KEY, unreadMessages, type ReadingState } from "../core/conversation-attention.js";
+import { initialReadingState, mergeReadingState, parseReadingState, READING_KEY, unreadMessages, type ReadingState } from "../core/conversation-attention.js";
 
-export function useConversationReading(state: AppState, loaded: boolean, notify?: (threadId: string) => Promise<void>, setSystemUnreadCount?: (count: number) => Promise<void>) {
+export function useConversationReading(state: AppState, loaded: boolean, notify?: (threadId: string) => Promise<void>, setSystemUnreadCount?: (count: number) => Promise<void>, saveReading?: (reading: ReadingState) => Promise<void>) {
   const [reading, setReading] = useState(() => { try { return parseReadingState(localStorage.getItem(READING_KEY)); } catch { return undefined; } });
   const current = useRef(reading);
   const [saveFailed, setSaveFailed] = useState(false);
   const commit = useCallback((next: ReadingState) => {
-    try { localStorage.setItem(READING_KEY, JSON.stringify(next)); current.current = next; setReading(next); setSaveFailed(false); return true; }
+    const stamped = { ...next, updatedAt: new Date().toISOString() };
+    try { localStorage.setItem(READING_KEY, JSON.stringify(stamped)); current.current = stamped; setReading(stamped); setSaveFailed(false); void saveReading?.(stamped).catch(() => setSaveFailed(true)); return true; }
     catch { setSaveFailed(true); return false; }
-  }, []);
+  }, [saveReading]);
+  useEffect(() => {
+    if (!loaded) return;
+    const merged = mergeReadingState(current.current, state.conversationReading);
+    if (!merged) return;
+    const changed = JSON.stringify(merged) !== JSON.stringify(current.current);
+    if (changed) { current.current = merged; setReading(merged); try { localStorage.setItem(READING_KEY, JSON.stringify(merged)); } catch { setSaveFailed(true); } }
+    if (!state.conversationReading || changed) void saveReading?.(merged).catch(() => setSaveFailed(true));
+  }, [loaded, state.conversationReading, saveReading]);
   useEffect(() => {
     if (!loaded) return;
     const threads = conversationThreads(state);
