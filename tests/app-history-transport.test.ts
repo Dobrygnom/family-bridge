@@ -27,7 +27,7 @@ test('busy page retries the same cursor, completes the history, and never invoke
   let calls=0,browserCalls=0;const cursors:unknown[]=[],pauses:number[]=[];
   const app=await endpoint((r,reply)=>{
     if(r.method==='tools/list')return reply(capabilities);
-    assert.equal(r.params.tool,'read_thread');calls++;cursors.push(r.params.arguments.cursor);
+    assert.equal(r.params.tool,'read_thread');assert.equal(r.params.callerSource,'codex');calls++;cursors.push(r.params.arguments.cursor);
     if(calls===1)return reply(response({error:'reached concurrency limit'},false));
     reply(response(calls===2?page('first','older'):page('second')));
   });

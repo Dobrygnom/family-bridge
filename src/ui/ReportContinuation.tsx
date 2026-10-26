@@ -16,17 +16,18 @@ const labels = {
 };
 
 const manualLabels = {
-  ru: { placeholder: "Напишите точный текст, который получит собеседник.", hint: "Включён ручной режим. Этот текст уйдёт дословно: помощник не будет его переписывать или отвечать вместо вас.", send: "Отправить дословно", starting: "Отправляем ваш текст…" },
-  en: { placeholder: "Write the exact text your partner should receive.", hint: "Manual mode is on. This text will be sent verbatim; the assistant will not rewrite it or reply for you.", send: "Send verbatim", starting: "Sending your text…" },
-  cs: { placeholder: "Napište přesný text, který má druhá strana obdržet.", hint: "Je zapnutý ruční režim. Text bude odeslán doslova; pomocník ho nepřepíše ani neodpoví za vás.", send: "Odeslat doslova", starting: "Odesílání vašeho textu…" },
-  fr: { placeholder: "Écrivez le texte exact que votre interlocuteur doit recevoir.", hint: "Le mode manuel est activé. Ce texte sera envoyé mot pour mot ; l’assistant ne le reformulera pas et ne répondra pas à votre place.", send: "Envoyer mot pour mot", starting: "Envoi de votre texte…" },
+  ru: { title: "Ответить в этот разговор", placeholder: "Напишите точный текст, который получит собеседник.", hint: "Включён ручной режим. Этот текст уйдёт дословно: помощник не будет его переписывать или отвечать вместо вас.", send: "Отправить дословно", starting: "Отправляем ваш текст…" },
+  en: { title: "Reply in this conversation", placeholder: "Write the exact text your partner should receive.", hint: "Manual mode is on. This text will be sent verbatim; the assistant will not rewrite it or reply for you.", send: "Send verbatim", starting: "Sending your text…" },
+  cs: { title: "Odpovědět v tomto rozhovoru", placeholder: "Napište přesný text, který má druhá strana obdržet.", hint: "Je zapnutý ruční režim. Text bude odeslán doslova; pomocník ho nepřepíše ani neodpoví za vás.", send: "Odeslat doslova", starting: "Odesílání vašeho textu…" },
+  fr: { title: "Répondre dans cette conversation", placeholder: "Écrivez le texte exact que votre interlocuteur doit recevoir.", hint: "Le mode manuel est activé. Ce texte sera envoyé mot pour mot ; l’assistant ne le reformulera pas et ne répondra pas à votre place.", send: "Envoyer mot pour mot", starting: "Envoi de votre texte…" },
 };
 
-export function ReportContinuation({ reportId, state, language, onState, dictationBusy, onDictationBusy, conversationBusy = false, threadId, relatedReportIds = [reportId] }: { reportId: string; state: AppState; language: Language; onState: (state: AppState) => void; dictationBusy: boolean; onDictationBusy: (busy: boolean) => void; conversationBusy?: boolean; threadId?: string; relatedReportIds?: string[] }) {
+export function ReportContinuation({ reportId, state, language, onState, dictationBusy, onDictationBusy, conversationBusy = false, activeConversationId, manualDraft, threadId, relatedReportIds = [reportId] }: { reportId: string; state: AppState; language: Language; onState: (state: AppState) => void; dictationBusy: boolean; onDictationBusy: (busy: boolean) => void; conversationBusy?: boolean; activeConversationId?: string; manualDraft?: string; threadId?: string; relatedReportIds?: string[] }) {
   const key = threadId ? `family-bridge-thread-draft-v2:${threadId}` : `family-bridge-report-draft-v1:${reportId}`;
   const [draft, setDraft] = useState(() => { try {
     const saved = localStorage.getItem(key);
-    if (saved !== null) return saved;
+    if (saved) return saved;
+    if (manualDraft) return manualDraft;
     return [...new Set(relatedReportIds.map(id=>localStorage.getItem(`family-bridge-report-draft-v1:${id}`)||"").filter(Boolean))].join("\n\n");
   } catch { return ""; } });
   const [busy, setBusy] = useState(false);
@@ -37,17 +38,23 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
   const t = labels[language];
   const manual = state.conversationReplyMode === "manual";
   const copy = manual ? { ...t, ...manualLabels[language] } : t;
+  const manualLiveReply = manual && conversationBusy && Boolean(activeConversationId);
   const latestRequest = state.continuationStates?.filter((item) => relatedReportIds.includes(item.parentReportId)).at(-1);
   const request = latestRequest?.mode === "restart" ? undefined : latestRequest;
   const pending = latestRequest?.status === "starting" || latestRequest?.status === "waiting";
+  useEffect(() => { if (manualDraft) setDraft((current) => current || manualDraft); }, [manualDraft]);
   useEffect(() => { if (request?.status === "preview" && request.previewText) setPreviewDraft(request.previewText); }, [request?.status, request?.previewText]);
   useEffect(() => { try { localStorage.setItem(key, draft); } catch { setError(copy.saveError); } }, [key, draft, copy.saveError]);
   async function send(retry = false) {
     const api = window.familyBridge;
-    if (!api || busy || dictationBusy || recording || pending || conversationBusy) return;
+    if (!api || busy || dictationBusy || recording || pending && !manualLiveReply || conversationBusy && !manualLiveReply) return;
     setBusy(true); setError("");
     try {
-      const next = retry && request ? await api.retryContinuation(request.id) : await api.continueReport({ reportId, requestId: crypto.randomUUID(), prompt: draft.trim(), preview: !manual });
+      const next = manualLiveReply
+        ? await api.sendManualFollowUp({ conversationId: activeConversationId!, text: draft })
+        : retry && request
+          ? await api.retryContinuation(request.id)
+          : await api.continueReport({ reportId, requestId: crypto.randomUUID(), prompt: draft.trim(), preview: !manual });
       onState(next);
       if (!retry) setDraft("");
     } catch (err) { setError(err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : copy.error); }
@@ -70,13 +77,13 @@ export function ReportContinuation({ reportId, state, language, onState, dictati
   return <StableDetails className="report-continuation" storageKey={`family-bridge-continuation-open:${threadId ?? reportId}`}>
     <summary>{copy.title}</summary>
     <p className="muted">{copy.hint}</p>
-    {busy || pending && latestRequest?.mode !== "restart" ? <PendingStatus language={language}>{request?.status === "waiting" ? copy.waiting : copy.starting}</PendingStatus> : request && <p role="status">{request.status === "complete" ? copy.complete : copy.failed}</p>}
+    {busy || pending && !manualLiveReply && latestRequest?.mode !== "restart" ? <PendingStatus language={language}>{request?.status === "waiting" ? copy.waiting : copy.starting}</PendingStatus> : !manualLiveReply && request && <p role="status">{request.status === "complete" ? copy.complete : copy.failed}</p>}
     {request?.status === "error" && <button disabled={busy || conversationBusy || dictationBusy || !supportsContinuation(state.remote.peerVersion)} onClick={() => void send(true)}>{copy.retry}</button>}
     {request?.status === "preview" && <div className="continuation-preview"><label>{copy.preview}<textarea aria-label={copy.preview} maxLength={8000} value={previewDraft} disabled={busy} onChange={event=>setPreviewDraft(event.target.value)} /></label><button className="primary" disabled={busy || !previewDraft.trim()} onClick={()=>void approve()}>{copy.approve}{state.remote.peerName ? ` · ${state.remote.peerName}` : ""}</button></div>}
-    {!pending && request?.status !== "preview" && <><textarea aria-label={copy.title} placeholder={copy.placeholder} maxLength={8000} value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} />
+    {(!pending || manualLiveReply) && request?.status !== "preview" && <><textarea aria-label={copy.title} placeholder={copy.placeholder} maxLength={8000} value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} />
       <DictationControl language={language} disabled={busy || dictationBusy && !recording} onText={(text) => setDraft((current) => appendDictation(current, text))} onBusyChange={(value) => { setRecording(value); onDictationBusy(value); }} />
-      {!supportsContinuation(state.remote.peerVersion) && <PeerVersionControl state={state} language={language} onCheck={() => void checkVersion()} busy={checkingVersion} continuation />}
-      <button className="primary" disabled={busy || conversationBusy || !draft.trim() || dictationBusy || recording || !state.remote.configured || !supportsContinuation(state.remote.peerVersion)} onClick={() => void send()}>{busy ? copy.starting : copy.send}</button>
+      {!manualLiveReply && !supportsContinuation(state.remote.peerVersion) && <PeerVersionControl state={state} language={language} onCheck={() => void checkVersion()} busy={checkingVersion} continuation />}
+      <button className="primary" disabled={busy || conversationBusy && !manualLiveReply || !draft.trim() || dictationBusy || recording || !state.remote.configured || !manualLiveReply && !supportsContinuation(state.remote.peerVersion)} onClick={() => void send()}>{busy ? copy.starting : copy.send}</button>
     </>}
     {error && <p role="alert" className="analysis-error">{error}</p>}
   </StableDetails>;

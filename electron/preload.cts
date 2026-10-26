@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 function installUiErrorObserver() {
-  let previousSignature = "", occurrenceId = "", timer: ReturnType<typeof setTimeout> | undefined;
+  // Undefined makes the first inspection observable even when there are no
+  // alerts, so a fresh renderer clears stale "visible" evidence from a crash.
+  let previousSignature: string | undefined, occurrenceId = "", timer: ReturnType<typeof setTimeout> | undefined;
   const inspect = () => {
     timer = undefined;
     const alerts = [...document.querySelectorAll('[role="alert"],.error,.analysis-error,.composer-error,.dictation-error')]
@@ -72,6 +74,7 @@ contextBridge.exposeInMainWorld("familyBridge", {
   approveContinuation: (input: { id: string; text: string }) => ipcRenderer.invoke("bridge:approve-continuation", input),
   retryContinuation: (id: string) => ipcRenderer.invoke("bridge:retry-continuation", id),
   answerOwnerQuestion: (input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }) => ipcRenderer.invoke("bridge:answer-owner-question", input),
+  sendManualFollowUp: (input: { conversationId: string; text: string }) => ipcRenderer.invoke("bridge:send-manual-follow-up", input),
   requestMicrophone: () => ipcRenderer.invoke("bridge:request-microphone"),
   transcribeAudio: (input: { id: string; audio: Uint8Array }) => ipcRenderer.invoke("bridge:transcribe-audio", input),
   cancelDictation: (id: string) => ipcRenderer.invoke("bridge:cancel-dictation", id),

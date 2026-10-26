@@ -9,6 +9,7 @@ export interface ApplicationDiagnostics {
   topics: Array<Record<string, unknown>>;
   topicLaunches: Array<Record<string, unknown>>;
   ownerQuestions: Array<Record<string, unknown>>;
+  manualReplies: Array<Record<string, unknown>>;
   conversations: Array<Record<string, unknown>>;
   continuations: Array<Record<string, unknown>>;
   deliveries: Array<Record<string, unknown>>;
@@ -37,6 +38,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
   const deliveries = Object.entries(state.incomingDeliveries).map(([id, delivery]) => ({ id, ...delivery }));
   const quarantined = Object.entries(state.quarantinedDeliveries).map(([id, delivery]) => ({ id, ...delivery }));
   const ownerQuestions = state.pendingOwnerQuestions.map(question => ({ ...question }));
+  const manualReplies = state.pendingManualReplies.map(reply => ({ ...reply }));
   const duplicateLaunches = [...topicNames].filter(title => topicLaunches.filter(job => job.topic === title && job.status !== "complete").length > 1);
   const cyclicParents = Object.keys(state.conversationParents).filter(id => {
     const seen = new Set<string>();
@@ -47,7 +49,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
     return false;
   });
   return { schema:1, at:new Date().toISOString(), conversationReplyMode:state.conversationReplyMode, identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
-    peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions,
+    peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions, manualReplies,
     conversations, continuations, deliveries, quarantined, reports, uiErrors,
     invariants:[
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },

@@ -7,6 +7,7 @@ export interface LiveConversation {
   topic: string;
   inheritedMessageCount?: number;
   activity?: "preparing" | "sending" | "waiting-peer" | "needs-answer" | "retrying" | "error" | "interrupted";
+  manualDraft?: string;
   messages: Array<{ speaker: string; text: string; local: boolean; origin?: import("./continuation.js").MessageOrigin; sentAt?: string }>;
 }
 

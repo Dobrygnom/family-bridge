@@ -114,6 +114,7 @@ declare global {
       approveContinuation(input: { id: string; text: string }): Promise<AppState>;
       retryContinuation(id: string): Promise<AppState>;
       answerOwnerQuestion(input: { id: string; disposition: "answer" | "unknown" | "decline"; answer?: string }): Promise<AppState>;
+      sendManualFollowUp(input: { conversationId: string; text: string }): Promise<AppState>;
       requestMicrophone(): Promise<boolean>;
       transcribeAudio(input: { id: string; audio: Uint8Array }): Promise<DictationResult>;
       cancelDictation(id: string): Promise<void>;

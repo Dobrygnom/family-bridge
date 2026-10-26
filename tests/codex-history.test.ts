@@ -49,8 +49,8 @@ test("Codex Desktop transport discovery uses Unix sockets on macOS", () => {
 
 test("Codex Desktop transport discovery keeps Windows named pipes", () => {
   assert.deepEqual(
-    resolveCodexAppTransportCandidates(["codex-browser-use-one", "unrelated"], "win32", "\\\\.\\pipe\\"),
-    ["\\\\.\\pipe\\codex-browser-use-one"],
+    resolveCodexAppTransportCandidates(["codex-browser-use-one", "unrelated", "codex-app-tools-current"], "win32", "\\\\.\\pipe\\"),
+    ["\\\\.\\pipe\\codex-app-tools-current", "\\\\.\\pipe\\codex-browser-use-one"],
   );
 });
 

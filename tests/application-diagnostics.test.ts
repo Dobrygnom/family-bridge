@@ -10,7 +10,7 @@ test("application diagnostics expose prepared app state but never source chat or
     pendingTopics: ["Неотправленная тема"], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [],
     topicSources: { "Неотправленная тема": ["local"] }, topicBriefs: {}, reports: [], completedIncoming: [], ignoredConversationIds: [],
     topicLaunches: { launch: { topic: "Неотправленная тема", pairId: "pair", status: "waiting", preparedMessage: "Подготовленный текст", attempts: 1 } },
-    pendingOwnerQuestions: [], conversationTranscripts: {}, conversationInheritedCounts: {}, continuations: {}, conversationParents: {}, conversationModes: {},
+    pendingOwnerQuestions: [], pendingManualReplies: [], conversationTranscripts: {}, conversationInheritedCounts: {}, continuations: {}, conversationParents: {}, conversationModes: {},
     incomingDeliveries: {}, quarantinedDeliveries: {},
   } satisfies StoredState;
   const analysis = { analysisVersion: 5, sourceId: "SOURCE_CHAT_ID", sourceHash: "SOURCE_CHAT_HASH", analyzedAt: new Date().toISOString(), status: "ready" as const,
@@ -36,7 +36,7 @@ test("application diagnostics reject unbounded peer payloads", () => {
 test("missing historical parents are valid, but a cycle in conversation parents fails its invariant", () => {
   const base = { owner: "dima", displayName: "Дима", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true, conversationReplyMode: "automatic" as const,
     pendingTopics: [], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [], topicSources: {}, topicBriefs: {}, reports: [],
-    topicLaunches: {}, pendingOwnerQuestions: [], conversationInheritedCounts: {}, continuations: {}, conversationModes: {}, incomingDeliveries: {},
+    topicLaunches: {}, pendingOwnerQuestions: [], pendingManualReplies: [], conversationInheritedCounts: {}, continuations: {}, conversationModes: {}, incomingDeliveries: {},
     quarantinedDeliveries: {}, completedIncoming: [], ignoredConversationIds: [] } satisfies Omit<StoredState, "conversationTranscripts" | "conversationParents">;
   const archived = buildApplicationDiagnostics({ ...base, conversationTranscripts: {}, conversationParents: { archived: "old-parent" } }, undefined, []);
   assert.equal(archived.invariants.find(item => item.name === "conversation-parents-acyclic")?.ok, true);

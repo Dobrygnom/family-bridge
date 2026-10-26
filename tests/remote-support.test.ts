@@ -25,7 +25,7 @@ async function fixture() {
     readSupportMessages: async () => incoming,
     send: async (value: any) => { sent.push(value); return "sent"; },
   } as any };
-  const hooks = { context: async () => context, snapshot: async (_logs = false, application = false) => ({ ...report(clock), ...(application ? { applicationDiagnostics: { schema: 1 as const, at: new Date(clock).toISOString(), identity: { owner: "katya", displayName: "Катя" }, topics: [{ title: "prepared" }], topicLaunches: [], ownerQuestions: [], conversations: [], continuations: [], deliveries: [], quarantined: [], reports: [], uiErrors: { schema: 1 as const, totalShown: 0, currentlyVisible: false, visibleCount: 0, recent: [] }, invariants: [] } } : {}) }), update: () => { updates++; }, maintenance:async (command:SupportMaintenanceCommand)=>{maintenance.push(command);}, record: () => {} };
+  const hooks = { context: async () => context, snapshot: async (_logs = false, application = false) => ({ ...report(clock), ...(application ? { applicationDiagnostics: { schema: 1 as const, at: new Date(clock).toISOString(), identity: { owner: "katya", displayName: "Катя" }, topics: [{ title: "prepared" }], topicLaunches: [], ownerQuestions: [], manualReplies: [], conversations: [], continuations: [], deliveries: [], quarantined: [], reports: [], uiErrors: { schema: 1 as const, totalShown: 0, currentlyVisible: false, visibleCount: 0, recent: [] }, invariants: [] } } : {}) }), update: () => { updates++; }, maintenance:async (command:SupportMaintenanceCommand)=>{maintenance.push(command);}, record: () => {} };
   const support = new RemoteSupport(dir, hooks, () => clock);
   const envelope = (action: string = "snapshot", extra: any = {}) => {
     const id = randomUUID();

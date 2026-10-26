@@ -49,6 +49,18 @@ export interface PendingOwnerQuestion {
   manualReply?: boolean;
 }
 
+export interface PendingManualReply {
+  id: string;
+  conversationId: string;
+  topic: string;
+  createdAt: string;
+  peerName?: string;
+  nextSequence: number;
+  transcript: SharedMessage[];
+  text?: string;
+  sentAt?: string;
+}
+
 export interface StoredState {
   topicLaunches: Record<string, { topic: string; pairId: string; status: "preparing" | "waiting" | "error" | "complete"; preparedMessage?: string; preparedSentAt?: string; openingBrief?: TopicBrief; approvedOpening?: boolean; openingOrigin?: "agent" | "owner-answer"; attempts: number; retryAt?: number; failureCode?: string }>;
   owner: OwnerId;
@@ -72,6 +84,7 @@ export interface StoredState {
   blockedTopics: string[];
   reports: string[];
   pendingOwnerQuestions: PendingOwnerQuestion[];
+  pendingManualReplies: PendingManualReply[];
   conversationTranscripts: Record<string, { topic: string; messages: SharedMessage[] }>;
   conversationInheritedCounts: Record<string, number>;
   conversationResetVersion?: string;
@@ -122,6 +135,7 @@ const defaults: StoredState = {
   blockedTopics: [],
   reports: [],
   pendingOwnerQuestions: [],
+  pendingManualReplies: [],
   conversationTranscripts: {},
   conversationInheritedCounts: {},
   ignoredConversationIds: [],
@@ -168,7 +182,24 @@ export class AtomicStore {
     try {
       const value = JSON.parse(await readFile(this.file, "utf8"));
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved state");
-      return { ...defaults, ...value };
+      const ownerQuestions = Array.isArray(value.pendingOwnerQuestions) ? value.pendingOwnerQuestions as PendingOwnerQuestion[] : [];
+      const savedManual = Array.isArray(value.pendingManualReplies) ? value.pendingManualReplies as PendingManualReply[] : [];
+      const legacyManual = ownerQuestions.filter((item) => item?.manualReply === true).map((item): PendingManualReply => ({
+        id: item.id,
+        conversationId: item.conversationId,
+        topic: item.topic,
+        createdAt: item.createdAt,
+        peerName: item.peerName,
+        nextSequence: item.nextSequence,
+        transcript: item.transcript,
+        text: item.preparedResponse?.message_to_peer,
+        sentAt: item.preparedSentAt,
+      }));
+      const manualByConversation = new Map([...legacyManual, ...savedManual].map((item) => [item.conversationId, item]));
+      return { ...defaults, ...value,
+        pendingOwnerQuestions: ownerQuestions.filter((item) => item?.manualReply !== true),
+        pendingManualReplies: [...manualByConversation.values()],
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(defaults);
       // A broken/unreadable file is NOT a new installation. Never overwrite it

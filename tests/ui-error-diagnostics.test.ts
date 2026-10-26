@@ -30,3 +30,18 @@ test("malformed renderer telemetry is ignored", async () => {
     assert.equal((await tracker.snapshot()).totalShown, 0);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a new application session clears stale current visibility without deleting history", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fb-ui-errors-session-"));
+  try {
+    const first = new UiErrorDiagnostics(dir);
+    await first.record({ visible: true, visibleCount: 1, occurrenceId: randomUUID() });
+    const restarted = new UiErrorDiagnostics(dir);
+    await restarted.record({ visible: false, visibleCount: 0 });
+    const snapshot = await restarted.snapshot();
+    assert.equal(snapshot.totalShown, 1);
+    assert.equal(snapshot.currentlyVisible, false);
+    assert.equal(snapshot.visibleCount, 0);
+    assert.deepEqual(snapshot.recent.map(row => row.state), ["shown", "cleared"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

@@ -20,7 +20,7 @@ import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnv
 import { durableAuthStorage } from "./auth-storage.js";
 import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
-import { AtomicStore, replaceStateFile, type StoredState, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingOwnerQuestion, type TopicSource } from "./store.js";
+import { AtomicStore, replaceStateFile, type StoredState, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingManualReply, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { archiveConversationHistory } from "./history-archive.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
@@ -262,6 +262,7 @@ export class BackgroundService {
   private set automaticBusy(value: boolean) { this.updateActivity.flag("automatic_dispatch", value); }
   private recoveredLegacyReplies = false;
   private legacyRecoveryRetryAt = 0;
+  private readonly manualReplyReconcileAt = new Map<string, number>();
 
   private async recoverLegacyReplies() {
     if (this.recoveredLegacyReplies || Date.now() < this.legacyRecoveryRetryAt || !this.remote) return;
@@ -318,7 +319,7 @@ export class BackgroundService {
     if (!analysis || analysis.status !== "ready") return;
     const next = await this.store.mutate(current => {
       const approved = topicsForCounterpart(analysis, current.remote?.counterpartPersonId);
-      const protectedTitles = [...current.activeTopics, ...readReportSummaries(current.reports).map(report=>report.topic), ...Object.values(current.conversationTranscripts).map(t=>t.topic), ...current.pendingOwnerQuestions.map(q=>q.topic)];
+      const protectedTitles = [...current.activeTopics, ...readReportSummaries(current.reports).map(report=>report.topic), ...Object.values(current.conversationTranscripts).map(t=>t.topic), ...current.pendingOwnerQuestions.map(q=>q.topic), ...current.pendingManualReplies.map(q=>q.topic)];
       const dismissed = dismissedTopicKeys(analysis.topics, current.remote?.counterpartPersonId);
       const pendingTopics = reconcileTopicQueue(current.pendingTopics.filter(title => !dismissed.has(topicKey(title))), approved, protectedTitles);
       let topicSources = current.topicSources;
@@ -334,31 +335,42 @@ export class BackgroundService {
     if (this.options.backgroundTasks === false || this.updating || this.automaticBusy || this.running || !this.remote) return;
     this.automaticBusy = true;
     try {
-      const state = await this.store.read();
+      let state = await this.store.read();
       if (!state.onboardingComplete || !state.identityConfigured || !state.remote || this.options.experienceResetVersion && state.remote.peerExperienceVersion !== this.options.experienceResetVersion) return;
       try { await this.recoverLegacyReplies(); } catch { this.diagnostics.record("dialogue.recovery-deferred"); }
+      for (const pending of state.pendingManualReplies.filter((item) => item.text)) {
+        if ((this.manualReplyReconcileAt.get(pending.conversationId) ?? 0) > Date.now()) continue;
+        this.manualReplyReconcileAt.set(pending.conversationId, Date.now() + 60_000);
+        try {
+          const reconciled = await this.synchronizeLiveConversation(pending.conversationId);
+          if (!reconciled.pendingManualReplies.some((item) => item.conversationId === pending.conversationId)) this.manualReplyReconcileAt.delete(pending.conversationId);
+        } catch { this.diagnostics.record("dialogue.outgoing-reconcile-deferred"); }
+      }
+      state = await this.store.read();
       await this.resumeLimitInterruptedConversation(state);
+      const remote = state.remote;
+      if (!remote) return;
       const completed = new Set(readReportSummaries(state.reports).map(report => report.id));
       const automaticRepairIds = new Set([...completed].map(repairRequestId));
       for (const [id, continuation] of Object.entries(state.continuations)) {
         if (this.updating || this.continuing.size >= 3) break;
-        if (continuation.pairId !== state.remote.pairId) continue;
+        if (continuation.pairId !== remote.pairId) continue;
         if (completed.has(id)) continue;
-        const peerOnline = this.peerPresence?.pairId === state.remote.pairId && peerIsOnline(this.peerPresence.at);
+        const peerOnline = this.peerPresence?.pairId === remote.pairId && peerIsOnline(this.peerPresence.at);
         // Old automatic repairs exhausted their budget while pairing/auth was
         // broken, before preparing any reply. Allow one durable recovery attempt.
         const recoveryRetry = continuation.mode === "restart" && automaticRepairIds.has(id)
           && (continuation.attempts ?? 0) >= 3 && !continuation.preparedMessage && !continuation.connectivityRetryUsed
           && continuation.failureKind !== "unsafe" && Boolean(peerOnline && this.health.installed && this.health.authenticated);
         const canRetry = continuation.failureKind !== "unsafe" && (continuation.failureCode === "CODEX_USAGE_LIMIT" || continuation.failureCode === "COMPUTE_PENDING" || (continuation.attempts ?? 0) < 3 || Boolean(continuation.preparedMessage && peerOnline) || recoveryRetry);
-        if (!(continuation.status === "starting" || continuation.status === "error" && canRetry && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id)) continue;
+        if (!(continuation.status === "starting" || continuation.status === "error" && canRetry && (continuation.retryAt ?? Infinity) <= Date.now()) || this.continuing.has(id) || state.pendingOwnerQuestions.some(q=>q.conversationId === id) || state.pendingManualReplies.some(q=>q.conversationId === id)) continue;
         try { await this.continueReport({ reportId: continuation.originReportId ?? continuation.parentReportId, requestId: id, prompt: continuation.instruction, restart: continuation.mode === "restart" }, recoveryRetry); }
         catch { this.diagnostics.record("continuation.resume-deferred"); }
       }
       if (this.updating) return;
       await this.repairLegacyConversations();
-      const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === state.remote!.pairId && (job.status === "preparing" || job.status === "error" && (job.approvedOpening || job.attempts < 3 || job.failureCode === "CODEX_USAGE_LIMIT" || job.failureCode === "COMPUTE_PENDING") && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
-      const pending = state.pendingTopics.filter(topic=>state.topicSources[topic]?.includes("local") && !state.activeTopics.includes(topic) && !state.blockedTopics.some(blocked=>topic.toLowerCase().includes(blocked.toLowerCase())) && !Object.values(state.topicLaunches).some(job=>job.pairId===state.remote!.pairId && topicKey(job.topic)===topicKey(topic)));
+      const retry = Object.values(state.topicLaunches).filter(job=>job.pairId === remote.pairId && (job.status === "preparing" || job.status === "error" && (job.approvedOpening || job.attempts < 3 || job.failureCode === "CODEX_USAGE_LIMIT" || job.failureCode === "COMPUTE_PENDING") && (job.retryAt ?? Infinity) <= Date.now())).map(job=>job.topic);
+      const pending = state.pendingTopics.filter(topic=>state.topicSources[topic]?.includes("local") && !state.activeTopics.includes(topic) && !state.blockedTopics.some(blocked=>topic.toLowerCase().includes(blocked.toLowerCase())) && !Object.values(state.topicLaunches).some(job=>job.pairId===remote.pairId && topicKey(job.topic)===topicKey(topic)));
       for (const topic of mergeTopicCatalog(retry, pending)) {
         if (this.updating || this.launchPromises.size >= 3) break;
         if (this.launchPromises.has(topicKey(topic))) continue;
@@ -421,7 +433,8 @@ export class BackgroundService {
     }
     for (const candidate of candidates) {
       if (Object.keys(state.conversationTranscripts).some(id => !completed.has(id) && (candidate.ids.has(id) || candidate.ids.has(state.conversationParents[id])))
-        || state.pendingOwnerQuestions.some(question => !completed.has(question.conversationId) && candidate.ids.has(question.conversationId))) continue;
+        || state.pendingOwnerQuestions.some(question => !completed.has(question.conversationId) && candidate.ids.has(question.conversationId))
+        || state.pendingManualReplies.some(reply => !completed.has(reply.conversationId) && candidate.ids.has(reply.conversationId))) continue;
       try {
         if (candidate.initiator !== state.owner) this.diagnostics.record("conversation.repair-owner-reconciled");
         await this.restartReport({ reportId: candidate.reportId, requestId: repairRequestId(candidate.rootId) });
@@ -665,7 +678,7 @@ export class BackgroundService {
       const remainingReports = current.reports.filter(file => readReportSummaries([file])[0]?.id !== conversationId);
       const topicStillUsed = topic && (Object.entries(current.conversationTranscripts).some(([id,t])=>id!==conversationId && t.topic===topic)
         || remainingReports.some(file=>readReportSummaries([file])[0]?.topic===topic));
-      return { reports:remainingReports, topicLaunches:launches, pendingOwnerQuestions:current.pendingOwnerQuestions.filter(q=>q.conversationId!==conversationId),
+      return { reports:remainingReports, topicLaunches:launches, pendingOwnerQuestions:current.pendingOwnerQuestions.filter(q=>q.conversationId!==conversationId), pendingManualReplies:current.pendingManualReplies.filter(q=>q.conversationId!==conversationId),
         conversationTranscripts:without(current.conversationTranscripts), conversationInheritedCounts:without(current.conversationInheritedCounts),
         continuations:without(current.continuations), conversationParents:without(current.conversationParents), conversationModes:without(current.conversationModes),
         incomingDeliveries:deliveries, quarantinedDeliveries:quarantined, completedIncoming:current.completedIncoming.filter(id=>id!==conversationId),
@@ -716,7 +729,7 @@ export class BackgroundService {
         topics: analysis?.topics.length ?? 0, people: analysis?.people.length ?? 0, reports: state.reports.length,
         running: this.running, workers: this.remoteWorkers.size, pendingDeliveries: Object.keys(state.incomingDeliveries).length,
         quarantinedDeliveries: Object.keys(state.quarantinedDeliveries).length,
-        pendingQuestions: state.pendingOwnerQuestions.length, pendingTopics: state.pendingTopics.length,
+        pendingQuestions: state.pendingOwnerQuestions.length + state.pendingManualReplies.length, pendingTopics: state.pendingTopics.length,
         continuations: Object.entries(state.continuations).filter(([id, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
         configured: Boolean(state.remote), connected: dialogueConnectionAvailable(this.lastPollAt, this.lastPollCode),
@@ -732,7 +745,7 @@ export class BackgroundService {
         id, parentId: c.parentReportId, mode: c.mode ?? "continuation", status: c.status,
         attempts: c.attempts ?? 0, prepared: Boolean(c.preparedMessage), completed: completed.has(id) || c.status === "complete",
         active: this.continuing.has(id), messages: state.conversationTranscripts[id]?.messages.length ?? 0,
-        ownerQuestion: state.pendingOwnerQuestions.some(q => q.conversationId === id),
+        ownerQuestion: state.pendingOwnerQuestions.some(q => q.conversationId === id) || state.pendingManualReplies.some(q => q.conversationId === id),
         connectivityRetryUsed: Boolean(c.connectivityRetryUsed), failureKind: c.failureKind, failureCode: c.failureCode,
       })),
       events: logs ? supportEvents(this.diagnostics) : [],
@@ -741,7 +754,7 @@ export class BackgroundService {
 
   async state() {
     const stored = await this.store.read();
-    const { pendingOwnerQuestions, continuations, incomingDeliveries: _incomingDeliveries, quarantinedDeliveries: _quarantinedDeliveries, completedIncoming: _completedIncoming, ...saved } = stored;
+    const { pendingOwnerQuestions, pendingManualReplies: _pendingManualReplies, continuations, incomingDeliveries: _incomingDeliveries, quarantinedDeliveries: _quarantinedDeliveries, completedIncoming: _completedIncoming, ...saved } = stored;
     const conversationState = this.conversationSnapshot(stored);
     const publicStored = { ...saved, ...conversationState,
       pendingTopics: saved.pendingTopics.filter(topic => !topic.startsWith(VERSION_PROBE_PREFIX)),
@@ -789,12 +802,13 @@ export class BackgroundService {
       const parentReportId = stored.conversationParents[id];
       const continuation = stored.continuations[id];
       const pending = Object.values(stored.incomingDeliveries).find(item => item.envelope.conversation_id === id);
-      const activity: LiveConversation["activity"] = stored.pendingOwnerQuestions.some(q => q.conversationId === id) ? "needs-answer"
+      const manualReply = stored.pendingManualReplies.find(q => q.conversationId === id);
+      const activity: LiveConversation["activity"] = stored.pendingOwnerQuestions.some(q => q.conversationId === id) || manualReply ? "needs-answer"
         : this.continuing.has(id) ? continuation?.preparedMessage ? "sending" : "preparing"
         : this.remoteWorkers.has(id) ? pending?.response ? "sending" : "preparing"
         : continuation?.status === "error" ? continuation.preparedMessage ? "retrying" : "error"
         : pending ? "retrying" : transcript.messages.at(-1)?.from === stored.owner ? "waiting-peer" : "interrupted";
-      return { id, parentReportId, activity, restarted: stored.conversationModes[id] === "restart", topic: transcript.topic,
+      return { id, parentReportId, activity, restarted: stored.conversationModes[id] === "restart", topic: transcript.topic, ...(manualReply?.text ? { manualDraft: manualReply.text } : {}),
         inheritedMessageCount: stored.continuations[id]?.history.length ?? stored.conversationInheritedCounts[id],
         messages: transcript.messages.map((message) => ({ text: message.text, ...(messageOrigin(message.origin) ? { origin: messageOrigin(message.origin) } : {}), ...(messageSentAt(message.sentAt) ? { sentAt: messageSentAt(message.sentAt) } : {}), local: message.from === stored.owner,
           speaker: message.from === stored.owner ? stored.displayName || "Вы" : stored.remote?.peerName || "Партнёр" })),
@@ -1237,6 +1251,7 @@ export class BackgroundService {
       activeTopics: [],
       reports: [],
       pendingOwnerQuestions: [],
+      pendingManualReplies: [],
       conversationTranscripts: {},
       conversationInheritedCounts: {},
       conversationResetVersion: resetVersion,
@@ -1293,6 +1308,7 @@ export class BackgroundService {
       activeTopics: [],
       reports: [],
       pendingOwnerQuestions: [],
+      pendingManualReplies: [],
       conversationTranscripts: {},
       conversationInheritedCounts: {},
       continuations: {},
@@ -2395,14 +2411,12 @@ export class BackgroundService {
       this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
       const replyMode = (await this.store.read()).conversationReplyMode;
       if (replyMode === "manual") {
-        await this.queueOwnerQuestion({
+        await this.queueManualReply({
           conversationId: envelope.conversation_id,
           topic: dialogue.topic,
-          question: `Новое сообщение от ${peerName || "собеседника"}:\n\n${dialogue.text}`,
           peerName,
           nextSequence: envelope.sequence_number + 1,
           transcript: messages,
-          manualReply: true,
         });
         this.diagnostics.record("dialogue.manual_reply_waiting");
         return;
@@ -2474,7 +2488,7 @@ export class BackgroundService {
   }
 
   private publicOwnerQuestions(questions: PendingOwnerQuestion[]): OwnerQuestionView[] {
-    return questions.map(({ transcript: _transcript, nextSequence: _nextSequence, conversationId: _conversationId,
+    return questions.filter((question) => !question.manualReply).map(({ transcript: _transcript, nextSequence: _nextSequence, conversationId: _conversationId,
       ownerResponseRecorded: _ownerResponseRecorded, preparedResponse: _preparedResponse, preparedSentAt: _preparedSentAt, ...question }) => question);
   }
 
@@ -2496,6 +2510,167 @@ export class BackgroundService {
     this.ownerQuestionNotifier();
   }
 
+  private async queueManualReply(reply: Omit<PendingManualReply, "id" | "createdAt">) {
+    const stored = await this.store.read();
+    const existing = stored.pendingManualReplies.find((item) => item.conversationId === reply.conversationId);
+    const sameTurn = existing?.nextSequence === reply.nextSequence;
+    const pending: PendingManualReply = {
+      ...reply,
+      id: existing?.id ?? randomUUID(),
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      text: sameTurn ? existing?.text : undefined,
+      sentAt: sameTurn ? existing?.sentAt : undefined,
+      transcript: reply.transcript.map((message) => ({ ...message })),
+    };
+    const saved = await this.store.mutate((current) => ({
+      pendingManualReplies: [...current.pendingManualReplies.filter((item) => item.conversationId !== reply.conversationId), pending],
+    }));
+    this.publishConversations(saved);
+  }
+
+  private async synchronizeLiveConversation(conversationId: string) {
+    const before = await this.store.read();
+    if (!before.remote || !this.remote) return before;
+    const transcript = before.conversationTranscripts[conversationId];
+    if (!transcript) return before;
+    await this.remote.pairState(before.remote.pairId);
+    const rows = await this.remote.readConversation(before.remote.pairId, conversationId);
+    const inheritedCount = before.continuations[conversationId]?.history.length
+      ?? before.conversationInheritedCounts[conversationId]
+      ?? 0;
+    const messages = transcript.messages.map((message) => ({ ...message }));
+    let nextSequence = Math.max(1, messages.length - inheritedCount + 1);
+    for (;;) {
+      const row = rows.find((candidate) => candidate.sequence_number === nextSequence);
+      if (!row) break;
+      const payload = bridgeWirePayload(row.payload);
+      if (!payload || payload.kind === "topic" || row.conversation_id !== conversationId || row.pair_id !== before.remote.pairId) break;
+      const sentAt = messageSentAt(payload.sentAt) ?? messageSentAt(row.created_at);
+      messages.push({
+        from: row.sender_agent as OwnerId,
+        text: payload.text,
+        ...(messageOrigin(payload.origin) ? { origin: messageOrigin(payload.origin) } : {}),
+        ...(sentAt ? { sentAt } : {}),
+      });
+      nextSequence += 1;
+    }
+    if (messages.length === transcript.messages.length) return before;
+    const synchronizedThrough = nextSequence - 1;
+    const saved = await this.store.mutate((current) => ({
+      conversationTranscripts: { ...current.conversationTranscripts, [conversationId]: { topic: transcript.topic, messages } },
+      pendingManualReplies: current.pendingManualReplies.flatMap((item) => {
+        if (item.conversationId !== conversationId || item.nextSequence > synchronizedThrough) return [item];
+        const delivered = messages[inheritedCount + item.nextSequence - 1];
+        if (item.text && delivered?.from === current.owner && delivered.origin === "owner-answer" && delivered.text === item.text) return [];
+        // Another durable wire message already occupies the intended sequence.
+        // Preserve the exact draft and move it after every reconciled row.
+        return [{ ...item, nextSequence, transcript: messages.map((message) => ({ ...message })) }];
+      }),
+    }));
+    this.remoteMessages.set(conversationId, messages);
+    this.publishConversations(saved);
+    this.diagnostics.record("dialogue.outgoing-reconciled");
+    return saved;
+  }
+
+  private async finishManualReply(pending: PendingManualReply, owner: OwnerId) {
+    const saved = await this.store.mutate((current) => {
+      const transcript = current.conversationTranscripts[pending.conversationId];
+      if (!transcript || !pending.text || !pending.sentAt) return {};
+      const messages = transcript.messages.map((message) => ({ ...message }));
+      const delivered = { from: owner, text: pending.text, origin: "owner-answer" as const, sentAt: pending.sentAt };
+      const last = messages.at(-1);
+      if (messages.length === pending.transcript.length) messages.push(delivered);
+      else if (last?.from !== delivered.from || last.origin !== delivered.origin || last.text !== delivered.text) return {};
+      return {
+        conversationTranscripts: { ...current.conversationTranscripts, [pending.conversationId]: { topic: transcript.topic, messages } },
+        pendingManualReplies: current.pendingManualReplies.filter((item) => item.id !== pending.id),
+      };
+    });
+    this.remoteMessages.set(pending.conversationId, saved.conversationTranscripts[pending.conversationId]?.messages ?? pending.transcript);
+    this.publishConversations(saved);
+    this.emit({ type: "message", from: owner, to: owner === "dima" ? "katya" : "dima", text: pending.text!, turn: pending.nextSequence });
+    return this.state();
+  }
+
+  async sendManualFollowUp(input: unknown) {
+    if (this.updating) throw new Error("Устанавливаем обновление. Черновик сохранён; попробуйте через несколько секунд.");
+    const value = input && typeof input === "object"
+      ? input as { conversationId?: unknown; text?: unknown }
+      : {};
+    const conversationId = typeof value.conversationId === "string" ? value.conversationId : "";
+    const rawText = typeof value.text === "string" ? value.text : "";
+    if (!/^[a-z0-9-]{8,80}$/i.test(conversationId) || !rawText.trim() || rawText.length > 8_000) {
+      throw new Error("Введите сообщение до 8000 символов");
+    }
+
+    // Finish the inbox transition first, then reconcile durable wire messages.
+    // The latter covers a successful old send whose local acknowledgement was
+    // lost and prevents reusing an already occupied sequence number.
+    await this.remoteWorkers.get(conversationId);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const pendingBeforeSync = (await this.store.read()).pendingManualReplies.find((item) => item.conversationId === conversationId);
+      let stored = await this.synchronizeLiveConversation(conversationId);
+      if (stored.conversationReplyMode !== "manual") throw new Error("Сначала включите ручной режим ответов");
+      if (!stored.remote || !this.remote) throw new Error("Сначала восстановите соединение со вторым компьютером");
+      if (pendingBeforeSync?.text === rawText && !stored.pendingManualReplies.some((item) => item.id === pendingBeforeSync.id)) {
+        const inheritedCount = stored.continuations[conversationId]?.history.length
+          ?? stored.conversationInheritedCounts[conversationId]
+          ?? 0;
+        const delivered = stored.conversationTranscripts[conversationId]?.messages[inheritedCount + pendingBeforeSync.nextSequence - 1];
+        if (delivered?.from === stored.owner && delivered.origin === "owner-answer" && delivered.text === rawText) return this.state();
+      }
+      const pairId = stored.remote.pairId;
+      const transcript = stored.conversationTranscripts[conversationId];
+      if (!transcript) throw new Error("Текущий разговор не найден. Черновик сохранён.");
+      if (readReportSummaries(stored.reports).some((report) => report.id === conversationId)) {
+        throw new Error("Этот этап уже завершён. Начните продолжение разговора.");
+      }
+      let pending = stored.pendingManualReplies.find((item) => item.conversationId === conversationId);
+      if (!pending) {
+        const inheritedCount = stored.continuations[conversationId]?.history.length
+          ?? stored.conversationInheritedCounts[conversationId]
+          ?? 0;
+        const currentMessageCount = Math.max(0, transcript.messages.length - inheritedCount);
+        await this.queueManualReply({
+          conversationId,
+          topic: transcript.topic,
+          peerName: stored.remote.peerName,
+          nextSequence: currentMessageCount + 1,
+          transcript: transcript.messages,
+        });
+        stored = await this.store.read();
+        pending = stored.pendingManualReplies.find((item) => item.conversationId === conversationId);
+      }
+      if (!pending) throw new Error("Не удалось подготовить отправку. Черновик сохранён.");
+      if (pending.text && pending.text !== rawText) throw new Error("Уже сохранён другой неотправленный текст. Он показан в этом разговоре.");
+      const sentAt = pending.sentAt ?? new Date().toISOString();
+      if (!pending.text || !pending.sentAt) {
+        const saved = await this.store.mutate((current) => ({
+          pendingManualReplies: current.pendingManualReplies.map((item) => item.id === pending!.id ? { ...item, text: rawText, sentAt } : item),
+        }));
+        pending = saved.pendingManualReplies.find((item) => item.id === pending!.id);
+      }
+      if (!pending?.text || !pending.sentAt) throw new Error("Не удалось сохранить сообщение. Черновик остаётся на месте.");
+      const pair = await this.remote.pairState(pairId);
+      const me = await this.remote.identity();
+      const recipientId = pair.owner_id === me ? pair.partner_id : pair.owner_id;
+      if (!recipientId) throw new Error("Второй участник сейчас не подключён");
+      try {
+        await this.remote.send({ pairId: pair.id, conversationId, sequence: pending.nextSequence, recipientId, senderAgent: stored.owner,
+          payload: { protocol: DIALOGUE_PROTOCOL_VERSION, kind: "dialogue", text: pending.text, origin: "owner-answer", sentAt: pending.sentAt,
+            topic: pending.topic, status: "continue", sharedSummary: "", senderName: stored.displayName, senderVersion: this.options.appVersion,
+            experienceVersion: this.options.experienceResetVersion } satisfies DialoguePayload,
+          idempotencyKey: `${conversationId}:${pending.nextSequence}` });
+        return this.finishManualReply(pending, stored.owner);
+      } catch (error) {
+        if (supportErrorCode(error) !== "23505" || attempt > 0) throw error;
+        await this.synchronizeLiveConversation(conversationId);
+      }
+    }
+    throw new Error("Разговор изменился во время отправки. Текст сохранён; повторите отправку.");
+  }
+
   async answerOwnerQuestion(input: unknown) {
     const value = input && typeof input === "object"
       ? input as { id?: unknown; disposition?: unknown; answer?: unknown }
@@ -2512,8 +2687,7 @@ export class BackgroundService {
       const stored = await this.store.read();
       const pending = stored.pendingOwnerQuestions.find((item) => item.id === id);
       if (!pending) return this.state();
-      if (pending.manualReply && disposition !== "answer") throw new Error("В ручном режиме отправляется только ваш собственный текст");
-      if (!pending.manualReply && !pending.ownerResponseRecorded && !pending.preparedResponse) {
+      if (!pending.ownerResponseRecorded && !pending.preparedResponse) {
         await this.rememberOwnerResponse(pending, disposition, answer);
         await this.store.mutate(current => ({ pendingOwnerQuestions: current.pendingOwnerQuestions.map(item => item.id === id ? { ...item, ownerResponseRecorded: true } : item) }));
       }
@@ -2530,16 +2704,7 @@ export class BackgroundService {
           : "Владелец не хочет отвечать на этот вопрос. Уважай границу, не задавай его снова и продолжи без этого факта.";
       const privacyInstruction = "Используй ответ только для собственного рассуждения. Второму агенту передай лишь минимально необходимый вывод своими словами: не цитируй сырой ответ и не сообщай лишние личные детали. owner_question оставь пустым, если нового действительно необходимого вопроса нет.";
       let response = pending.preparedResponse;
-      if (!response && pending.manualReply) {
-        response = {
-          message_to_peer: rawAnswer,
-          owner_question: "",
-          status: "continue",
-          topics: [pending.topic],
-          private_report: "",
-          shared_summary: "",
-        };
-      } else if (!response) {
+      if (!response) {
         const existingAgent = this.remoteAgents.get(pending.conversationId);
         const agent = existingAgent ?? this.localRemoteAgent(pending.conversationId, stored.owner, stored.language, stored.displayName, pending.peerName || stored.remote.peerName, pending.topic, this.savedTopicBrief(stored.topicBriefs, pending.topic), stored.remote.counterpartPersonId, Boolean(stored.conversationModes[pending.conversationId]), stored.codexModel ?? DEFAULT_CODEX_MODEL, stored.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT);
         const transcript = pending.transcript.map((message) => `${message.from}: ${message.text}`).join("\n") || "Реплик между агентами ещё не было.";

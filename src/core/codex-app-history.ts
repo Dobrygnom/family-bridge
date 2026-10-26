@@ -17,9 +17,12 @@ export function resolveCodexAppTransportCandidates(
   root = platform === "win32" ? windowsPipeRoot : unixSocketRoot,
 ): string[] {
   if (platform === "win32") {
-    return entries
-      .filter((name) => name.startsWith("codex-browser-use-"))
-      .map((name) => `${root}${name}`);
+    const supported = entries.filter((name) => name.startsWith("codex-app-tools-") || name.startsWith("codex-browser-use-"));
+    // Current Codex Desktop exposes app tools through codex-app-tools-*.
+    // Keep the former browser-use name as a compatibility fallback, but do
+    // not let one of the many browser endpoints delay the purpose-built API.
+    supported.sort((left, right) => Number(right.startsWith("codex-app-tools-")) - Number(left.startsWith("codex-app-tools-")));
+    return supported.map((name) => `${root}${name}`);
   }
   return entries
     .filter((name) => name.endsWith(".sock"))
@@ -273,7 +276,7 @@ export class CodexAppHistoryClient {
     for (let attempt = 0; ; attempt++) {
       try {
         const result = object(await client.request("tools/call", {
-          arguments: args, callId: randomUUID(), namespace: "codex_app",
+          arguments: args, callerSource: "codex", callId: randomUUID(), namespace: "codex_app",
           threadId: this.callingThreadId, tool, turnId: randomUUID(),
         }));
         const text = values(result.contentItems).find(item => item.type === "inputText" && typeof item.text === "string")?.text;

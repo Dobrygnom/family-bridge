@@ -239,6 +239,9 @@ app.whenReady().then(async () => {
   }
   const store = new AtomicStore(app.getPath("userData"));
   const uiErrors = new UiErrorDiagnostics(app.getPath("userData"));
+  // A window from the previous process cannot still be visible. Preserve its
+  // historical event, but start this process with truthful current visibility.
+  await uiErrors.record({ visible: false, visibleCount: 0 });
   service = new BackgroundService(
     app.getPath("userData"),
     app.isPackaged ? process.resourcesPath : path.resolve(dirname, "..", ".."),
@@ -429,6 +432,7 @@ app.whenReady().then(async () => {
   handle("bridge:run-remote", (_event, topic: string) => service.runRemote(topic));
   handle("bridge:discuss-all-topics", () => service.discussAllTopics());
   handle("bridge:answer-owner-question", (_event, input: unknown) => service.answerOwnerQuestion(input));
+  handle("bridge:send-manual-follow-up", (_event, input: unknown) => service.sendManualFollowUp(input));
   handle("bridge:continue-report", (_event, input: unknown) => service.continueReport(input));
   handle("bridge:approve-continuation", (_event, input: unknown) => service.approveContinuation(input));
   handle("bridge:retry-continuation", (_event, id: unknown) => service.retryContinuation(id));

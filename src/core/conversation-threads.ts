@@ -15,6 +15,7 @@ export interface ConversationStage {
   report?: Report;
   live: boolean;
   activity?: import("./conversation-updates.js").LiveConversation["activity"];
+  manualDraft?: string;
 }
 
 // A read-only projection. Group exclusively by explicit parent IDs, never title.

@@ -151,6 +151,7 @@ test("manual reply mode never invokes an agent and sends the owner's text verbat
     internal.remote = {
       async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
       async identity() { return "owner-device"; },
+      async readConversation() { return []; },
       async send(input: any) { sent.push(input); },
     };
     internal.localRemoteAgent = () => assert.fail("Manual reply mode must not invoke the agent");
@@ -166,20 +167,207 @@ test("manual reply mode never invokes an agent and sends the owner's text verbat
 
     const waiting = await service.state();
     assert.equal(sent.length, 0);
-    assert.equal(waiting.ownerQuestions.length, 1);
-    assert.equal(waiting.ownerQuestions[0].manualReply, true);
-    assert.match(waiting.ownerQuestions[0].question, new RegExp(incoming));
+    assert.equal(waiting.ownerQuestions.length, 0);
+    assert.equal(waiting.liveConversations?.find((item) => item.id === conversationId)?.activity, "needs-answer");
+    assert.equal((await store.read()).pendingManualReplies.length, 1);
     assert.equal((await store.read()).conversationTranscripts[conversationId].messages.at(-1)?.text, incoming);
 
     const exact = "  Мой точный ответ.\n\nНичего не переписывать.  ";
-    await service.answerOwnerQuestion({ id: waiting.ownerQuestions[0].id, disposition: "answer", answer: exact });
+    await service.sendManualFollowUp({ conversationId, text: exact });
     assert.equal(sent.length, 1);
     assert.equal(sent[0].sequence, 4);
     assert.equal(sent[0].payload.text, exact);
     assert.equal(sent[0].payload.origin, "owner-answer");
     assert.equal(sent[0].payload.status, "continue");
-    assert.deepEqual((await store.read()).pendingOwnerQuestions, []);
+    assert.deepEqual((await store.read()).pendingManualReplies, []);
     assert.equal((await store.read()).conversationTranscripts[conversationId].messages.at(-1)?.text, exact);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual follow-up replies inside a live conversation and also permits a second owner message", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-live-manual-follow-up-"));
+  try {
+    const store = new AtomicStore(directory);
+    const conversationId = randomUUID();
+    const history = [
+      { from: "dima" as const, text: "old 1" },
+      { from: "katya" as const, text: "old 2" },
+      { from: "dima" as const, text: "old 3" },
+      { from: "katya" as const, text: "old 4" },
+    ];
+    const messages = [
+      ...history,
+      { from: "dima" as const, text: "new 1" },
+      { from: "katya" as const, text: "new 2" },
+      { from: "katya" as const, text: "new 3" },
+    ];
+    await store.update({
+      owner: "dima",
+      identityConfigured: true,
+      displayName: "Дмитрий",
+      conversationReplyMode: "manual",
+      remote: { pairId: "pair-1", encryptionSecret: "secret", peerName: "Катя" },
+      conversationTranscripts: { [conversationId]: { topic: "Помощь с котом", messages } },
+      conversationInheritedCounts: { [conversationId]: history.length },
+      pendingManualReplies: [{
+        id: "manual-live-question",
+        conversationId,
+        topic: "Помощь с котом",
+        createdAt: new Date().toISOString(),
+        peerName: "Катя",
+        nextSequence: 4,
+        transcript: messages,
+      }],
+    });
+    const sent: Array<{ payload: { text: string; origin?: string }; sequence: number; conversationId: string }> = [];
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { appVersion: "2.1.9", backgroundTasks: false });
+    const internal = service as any;
+    internal.remote = {
+      async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
+      async identity() { return "owner-device"; },
+      async readConversation() { return []; },
+      async send(input: any) { sent.push(input); },
+    };
+    internal.localRemoteAgent = () => assert.fail("A live manual follow-up must not invoke the agent");
+    internal.codexStatus = async () => ({ installed: true, authenticated: true, version: "test" });
+
+    const first = "  Да, точно можешь.  ";
+    await service.sendManualFollowUp({ conversationId, text: first });
+    assert.equal(sent[0].conversationId, conversationId);
+    assert.equal(sent[0].sequence, 4);
+    assert.equal(sent[0].payload.text, first);
+    assert.equal(sent[0].payload.origin, "owner-answer");
+    assert.deepEqual((await store.read()).pendingManualReplies, []);
+
+    const second = "И ещё одно сообщение вдогонку.";
+    await service.sendManualFollowUp({ conversationId, text: second });
+    assert.equal(sent[1].conversationId, conversationId);
+    assert.equal(sent[1].sequence, 5);
+    assert.equal(sent[1].payload.text, second);
+    assert.equal((await store.read()).conversationTranscripts[conversationId].messages.at(-1)?.text, second);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual follow-up reconciles an occupied stale sequence and sends the preserved draft next", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-stale-manual-sequence-"));
+  try {
+    const store = new AtomicStore(directory);
+    const conversationId = randomUUID();
+    const history = [
+      { from: "dima" as const, text: "old 1" }, { from: "katya" as const, text: "old 2" },
+      { from: "dima" as const, text: "old 3" }, { from: "katya" as const, text: "old 4" },
+    ];
+    const messages = [...history,
+      { from: "dima" as const, text: "new 1" },
+      { from: "katya" as const, text: "new 2" },
+      { from: "katya" as const, text: "new 3" },
+    ];
+    await store.update({
+      owner: "dima", identityConfigured: true, displayName: "Дмитрий", conversationReplyMode: "manual",
+      remote: { pairId: "pair-1", encryptionSecret: "secret", peerName: "Катя" },
+      conversationTranscripts: { [conversationId]: { topic: "Помощь с котом", messages } },
+      conversationInheritedCounts: { [conversationId]: history.length },
+      pendingManualReplies: [{ id: "preserved-draft", conversationId, topic: "Помощь с котом", createdAt: new Date().toISOString(),
+        peerName: "Катя", nextSequence: 4, transcript: messages, text: "Да, точно можешь.", sentAt: "2026-10-26T08:24:08.364Z" }],
+    });
+    const serverSequenceFour = "Да, можешь точно рассчитывать на меня. Иру просить не нужно.";
+    const sent: any[] = [];
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { appVersion: "2.1.10", backgroundTasks: false });
+    const internal = service as any;
+    internal.remote = {
+      async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
+      async identity() { return "owner-device"; },
+      async readConversation() { return [{
+        id: randomUUID(), pair_id: "pair-1", conversation_id: conversationId, sequence_number: 4,
+        sender_id: "owner-device", recipient_id: "partner-device", sender_agent: "dima", status: "processed",
+        created_at: "2026-10-25T13:02:41.946Z",
+        payload: { protocol: 2, kind: "dialogue", topic: "Помощь с котом", text: serverSequenceFour,
+          origin: "owner-answer", status: "continue", sentAt: "2026-10-25T13:02:41.900Z" },
+      }]; },
+      async send(input: any) { sent.push(input); },
+    };
+
+    await service.sendManualFollowUp({ conversationId, text: "Да, точно можешь." });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].sequence, 5);
+    assert.equal(sent[0].payload.text, "Да, точно можешь.");
+    const state = await store.read();
+    assert.deepEqual(state.pendingManualReplies, []);
+    assert.deepEqual(state.pendingOwnerQuestions, []);
+    assert.equal(state.conversationTranscripts[conversationId].messages.at(-2)?.text, serverSequenceFour);
+    assert.equal(state.conversationTranscripts[conversationId].messages.at(-1)?.text, "Да, точно можешь.");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual retry treats the same reconciled wire message as delivered instead of duplicating it", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-idempotent-manual-retry-"));
+  try {
+    const store = new AtomicStore(directory);
+    const conversationId = randomUUID();
+    const text = "Уже принято сервером.";
+    await store.update({
+      owner: "dima", identityConfigured: true, displayName: "Дмитрий", conversationReplyMode: "manual",
+      remote: { pairId: "pair-1", encryptionSecret: "secret", peerName: "Катя" },
+      conversationTranscripts: { [conversationId]: { topic: "Тема", messages: [] } },
+      pendingManualReplies: [{ id: "lost-ack", conversationId, topic: "Тема", createdAt: new Date().toISOString(), nextSequence: 1,
+        transcript: [], text, sentAt: "2026-10-26T08:24:08.364Z" }],
+    });
+    const sent: any[] = [];
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { appVersion: "2.1.10", backgroundTasks: false });
+    const internal = service as any;
+    internal.remote = {
+      async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
+      async identity() { return "owner-device"; },
+      async readConversation() { return [{ id: randomUUID(), pair_id: "pair-1", conversation_id: conversationId, sequence_number: 1,
+        sender_id: "owner-device", recipient_id: "partner-device", sender_agent: "dima", status: "processed", created_at: new Date().toISOString(),
+        payload: { protocol: 2, kind: "dialogue", topic: "Тема", text, origin: "owner-answer", status: "continue", sentAt: "2026-10-26T08:24:08.364Z" } }]; },
+      async send(input: any) { sent.push(input); },
+    };
+
+    await service.sendManualFollowUp({ conversationId, text });
+    assert.equal(sent.length, 0);
+    assert.deepEqual((await store.read()).pendingManualReplies, []);
+    assert.equal((await store.read()).conversationTranscripts[conversationId].messages[0]?.text, text);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed manual delivery keeps the exact durable draft inside its conversation", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-durable-manual-failure-"));
+  try {
+    const store = new AtomicStore(directory);
+    const conversationId = randomUUID();
+    const text = "  Текст с пробелами и\nточным форматированием.  ";
+    await store.update({
+      owner: "dima", identityConfigured: true, displayName: "Дмитрий", conversationReplyMode: "manual",
+      remote: { pairId: "pair-1", encryptionSecret: "secret", peerName: "Катя" },
+      conversationTranscripts: { [conversationId]: { topic: "Тема", messages: [{ from: "katya", text: "Входящая реплика" }] } },
+      pendingManualReplies: [{ id: "awaiting-answer", conversationId, topic: "Тема", createdAt: new Date().toISOString(),
+        nextSequence: 2, transcript: [{ from: "katya", text: "Входящая реплика" }] }],
+    });
+    const service = new BackgroundService(directory, process.cwd(), store, () => null, undefined, { appVersion: "2.1.10", backgroundTasks: false });
+    const internal = service as any;
+    internal.remote = {
+      async pairState() { return { id: "pair-1", owner_id: "owner-device", partner_id: "partner-device" }; },
+      async identity() { return "owner-device"; },
+      async readConversation() { return []; },
+      async send() { throw new Error("fetch failed"); },
+    };
+
+    await assert.rejects(service.sendManualFollowUp({ conversationId, text }), /fetch failed/);
+    const stored = await store.read();
+    assert.equal(stored.pendingManualReplies[0].text, text);
+    assert.ok(stored.pendingManualReplies[0].sentAt);
+    const state = await service.state();
+    assert.deepEqual(state.ownerQuestions, []);
+    assert.equal(state.liveConversations?.find((item) => item.id === conversationId)?.manualDraft, text);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

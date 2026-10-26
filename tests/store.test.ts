@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -43,6 +43,37 @@ test("parallel state updates do not overwrite each other", async () => {
     assert.equal(state.displayName, "Дмитрий");
     assert.equal(state.language, "cs");
     assert.deepEqual(state.pairTopics, ["Тема"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy manual owner questions migrate into the dedicated durable reply queue", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-manual-migration-"));
+  try {
+    const conversationId = "ff713d7c-78c6-437b-b243-3905d942c853";
+    await writeFile(path.join(directory, "state.json"), JSON.stringify({
+      owner: "dima",
+      pendingOwnerQuestions: [{
+        id: "legacy-manual",
+        conversationId,
+        topic: "Помощь с котом",
+        question: "Ручная реплика владельца в текущий разговор",
+        createdAt: "2026-10-26T08:24:08.000Z",
+        nextSequence: 4,
+        transcript: [{ from: "katya", text: "Можно рассчитывать на тебя?" }],
+        manualReply: true,
+        preparedResponse: { message_to_peer: "Да, точно можешь.", owner_question: "", status: "continue", shared_summary: "", comparison_summary: "" },
+        preparedSentAt: "2026-10-26T08:24:08.364Z",
+      }],
+    }), "utf8");
+
+    const state = await new AtomicStore(directory).read();
+    assert.deepEqual(state.pendingOwnerQuestions, []);
+    assert.equal(state.pendingManualReplies.length, 1);
+    assert.equal(state.pendingManualReplies[0].conversationId, conversationId);
+    assert.equal(state.pendingManualReplies[0].text, "Да, точно можешь.");
+    assert.equal(state.pendingManualReplies[0].sentAt, "2026-10-26T08:24:08.364Z");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

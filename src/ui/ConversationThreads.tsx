@@ -52,7 +52,8 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
   };
   useEffect(() => { if (selected) { const timer = setTimeout(jump, 80); return () => clearTimeout(timer); } }, [selected, selectedReportId, revealToken]);
   useEffect(() => { if (open && !boundary && unread.length) setBoundary(unread[0].key); }, [open, boundary, unread]);
-  const activity = thread.currentStages.filter(stage => stage.live).at(-1)?.activity;
+  const activeStage = thread.currentStages.filter(stage => stage.live).at(-1);
+  const activity = activeStage?.activity;
   const proposedLabel = { ru: "Предложили", en: "Proposed by", cs: "Navrhli", fr: "Proposé par" }[language];
   const authors = [...new Set(thread.stages.flatMap(stage => stage.report?.proposedBy ?? []).filter(name => name && name !== "Автор не определён"))];
   const restartLabel = { ru: "Обсуждаем заново", en: "Discussing again", cs: "Probíráme znovu", fr: "Nouvelle discussion" }[language];
@@ -94,7 +95,7 @@ function ThreadCard({ state, language, selectedReportId, onState, activeDictatio
           {!repairPending && !thread.live && thread.latest && <>
             <details className="report-position-details"><summary>{t.result}</summary><p>{thread.latest.summary}</p>{thread.latest.comparison && <p>{thread.latest.comparison}</p>}</details>
           </>}
-          {!repairPending && thread.latest && <ReportContinuation threadId={thread.id} relatedReportIds={thread.stages.map(stage=>stage.id)} reportId={thread.latest.id} state={state} language={language} onState={onState} conversationBusy={thread.live} dictationBusy={Boolean(activeDictation)} onDictationBusy={busy=>onDictationBusy(thread.id,busy)} />}
+          {!repairPending && thread.latest && <ReportContinuation threadId={thread.id} relatedReportIds={thread.stages.map(stage=>stage.id)} reportId={thread.latest.id} state={state} language={language} onState={onState} conversationBusy={thread.live} activeConversationId={activeStage?.id} manualDraft={activeStage?.manualDraft} dictationBusy={Boolean(activeDictation)} onDictationBusy={busy=>onDictationBusy(thread.id,busy)} />}
         </StableDetails>
       </article>;
 }
