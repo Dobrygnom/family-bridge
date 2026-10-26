@@ -13,6 +13,7 @@ const events = new Set([
   "action.failed", "startup.begin", "startup.ready", "startup.saved-state", "startup.failed", "process.runtime", "storage.file",
   "crash-capture.started", "crash-capture.failed", "process.previous-unfinished", "process.marker-write-failed",
   "process.before-quit", "process.will-quit", "process.quit", "process.child-gone", "process.uncaught-exception", "process.exit",
+  "storage.state-recovered", "storage.state-repaired",
   "renderer.loaded", "renderer.preload-failed", "renderer.gone", "renderer.unresponsive", "renderer.responsive",
   "context.read-ready", "context.read-progress", "context.read-failed", "analysis.start", "analysis.progress", "analysis.coverage-invalid", "analysis.ready", "analysis.failed", "health.failed",
   "updater.gate", "updater.blocker", "updater.ipc", "updater.state", "updater.failed", "connection.recovery-route-enabled", "connection.poll-failed", "connection.poll-ready",
@@ -39,12 +40,13 @@ export function supportErrorCode(error: unknown): string {
 
 type Fields = Record<string, string | number | boolean>;
 const numeric = new Set(["exitCode","startedAt","people", "topics", "reports", "current", "total", "elapsedMs", "size", "uptimeSeconds", "workers", "pendingDeliveries", "quarantinedDeliveries", "continuations", "pendingQuestions", "pendingTopics", "progress", "healthAgeSeconds"]);
-const booleans = new Set(["onboarding", "sourceReady", "historyArchiveReady", "ready", "available", "checking", "downloading", "installing", "installRequested", "updatedLaunch", "agentLaunched", "running", "contextSyncing", "portraitsUpdating", "configured", "connected", "codexChecked", "codexInstalled", "codexAuthenticated", "error", "recoveryRoute"]);
+const booleans = new Set(["onboarding", "sourceReady", "historyArchiveReady", "ready", "available", "checking", "downloading", "installing", "installRequested", "updatedLaunch", "agentLaunched", "running", "contextSyncing", "portraitsUpdating", "configured", "connected", "codexChecked", "codexInstalled", "codexAuthenticated", "error", "recoveryRoute", "stateRecovered", "stateRecoveryRepaired", "stateRecoveryPreserved", "recovered", "repaired", "preserved"]);
 const enums: Record<string, readonly string[]> = {
   analysisCode: [...codes],
   operation: updateOperations, channel: updateIpcChannels,
   platform: ["win32", "darwin", "linux"], arch: ["x64", "arm64", "ia32"],
   analysisStatus: ["ready", "analyzing", "error", "other", "none"],
+  stateRecoveryReason: ["missing-primary", "invalid-primary"], recoveryReason: ["missing-primary", "invalid-primary"],
   fileKind: ["state", "source", "analysis"], waitingFor: ["activity", "dictation", "editing", "background"],
   stage: ["selection", "grouping", "idle", "preparing", "background", "activity", "installing", "retry", "complete","extract", "select", "merge", "coverage", "before-start", "after-start", "renderer-snapshot", "support", "update", "application", "uncaughtException", "unhandledRejection", "GPU", "Utility"],
 };

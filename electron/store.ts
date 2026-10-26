@@ -15,6 +15,13 @@ export type OwnerId = "dima" | "katya";
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
 export type TopicSource = "local" | "peer" | "unknown";
+export interface StoreRecoveryStatus {
+  usedPrevious: true;
+  reason: "missing-primary" | "invalid-primary";
+  recoveredAt: string;
+  repairedAt?: string;
+  invalidPrimaryPreserved?: boolean;
+}
 export interface ConversationContinuation {
   mode?: "restart" | "clean-continuation";
   originReportId?: string;
@@ -202,6 +209,7 @@ export class AtomicStore {
   readonly updateActivity = new UpdateActivity();
   private readonly file: string;
   private pending: Promise<void> = Promise.resolve();
+  private recovery?: StoreRecoveryStatus;
 
   constructor(directory: string) {
     this.file = path.join(directory, "state.json");
@@ -210,6 +218,14 @@ export class AtomicStore {
   async read(): Promise<StoredState> {
     await this.pending;
     return this.readSnapshot();
+  }
+
+  recoveryStatus(): StoreRecoveryStatus | undefined {
+    return this.recovery ? { ...this.recovery } : undefined;
+  }
+
+  async repairRecoveredState(): Promise<StoredState> {
+    return this.recovery && !this.recovery.repairedAt ? this.mutate(() => ({})) : this.read();
   }
 
   private normalize(value: unknown): StoredState {
@@ -240,7 +256,13 @@ export class AtomicStore {
       return this.normalize(JSON.parse(await readFile(this.file, "utf8")));
     } catch (error) {
       try {
-        return this.normalize(JSON.parse(await readFile(`${this.file}.previous`, "utf8")));
+        const previous = this.normalize(JSON.parse(await readFile(`${this.file}.previous`, "utf8")));
+        this.recovery ??= {
+          usedPrevious: true,
+          reason: (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing-primary" : "invalid-primary",
+          recoveredAt: new Date().toISOString(),
+        };
+        return previous;
       } catch (backupError) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT" && (backupError as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(defaults);
       }
@@ -271,11 +293,17 @@ export class AtomicStore {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") mainExists = false;
         else throw error;
       }
+      if (mainExists && this.recovery?.reason === "invalid-primary" && !this.recovery.invalidPrimaryPreserved) {
+        const stamp = this.recovery.recoveredAt.replace(/[:.]/g, "-");
+        await writeDurableFile(`${this.file}.corrupt-${stamp}`, await readFile(this.file));
+        this.recovery.invalidPrimaryPreserved = true;
+      }
       await writeFile(backupTemporary, mainExists ? JSON.stringify(current, null, 2) : nextText, { encoding: "utf8", mode: 0o600 });
       await replaceStateFile(backupTemporary, backup);
       const temporary = `${this.file}.tmp`;
       await writeFile(temporary, nextText, { encoding: "utf8", mode: 0o600 });
       await replaceStateFile(temporary, this.file);
+      if (this.recovery && !this.recovery.repairedAt) this.recovery.repairedAt = new Date().toISOString();
       return next;
     });
     this.pending = this.updateActivity.track("state_writes", operation).then(() => undefined, () => undefined);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -59,12 +59,21 @@ test("a corrupted primary state recovers the previous durable generation", async
     assert.equal(backup.displayName, "First durable value");
 
     await writeFile(file, "{interrupted write");
-    const recovered = await new AtomicStore(directory).read();
+    const restarted = new AtomicStore(directory);
+    const recovered = await restarted.read();
     assert.equal(recovered.identityConfigured, true);
     assert.equal(recovered.displayName, "First durable value");
     assert.equal(recovered.language, "ru");
+    assert.equal(restarted.recoveryStatus()?.reason, "invalid-primary");
+    assert.equal(restarted.recoveryStatus()?.repairedAt, undefined);
 
-    await new AtomicStore(directory).update({ language: "en" });
+    await restarted.update({ language: "en" });
+    const status = restarted.recoveryStatus();
+    assert.ok(status?.repairedAt);
+    assert.equal(status?.invalidPrimaryPreserved, true);
+    const corrupt = (await readdir(directory)).filter(name => name.startsWith("state.json.corrupt-"));
+    assert.equal(corrupt.length, 1);
+    assert.equal(await readFile(path.join(directory, corrupt[0]), "utf8"), "{interrupted write");
     const repaired = await new AtomicStore(directory).read();
     assert.equal(repaired.displayName, "First durable value");
     assert.equal(repaired.language, "en");

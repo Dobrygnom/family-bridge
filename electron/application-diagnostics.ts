@@ -1,5 +1,5 @@
 import type { ContextAnalysis } from "../src/core/context-analysis.js";
-import type { StoredState } from "./store.js";
+import type { StoredState, StoreRecoveryStatus } from "./store.js";
 import type { UiErrorSnapshot } from "./ui-error-diagnostics.js";
 import { readingReceiptSnapshot } from "../src/core/conversation-attention.js";
 
@@ -18,10 +18,11 @@ export interface ApplicationDiagnostics {
   reports: Array<Record<string, unknown>>;
   uiErrors: UiErrorSnapshot;
   reading?: { local?: ReturnType<typeof readingReceiptSnapshot>; peer?: StoredState["peerConversationReading"] };
+  storage?: { recovery?: StoreRecoveryStatus };
   invariants: Array<{ name: string; ok: boolean; details?: string }>;
 }
 
-export function buildApplicationDiagnostics(state: StoredState, analysis: ContextAnalysis | undefined, reports: Array<Record<string, unknown>>, uiErrors: UiErrorSnapshot = { schema:1, totalShown:0, currentlyVisible:false, visibleCount:0, recent:[] }): ApplicationDiagnostics {
+export function buildApplicationDiagnostics(state: StoredState, analysis: ContextAnalysis | undefined, reports: Array<Record<string, unknown>>, uiErrors: UiErrorSnapshot = { schema:1, totalShown:0, currentlyVisible:false, visibleCount:0, recent:[] }, storageRecovery?: StoreRecoveryStatus): ApplicationDiagnostics {
   const topicNames = new Set([...state.pendingTopics, ...state.inFlightTopics, ...state.pairTopics, ...state.activeTopics,
     ...Object.values(state.topicLaunches).map(job => job.topic), ...(analysis?.topics ?? []).map(topic => topic.title)]);
   const topics = [...topicNames].map(title => {
@@ -54,7 +55,9 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions, manualReplies,
     conversations, continuations, deliveries, quarantined, reports, uiErrors,
     reading: { ...(readingReceiptSnapshot(state.conversationReading) ? { local: readingReceiptSnapshot(state.conversationReading) } : {}), ...(state.peerConversationReading ? { peer: state.peerConversationReading } : {}) },
+    storage: { ...(storageRecovery ? { recovery: storageRecovery } : {}) },
     invariants:[
+      { name:"state-primary-recovered", ok:!storageRecovery || Boolean(storageRecovery.repairedAt), ...(storageRecovery && !storageRecovery.repairedAt ? {details:storageRecovery.reason} : {}) },
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },
       { name:"conversation-parents-acyclic", ok:cyclicParents.length===0, ...(cyclicParents.length ? {details:cyclicParents.join(" | ")} : {}) },
       { name:"no-duplicate-delivery-id", ok:new Set([...Object.keys(state.incomingDeliveries),...Object.keys(state.quarantinedDeliveries)]).size === Object.keys(state.incomingDeliveries).length + Object.keys(state.quarantinedDeliveries).length },

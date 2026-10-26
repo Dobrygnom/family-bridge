@@ -195,14 +195,19 @@ test("support exports only typed technical fields, including logs from the indep
     d.record("private-event-name", { version: "1.2.20" });
     d.record("analysis.progress", { current: 2, total: 4, stage: "private-chat" });
     d.record("analysis.coverage-invalid", { current: 1, total: 2, stage: "grouping", code: "COVERAGE_TOPIC_CONTENT" });
+    d.record("storage.state-recovered", { recovered: true, recoveryReason: "invalid-primary", preserved: false, path: "private-path" } as any);
     await rm(d.file);
-    const safe = sanitizeSupportReport({ ...report(), status: { version: "private-chat", token: "secret", topics: NaN, onboarding: true },
+    const safe = sanitizeSupportReport({ ...report(), status: { version: "private-chat", token: "secret", topics: NaN, onboarding: true, stateRecovered: true, stateRecoveryRepaired: false, stateRecoveryPreserved: true, stateRecoveryReason: "invalid-primary" },
       events: [...supportEvents(d), { at: new Date(now).toISOString(), event: "analysis.progress", fields: { total: Infinity, stage: "private-chat" } }] });
     assert.ok(safe);
     const json = JSON.stringify(safe);
     assert.doesNotMatch(json, /private|secret|SECRET|Infinity|NaN|filePath|topicId/);
     assert.match(json, /editing/);
     assert.equal(safe.events.find(e => e.event === "analysis.progress")?.fields.current, 2);
+    assert.deepEqual(safe.events.find(e => e.event === "storage.state-recovered")?.fields,
+      { recovered: true, recoveryReason: "invalid-primary", preserved: false });
+    assert.equal(safe.status.stateRecovered, true);
+    assert.equal(safe.status.stateRecoveryReason, "invalid-primary");
     assert.deepEqual(safe.events.find(e => e.event === "analysis.coverage-invalid")?.fields,
       { current: 1, total: 2, stage: "grouping", code: "COVERAGE_TOPIC_CONTENT" });
     assert.equal(supportErrorCode({ code: "PGRST301", message: "private-text" }), "PGRST301");

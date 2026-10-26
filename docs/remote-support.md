@@ -21,10 +21,14 @@ no service-role credential, vendor backdoor or master recovery key.
 
 Only application metadata is exchanged: version, platform, process boot ID,
 uptime, Codex availability, preparation status, queue counts, update download/
-installation state, and a strictly filtered lifecycle log on request. Private
-messages, topic names, personal profiles, prompts, local paths, credentials and
-crash dumps are excluded. Error text is classified into fixed technical codes.
-The protocol has no shell, arbitrary file read, download URL, script or account-reset action.
+installation state, storage-recovery outcome, and a strictly filtered lifecycle
+log on request. Ordinary heartbeats and snapshots exclude private messages,
+topic names, personal profiles and prompts. A separately authenticated explicit
+deep-diagnostics request may include bounded derived application state and
+conversation state needed to identify a stuck workflow; it still excludes the
+raw selected source chat, local paths, credentials and crash dumps. Error text is
+classified into fixed technical codes. The protocol has no shell, arbitrary
+file read, download URL, script or account-reset action.
 
 Starting with 1.2.44, a separate maintenance command family provides two bounded
 operations: delete one conversation by ID, or create a replacement branch from

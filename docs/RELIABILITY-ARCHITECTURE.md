@@ -27,8 +27,12 @@ its destination. On filesystems that support it, the containing directory entry
 is flushed as well. The main state keeps one independently flushed previous
 generation. Startup accepts that generation only when the primary file cannot be
 parsed; if neither generation is valid, it stops without replacing either file
-with defaults. A subsequent successful mutation repairs the primary file from
-the recovered generation.
+with defaults. When the primary exists but is invalid, its exact bytes are first
+flushed to a timestamped `state.json.corrupt-*` file. Startup then repairs the
+primary from the recovered generation before ordinary work begins. Recovery
+reason, preservation and repair outcome remain visible in the current process'
+local application diagnostics and in an authenticated explicit peer diagnostic;
+the lifecycle log retains metadata-only recovery and repair events.
 
 Update checkpoints use the same durable-file primitive for the state snapshot,
 manifest and every report copy before the checkpoint directory becomes visible.
@@ -37,6 +41,11 @@ Conversation reports are durable before their path is committed into state.
 ## Diagnostic API
 
 Deep application diagnostics are a separate, explicit capability. The local authenticated control endpoint exposes `GET /local/application-diagnostics`; the encrypted peer support lane requests the same contract through `POST /peer/diagnostics`. It contains analyzed, pending, in-flight and active topics; prepared launches and messages; owner questions; conversation state; continuations; delivery/quarantine state; reports; and consistency invariants.
+
+Storage recovery is part of that contract. `storage.recovery` identifies whether
+the previous generation was used because the primary was missing or invalid,
+whether invalid bytes were preserved, and whether the primary was repaired. The
+`state-primary-recovered` invariant stays failed until repair has completed.
 
 Conversation maintenance is a separate bounded command lane in 1.2.44+. It can delete one exact conversation ID or branch a completed conversation from one exact message index. Delete writes a tombstone before removing the report so delayed packets cannot recreate it. Restart retains the original report, assigns a new idempotent conversation ID, preserves the selected prefix and resumes over the ordinary encrypted dialogue transport. Both actions write metadata-only audit receipts and expose no UI controls.
 

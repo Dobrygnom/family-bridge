@@ -10,9 +10,10 @@ interface DiagnosticFields {
   pid?: number; executable?: string; userData?: string; cwd?: string; updatedLaunch?: boolean; agentLaunched?: boolean;
   fileKind?: string; filePath?: string; realPath?: string; size?: number; sha256?: string; device?: string; inode?: string; modifiedAt?: string;
   primaryLogCode?: string; primaryLogPath?: string; ready?: boolean; downloading?: boolean; installing?: boolean; waitingFor?: string;
+  recovered?: boolean; repaired?: boolean; preserved?: boolean; recoveryReason?: "missing-primary" | "invalid-primary";
 }
 
-const allowedFields = new Set(['exitCode','operation','channel','startedAt','version','onboarding','sourceReady','analysisStatus','people','topics','reports','stage','current','total','code','elapsedMs','topicId','pid','executable','userData','cwd','updatedLaunch','agentLaunched','fileKind','filePath','realPath','size','sha256','device','inode','modifiedAt','primaryLogCode','primaryLogPath','ready','downloading','installing','waitingFor']);
+const allowedFields = new Set(['exitCode','operation','channel','startedAt','version','onboarding','sourceReady','analysisStatus','people','topics','reports','stage','current','total','code','elapsedMs','topicId','pid','executable','userData','cwd','updatedLaunch','agentLaunched','fileKind','filePath','realPath','size','sha256','device','inode','modifiedAt','primaryLogCode','primaryLogPath','ready','downloading','installing','waitingFor','recovered','repaired','preserved','recoveryReason']);
 const errorCode = (error: unknown) => String((error as NodeJS.ErrnoException)?.code || 'UNKNOWN').replace(/[^A-Z0-9_]/g, '').slice(0,64);
 
 /** Metadata only. Never accepts exception messages, prompts, names or credentials. */

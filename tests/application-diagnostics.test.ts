@@ -16,17 +16,23 @@ test("application diagnostics expose prepared app state but never source chat or
   const analysis = { analysisVersion: 5, sourceId: "SOURCE_CHAT_ID", sourceHash: "SOURCE_CHAT_HASH", analyzedAt: new Date().toISOString(), status: "ready" as const,
     people: [], topics: [{ id: "topic", title: "Неотправленная тема", aboutPersonIds: [], discussWithPersonId: "dima", sensitivity: "direct" as const,
       reason: "Почему тема создана", approved: true }] };
-  const diagnostics = buildApplicationDiagnostics(state, analysis, []);
+  const diagnostics = buildApplicationDiagnostics(state, analysis, [], undefined, { usedPrevious:true, reason:"invalid-primary", recoveredAt:"2026-10-26T10:00:00.000Z", repairedAt:"2026-10-26T10:00:01.000Z", invalidPrimaryPreserved:true });
   assert.equal(diagnostics.topics[0].pending, true);
   assert.equal(diagnostics.topicLaunches[0].preparedMessage, "Подготовленный текст");
   assert.equal(diagnostics.uiErrors.currentlyVisible, false);
   assert.equal(diagnostics.conversationReplyMode, "manual");
   assert.deepEqual(diagnostics.reading?.local?.stages.stage, [[0, 0]]);
+  assert.equal(diagnostics.storage?.recovery?.reason, "invalid-primary");
+  assert.equal(diagnostics.invariants.find(item => item.name === "state-primary-recovered")?.ok, true);
   assert.ok(diagnostics.invariants.every(item => item.ok));
   const json = JSON.stringify(diagnostics);
   assert.match(json, /Неотправленная тема|Подготовленный текст/);
   assert.doesNotMatch(json, /PAIR_SECRET|INVITE_SECRET|SOURCE_CHAT_ID|SOURCE_CHAT_HASH|encryptionSecret|inviteSecret|sourceHash|sourceId/);
   assert.equal(JSON.stringify(sanitizeApplicationDiagnostics(diagnostics)), JSON.stringify(diagnostics));
+
+  const awaitingRepair = buildApplicationDiagnostics(state, analysis, [], undefined, { usedPrevious:true, reason:"missing-primary", recoveredAt:"2026-10-26T10:00:00.000Z" });
+  assert.equal(awaitingRepair.invariants.find(item => item.name === "state-primary-recovered")?.ok, false);
+  assert.equal(awaitingRepair.invariants.find(item => item.name === "state-primary-recovered")?.details, "missing-primary");
 });
 
 test("application diagnostics reject unbounded peer payloads", () => {

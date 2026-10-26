@@ -584,7 +584,7 @@ export class BackgroundService {
   async applicationDiagnostics() {
     const state = await this.store.read();
     const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
-    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.());
+    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.(), this.store.recoveryStatus());
   }
 
   private async persistPeerObservation(report: SupportReport) {
@@ -723,6 +723,7 @@ export class BackgroundService {
 
   private async supportSnapshot(logs: boolean, application = false): Promise<SupportReport> {
     const state = await this.store.read();
+    const storageRecovery = this.store.recoveryStatus();
     if (logs) this.diagnostics.snapshotProfile(this.userData, "support");
     const analysis = this.readContextAnalysis();
     const completed = new Set(readReportSummaries(state.reports).map(r => r.id));
@@ -736,6 +737,8 @@ export class BackgroundService {
         pendingQuestions: state.pendingOwnerQuestions.length + state.pendingManualReplies.length, pendingTopics: state.pendingTopics.length,
         continuations: Object.entries(state.continuations).filter(([id, c]) => !c.topic.startsWith(VERSION_PROBE_PREFIX) && c.pairId === state.remote?.pairId && c.status !== "complete" && !completed.has(id)).length,
         contextSyncing: this.contextSyncing, portraitsUpdating: this.portraitsUpdating,
+        stateRecovered: Boolean(storageRecovery), stateRecoveryRepaired: Boolean(storageRecovery?.repairedAt),
+        stateRecoveryPreserved: Boolean(storageRecovery?.invalidPrimaryPreserved), stateRecoveryReason: storageRecovery?.reason,
         configured: Boolean(state.remote), connected: dialogueConnectionAvailable(this.lastPollAt, this.lastPollCode),
         recoveryRoute: this.remote instanceof RecoveryTransport, code: this.lastPollCode === "AUTH" && this.authRecoveryPending ? undefined : this.lastPollCode,
         codexChecked: Boolean(this.healthCheckedAt), codexInstalled: this.health.installed, codexAuthenticated: this.health.authenticated,
@@ -1355,10 +1358,18 @@ export class BackgroundService {
 
   async start() {
     this.diagnostics.record("startup.begin", { version: this.options.appVersion });
-    const recovered = await recoverMissingCheckpointData(this.userData, await this.store.read());
+    const initialState = await this.store.read();
+    const storageRecovery = this.store.recoveryStatus();
+    if (storageRecovery) this.diagnostics.record("storage.state-recovered", { recovered:true, recoveryReason:storageRecovery.reason, preserved:Boolean(storageRecovery.invalidPrimaryPreserved) });
+    const recovered = await recoverMissingCheckpointData(this.userData, initialState);
     if (Object.keys(recovered).length) {
       await this.store.update(recovered);
       this.diagnostics.record("update.checkpoint-reconciled");
+    }
+    if (storageRecovery) {
+      if (!this.store.recoveryStatus()?.repairedAt) await this.store.repairRecoveredState();
+      const repaired = this.store.recoveryStatus();
+      this.diagnostics.record("storage.state-repaired", { recovered:true, repaired:true, recoveryReason:repaired?.reason, preserved:Boolean(repaired?.invalidPrimaryPreserved) });
     }
     // The durable peer report may be newer than legacy fields in state.json.
     // Reconcile it before any renderer can observe the startup state.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -72,5 +72,40 @@ test("an unreadable state is never mistaken for a new install or overwritten by 
     await assert.rejects(store.read(), /Данные не сброшены/);
     await assert.rejects(store.update({ language: "en" }), /Данные не сброшены/);
     assert.equal(await readFile(file, "utf8"), "{broken but valuable data");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("startup repairs from the previous generation, preserves corrupt bytes and exposes recovery diagnostics", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fb-recovered-profile-"));
+  try {
+    const file = path.join(dir, "state.json");
+    const original = new AtomicStore(dir);
+    await original.update({ identityConfigured: true, displayName: "Recovered owner" });
+    await original.update({ language: "cs" });
+    await writeFile(file, "{valuable interrupted bytes");
+
+    const store = new AtomicStore(dir);
+    const service = new BackgroundService(dir, process.cwd(), store, () => null, undefined, { backgroundTasks: false, appVersion: "2.1.18" });
+    await service.start();
+
+    const recovery = store.recoveryStatus();
+    assert.equal(recovery?.reason, "invalid-primary");
+    assert.ok(recovery?.repairedAt);
+    assert.equal(recovery?.invalidPrimaryPreserved, true);
+    assert.equal((await store.read()).displayName, "Recovered owner");
+    const preserved = (await readdir(dir)).find(name => name.startsWith("state.json.corrupt-"));
+    assert.ok(preserved);
+    assert.equal(await readFile(path.join(dir, preserved!), "utf8"), "{valuable interrupted bytes");
+
+    const application = await service.applicationDiagnostics();
+    assert.equal(application.storage?.recovery?.invalidPrimaryPreserved, true);
+    assert.equal(application.invariants.find(item => item.name === "state-primary-recovered")?.ok, true);
+    const support = await (service as any).supportSnapshot(true, true);
+    assert.equal(support.status.stateRecovered, true);
+    assert.equal(support.status.stateRecoveryRepaired, true);
+    assert.equal(support.status.stateRecoveryPreserved, true);
+    assert.equal(support.status.stateRecoveryReason, "invalid-primary");
+    const events = support.events.filter((event: any) => event.event.startsWith("storage.state-"));
+    assert.deepEqual(events.map((event: any) => event.event), ["storage.state-recovered", "storage.state-repaired"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
