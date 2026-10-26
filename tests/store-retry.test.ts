@@ -8,11 +8,14 @@ import ts from "typescript";
 async function harness(failures: number, code = "EPERM") {
   const source = await readFile(new URL("../electron/store.ts", import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-  const body = compiled.slice(compiled.indexOf("export async function replaceStateFile"), compiled.indexOf("export class AtomicStore")).replace("export ", "");
+  const body = compiled.slice(compiled.indexOf("export async function replaceStateFile"), compiled.indexOf("export async function writeDurableFile")).replace("export ", "");
   let calls = 0;
   const waits: number[] = [];
   const error = Object.assign(new Error("simulated lock"), { code });
   const replace = vm.runInNewContext(`${body}; replaceStateFile`, {
+    open: async () => ({ sync: async () => undefined, close: async () => undefined }),
+    path: { dirname: () => "." },
+    process: { platform: "win32" },
     rename: async (from: string, to: string) => {
       assert.equal(from, "state.json.tmp"); assert.equal(to, "state.json");
       if (++calls <= failures) throw error;

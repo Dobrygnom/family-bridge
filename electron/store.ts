@@ -1,5 +1,6 @@
 import { UpdateActivity } from "./update-activity.js";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
@@ -151,12 +152,29 @@ const defaults: StoredState = {
 };
 
 export async function replaceStateFile(temporary: string, destination: string) {
+  // writeFile() only hands bytes to the operating system. Flush the completed
+  // temporary file before it becomes authoritative so a successful mutation
+  // means the payload survives a process crash (and, where the filesystem
+  // honours FlushFileBuffers/fsync, an abrupt machine restart).
+  const temporaryHandle = await open(temporary, "r+");
+  try { await temporaryHandle.sync(); } finally { await temporaryHandle.close(); }
+
   // Windows scanners/readers can hold the destination longer than a few hundred
   // milliseconds. Keep the write queue locked while retrying the SAME snapshot;
   // never remove the destination or fall back to a non-atomic overwrite.
   let waitedMs = 0;
   for (let attempt = 0; ; attempt += 1) {
-    try { await rename(temporary, destination); return; }
+    try {
+      await rename(temporary, destination);
+      // Persist the directory entry on filesystems that support directory
+      // fsync. Windows does not expose this through Node, so the file flush
+      // above remains the authoritative durability barrier there.
+      if (process.platform !== "win32") try {
+        const directoryHandle = await open(path.dirname(destination), "r");
+        try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+      } catch { /* Best effort when a filesystem does not allow directory fsync. */ }
+      return;
+    }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (waitedMs >= 10_000 || code !== "EPERM" && code !== "EBUSY") throw error;
@@ -164,6 +182,19 @@ export async function replaceStateFile(temporary: string, destination: string) {
       await delay(waitMs);
       waitedMs += waitMs;
     }
+  }
+}
+
+/** Writes a complete file durably, without ever exposing a partial destination. */
+export async function writeDurableFile(destination: string, data: string | Buffer) {
+  await mkdir(path.dirname(destination), { recursive: true });
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, data, { mode: 0o600 });
+    await replaceStateFile(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -181,32 +212,41 @@ export class AtomicStore {
     return this.readSnapshot();
   }
 
+  private normalize(value: unknown): StoredState {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved state");
+    const record = value as Partial<StoredState>;
+    const ownerQuestions = Array.isArray(record.pendingOwnerQuestions) ? record.pendingOwnerQuestions : [];
+    const savedManual = Array.isArray(record.pendingManualReplies) ? record.pendingManualReplies : [];
+    const legacyManual = ownerQuestions.filter((item) => item?.manualReply === true).map((item): PendingManualReply => ({
+      id: item.id,
+      conversationId: item.conversationId,
+      topic: item.topic,
+      createdAt: item.createdAt,
+      peerName: item.peerName,
+      nextSequence: item.nextSequence,
+      transcript: item.transcript,
+      text: item.preparedResponse?.message_to_peer,
+      sentAt: item.preparedSentAt,
+    }));
+    const manualByConversation = new Map([...legacyManual, ...savedManual].map((item) => [item.conversationId, item]));
+    return { ...defaults, ...record,
+      pendingOwnerQuestions: ownerQuestions.filter((item) => item?.manualReply !== true),
+      pendingManualReplies: [...manualByConversation.values()],
+    } as StoredState;
+  }
+
   private async readSnapshot(): Promise<StoredState> {
     try {
-      const value = JSON.parse(await readFile(this.file, "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved state");
-      const ownerQuestions = Array.isArray(value.pendingOwnerQuestions) ? value.pendingOwnerQuestions as PendingOwnerQuestion[] : [];
-      const savedManual = Array.isArray(value.pendingManualReplies) ? value.pendingManualReplies as PendingManualReply[] : [];
-      const legacyManual = ownerQuestions.filter((item) => item?.manualReply === true).map((item): PendingManualReply => ({
-        id: item.id,
-        conversationId: item.conversationId,
-        topic: item.topic,
-        createdAt: item.createdAt,
-        peerName: item.peerName,
-        nextSequence: item.nextSequence,
-        transcript: item.transcript,
-        text: item.preparedResponse?.message_to_peer,
-        sentAt: item.preparedSentAt,
-      }));
-      const manualByConversation = new Map([...legacyManual, ...savedManual].map((item) => [item.conversationId, item]));
-      return { ...defaults, ...value,
-        pendingOwnerQuestions: ownerQuestions.filter((item) => item?.manualReply !== true),
-        pendingManualReplies: [...manualByConversation.values()],
-      };
+      return this.normalize(JSON.parse(await readFile(this.file, "utf8")));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(defaults);
+      try {
+        return this.normalize(JSON.parse(await readFile(`${this.file}.previous`, "utf8")));
+      } catch (backupError) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" && (backupError as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(defaults);
+      }
       // A broken/unreadable file is NOT a new installation. Never overwrite it
-      // with defaults on the next settings change.
+      // with defaults on the next settings change. A valid previous generation
+      // is accepted above; otherwise preserve both files for diagnosis.
       throw new Error("Не удалось прочитать сохранённое состояние. Данные не сброшены. Закройте приложение и повторите запуск.");
     }
   }
@@ -220,8 +260,21 @@ export class AtomicStore {
       const current = await this.readSnapshot();
       const next = { ...current, ...update(current) };
       await mkdir(path.dirname(this.file), { recursive: true });
+      const nextText = JSON.stringify(next, null, 2);
+      const backup = `${this.file}.previous`;
+      const backupTemporary = `${backup}.tmp`;
+      // Keep a complete verified generation independent of the main rename.
+      // On the first write the new generation is the only valid recovery point;
+      // afterwards the backup intentionally trails the main file by one commit.
+      let mainExists = true;
+      try { await readFile(this.file); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") mainExists = false;
+        else throw error;
+      }
+      await writeFile(backupTemporary, mainExists ? JSON.stringify(current, null, 2) : nextText, { encoding: "utf8", mode: 0o600 });
+      await replaceStateFile(backupTemporary, backup);
       const temporary = `${this.file}.tmp`;
-      await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");
+      await writeFile(temporary, nextText, { encoding: "utf8", mode: 0o600 });
       await replaceStateFile(temporary, this.file);
       return next;
     });

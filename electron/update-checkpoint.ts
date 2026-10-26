@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import type { StoredState } from "./store.js";
+import { writeDurableFile, type StoredState } from "./store.js";
 
 const hash = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
 const idFromReport = async (file: string) => {
@@ -16,16 +16,16 @@ export async function createUpdateCheckpoint(userData: string, state: StoredStat
   const reportsDir = path.join(temporary, "reports");
   await mkdir(reportsDir, { recursive: true });
   const stateText = JSON.stringify(state);
-  await writeFile(path.join(temporary, "state.json"), stateText, { encoding:"utf8", mode:0o600 });
+  await writeDurableFile(path.join(temporary, "state.json"), stateText);
   const reports: Array<{ file:string; id:string; sha256:string }> = [];
   for (const source of state.reports) {
     const bytes = await readFile(source), file = path.basename(source), id = await idFromReport(source);
     if (!id) throw new Error("Update checkpoint contains an invalid report");
-    await copyFile(source, path.join(reportsDir, file));
+    await writeDurableFile(path.join(reportsDir, file), bytes);
     reports.push({ file, id, sha256:hash(bytes) });
   }
   const manifest = { schema:1, createdAt:new Date().toISOString(), version, stateSha256:hash(stateText), reports };
-  await writeFile(path.join(temporary, "manifest.json"), JSON.stringify(manifest), { encoding:"utf8", mode:0o600 });
+  await writeDurableFile(path.join(temporary, "manifest.json"), JSON.stringify(manifest));
   if (hash(await readFile(path.join(temporary, "state.json"))) !== manifest.stateSha256) throw new Error("Update checkpoint verification failed");
   for (const report of reports) if (hash(await readFile(path.join(reportsDir, report.file))) !== report.sha256) throw new Error("Update report checkpoint verification failed");
   await rename(temporary, destination);
@@ -59,7 +59,7 @@ export async function recoverMissingCheckpointData(userData: string, current: St
   for (const report of checkpoint.reports) {
     if (currentIds.has(report.id)) continue;
     const target = path.join(userData,"reports",`checkpoint-${report.file}`);
-    await copyFile(path.join(checkpoint.root,"reports",report.file),target); restored.push(target);
+    await writeDurableFile(target, await readFile(path.join(checkpoint.root,"reports",report.file))); restored.push(target);
   }
   const old = checkpoint.state;
   const missing = <T>(before:Record<string,T>, now:Record<string,T>) => ({...before,...now});

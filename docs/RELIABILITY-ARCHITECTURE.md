@@ -19,6 +19,21 @@ polls once per minute for presence. Periodic support heartbeats are compact and
 exclude histories, operation timelines and application diagnostics. Detailed
 state is sent only in response to an authenticated explicit request.
 
+## Filesystem durability
+
+Every authoritative JSON state or conversation report is written to a unique
+temporary file, flushed to stable storage and only then atomically renamed over
+its destination. On filesystems that support it, the containing directory entry
+is flushed as well. The main state keeps one independently flushed previous
+generation. Startup accepts that generation only when the primary file cannot be
+parsed; if neither generation is valid, it stops without replacing either file
+with defaults. A subsequent successful mutation repairs the primary file from
+the recovered generation.
+
+Update checkpoints use the same durable-file primitive for the state snapshot,
+manifest and every report copy before the checkpoint directory becomes visible.
+Conversation reports are durable before their path is committed into state.
+
 ## Diagnostic API
 
 Deep application diagnostics are a separate, explicit capability. The local authenticated control endpoint exposes `GET /local/application-diagnostics`; the encrypted peer support lane requests the same contract through `POST /peer/diagnostics`. It contains analyzed, pending, in-flight and active topics; prepared launches and messages; owner questions; conversation state; continuations; delivery/quarantine state; reports; and consistency invariants.

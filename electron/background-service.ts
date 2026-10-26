@@ -20,7 +20,7 @@ import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnv
 import { durableAuthStorage } from "./auth-storage.js";
 import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
 import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
-import { AtomicStore, replaceStateFile, type StoredState, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingManualReply, type PendingOwnerQuestion, type TopicSource } from "./store.js";
+import { AtomicStore, replaceStateFile, writeDurableFile, type StoredState, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingManualReply, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { archiveConversationHistory } from "./history-archive.js";
 import { Diagnostics } from "./diagnostics.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
@@ -622,7 +622,7 @@ export class BackgroundService {
       const messages=report.messages.map((message:any)=>({from:message.local?peerOwner:state.owner,text:String(message.text),...(message.origin?{origin:message.origin}:{}),...(message.sentAt?{sentAt:message.sentAt}:{})}));
       const directory=path.join(this.userData,"reports"); await mkdir(directory,{recursive:true});
       const file=path.join(directory,`${String(report.completedAt||new Date().toISOString()).replace(/[:.]/g,"-")}-${report.id}-peer-reconciled.json`);
-      await writeFile(file,JSON.stringify({conversationId:report.id,parentReportId:report.parentReportId,pairId:state.remote.pairId,topic:report.topic,sharedSummary:report.summary,answerFrom:report.answerFrom,completionState:report.completionState||"completed",messages,completedAt:report.completedAt||new Date().toISOString()}),"utf8");
+      await writeDurableFile(file,JSON.stringify({conversationId:report.id,parentReportId:report.parentReportId,pairId:state.remote.pairId,topic:report.topic,sharedSummary:report.summary,answerFrom:report.answerFrom,completionState:report.completionState||"completed",messages,completedAt:report.completedAt||new Date().toISOString()}));
       reports.push(file); completed.add(report.id); if(typeof report.parentReportId==="string") reportParents[report.id]=report.parentReportId;
     }
     const transcripts: StoredState["conversationTranscripts"] = {};
@@ -2807,7 +2807,7 @@ export class BackgroundService {
     const reportPath = path.join(reportsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}-remote.json`);
     const completedAt = new Date().toISOString();
     const state = await this.store.read();
-    await writeFile(reportPath, JSON.stringify({
+    await writeDurableFile(reportPath, JSON.stringify({
       conversationId,
       parentReportId: state.conversationParents[conversationId],
       restarted: state.conversationModes[conversationId] === "restart",
@@ -2992,7 +2992,7 @@ export class BackgroundService {
       const reportsDir = path.join(this.userData, "reports");
       await mkdir(reportsDir, { recursive: true });
       const reportPath = path.join(reportsDir, `${report.completedAt.replace(/[:.]/g, "-")}.json`);
-      await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+      await writeDurableFile(reportPath, JSON.stringify(report, null, 2));
       const next = await this.store.update({
         reports: [reportPath, ...state.reports].slice(0, 100),
         pendingTopics: state.pendingTopics.filter((item) => item !== topic),

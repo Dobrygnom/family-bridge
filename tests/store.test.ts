@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { AtomicStore } from "../electron/store.js";
+import { AtomicStore, writeDurableFile } from "../electron/store.js";
 
 test("identity starts unconfigured and an explicit display name persists", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-test-"));
@@ -43,6 +43,45 @@ test("parallel state updates do not overwrite each other", async () => {
     assert.equal(state.displayName, "Дмитрий");
     assert.equal(state.language, "cs");
     assert.deepEqual(state.pairTopics, ["Тема"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a corrupted primary state recovers the previous durable generation", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-recovery-"));
+  try {
+    const file = path.join(directory, "state.json");
+    const store = new AtomicStore(directory);
+    await store.update({ identityConfigured: true, displayName: "First durable value" });
+    await store.update({ displayName: "Second durable value", language: "cs" });
+    const backup = JSON.parse(await readFile(`${file}.previous`, "utf8"));
+    assert.equal(backup.displayName, "First durable value");
+
+    await writeFile(file, "{interrupted write");
+    const recovered = await new AtomicStore(directory).read();
+    assert.equal(recovered.identityConfigured, true);
+    assert.equal(recovered.displayName, "First durable value");
+    assert.equal(recovered.language, "ru");
+
+    await new AtomicStore(directory).update({ language: "en" });
+    const repaired = await new AtomicStore(directory).read();
+    assert.equal(repaired.displayName, "First durable value");
+    assert.equal(repaired.language, "en");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("durable files never expose a partial destination and leave no temporary file", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-durable-file-"));
+  try {
+    const file = path.join(directory, "reports", "conversation.json");
+    await writeDurableFile(file, "first");
+    await writeDurableFile(file, Buffer.from("second"));
+    assert.equal(await readFile(file, "utf8"), "second");
+    const entries = await import("node:fs/promises").then(fs => fs.readdir(path.dirname(file)));
+    assert.deepEqual(entries, ["conversation.json"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
