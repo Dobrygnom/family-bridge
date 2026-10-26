@@ -1,4 +1,29 @@
-export type AgentId = "dima" | "katya";
+/**
+ * Opaque protocol-v1 participant tokens. Their serialized values are retained
+ * only so existing pairs and archives remain readable; they are roles, never
+ * participant names. All UI and prompts use the configured display names.
+ */
+export const PAIR_CREATOR_AGENT_ID = "dima" as const;
+export const PAIR_JOINER_AGENT_ID = "katya" as const;
+export const PAIR_AGENT_IDS = [PAIR_CREATOR_AGENT_ID, PAIR_JOINER_AGENT_ID] as const;
+export type AgentId = typeof PAIR_AGENT_IDS[number];
+export type PairRole = "creator" | "joiner";
+
+export function isAgentId(value: unknown): value is AgentId {
+  return value === PAIR_CREATOR_AGENT_ID || value === PAIR_JOINER_AGENT_ID;
+}
+
+export function agentIdForRole(role: PairRole): AgentId {
+  return role === "creator" ? PAIR_CREATOR_AGENT_ID : PAIR_JOINER_AGENT_ID;
+}
+
+export function roleForAgentId(id: AgentId): PairRole {
+  return id === PAIR_CREATOR_AGENT_ID ? "creator" : "joiner";
+}
+
+export function peerAgentId(id: AgentId): AgentId {
+  return id === PAIR_CREATOR_AGENT_ID ? PAIR_JOINER_AGENT_ID : PAIR_CREATOR_AGENT_ID;
+}
 
 export type ConversationStatus =
   | "proposing"

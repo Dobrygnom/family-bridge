@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentId } from "./types.js";
+import { isAgentId, type AgentId } from "./types.js";
 import { validPeerVersion } from "./peer-version.js";
 
 // The route is exchanged only inside the already encrypted per-pair support
@@ -20,7 +20,7 @@ export function validatePairRecovery(value: unknown): PairRecovery {
     || !uuid.test(r.creatorAuthId) || r.logicalPairId === r.transportPairId
     || r.version === 2 && (typeof r.previousTransportPairId !== "string" || !uuid.test(r.previousTransportPairId) || r.previousTransportPairId === r.transportPairId)
     || r.version === 1 && r.previousTransportPairId !== undefined
-    || !["dima", "katya"].includes(r.creatorAgent) || typeof r.inviteSecret !== "string" || r.inviteSecret.length < 32) {
+    || !isAgentId(r.creatorAgent) || typeof r.inviteSecret !== "string" || r.inviteSecret.length < 32) {
     throw new Error("Invalid pair recovery invitation");
   }
   return r;

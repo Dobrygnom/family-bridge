@@ -6,6 +6,7 @@ import type {
   ConversationReport,
   ConversationStatus,
 } from "./types.js";
+import { PAIR_CREATOR_AGENT_ID, PAIR_JOINER_AGENT_ID, peerAgentId } from "./types.js";
 import { InMemoryTransport } from "./transport.js";
 import { completionReadiness, conversationOpeningPrompt, MAX_REMOTE_MESSAGES, prematureCompletionInstruction, type TopicBrief } from "./conversation-quality.js";
 
@@ -27,11 +28,14 @@ export class ConversationCoordinator {
   private readonly initiatorName: string;
 
   constructor(
-    private readonly dima: AgentRuntime,
-    private readonly katya: AgentRuntime,
+    private readonly creatorAgent: AgentRuntime,
+    private readonly joinerAgent: AgentRuntime,
     private readonly transport = new InMemoryTransport(),
     options: CoordinatorOptions = {},
   ) {
+    if (creatorAgent.id !== PAIR_CREATOR_AGENT_ID || joinerAgent.id !== PAIR_JOINER_AGENT_ID) {
+      throw new Error("Conversation agents do not match their pair roles");
+    }
     this.maxTurns = options.maxTurns ?? MAX_REMOTE_MESSAGES;
     this.onEvent = options.onEvent ?? (() => undefined);
     this.initiatorName = options.initiatorName?.trim() || "владелец";
@@ -47,28 +51,28 @@ export class ConversationCoordinator {
     let turns = 0;
 
     this.onEvent({ type: "status", status });
-    const opening = await this.dima.start(conversationOpeningPrompt(this.initiatorName, topic, brief));
-    this.capture("dima", opening, reports, topicSet, (value) => {
+    const opening = await this.creatorAgent.start(conversationOpeningPrompt(this.initiatorName, topic, brief));
+    this.capture(PAIR_CREATOR_AGENT_ID, opening, reports, topicSet, (value) => {
       sharedSummary = value || sharedSummary;
     });
     this.transport.push(
       conversationId,
-      "dima",
-      "katya",
+      PAIR_CREATOR_AGENT_ID,
+      PAIR_JOINER_AGENT_ID,
       opening.message_to_peer,
       "handshake",
     );
     this.onEvent({
       type: "message",
-      from: "dima",
-      to: "katya",
+      from: PAIR_CREATOR_AGENT_ID,
+      to: PAIR_JOINER_AGENT_ID,
       text: opening.message_to_peer,
       turn: ++turns,
     });
 
     status = "active";
     this.onEvent({ type: "status", status });
-    let active: AgentRuntime = this.katya;
+    let active: AgentRuntime = this.joinerAgent;
 
     while (turns < this.maxTurns) {
       const message = this.transport.claim(conversationId, active.id);
@@ -76,7 +80,7 @@ export class ConversationCoordinator {
       let response: AgentResponse;
       try {
         response =
-          turns === 1 && active.id === "katya"
+          turns === 1 && active.id === PAIR_JOINER_AGENT_ID
             ? await active.start(message.payload)
             : await active.respond(message.payload);
         if (response.status === "complete") {
@@ -101,7 +105,7 @@ export class ConversationCoordinator {
       this.capture(active.id, response, reports, topicSet, (value) => {
         sharedSummary = value || sharedSummary;
       });
-      const recipient: AgentId = active.id === "dima" ? "katya" : "dima";
+      const recipient = peerAgentId(active.id);
       const kind = response.status === "complete" ? "completion" : "agent_message";
       this.transport.push(
         conversationId,
@@ -131,7 +135,7 @@ export class ConversationCoordinator {
         this.onEvent({ type: "status", status });
         break;
       }
-      active = active.id === "dima" ? this.katya : this.dima;
+      active = active.id === PAIR_CREATOR_AGENT_ID ? this.joinerAgent : this.creatorAgent;
     }
 
     if (status === "synthesizing") status = "completed";

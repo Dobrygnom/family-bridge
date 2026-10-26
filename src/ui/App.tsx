@@ -43,9 +43,10 @@ import { topicNeedsReview, topicRelevanceLabel } from "../core/topic-review.js";
 import { shareableTopicBrief, topicKey } from "../core/conversation-quality.js";
 import { clearRecoveredConnectionError } from "./connection-error.js";
 import { CODEX_MODELS, CODEX_REASONING_EFFORTS, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../core/codex-settings.js";
+import { PAIR_CREATOR_AGENT_ID } from "../core/types.js";
 
 const fallback: AppState = {
-  owner: "dima",
+  owner: PAIR_CREATOR_AGENT_ID,
   onboardingComplete: false,
   identityConfigured: false,
   conversationReplyMode: "automatic",

@@ -4,6 +4,7 @@ import type { Diagnostics } from "./diagnostics.js";
 import { powerEvents, runtimeStages } from "./runtime-diagnostics.js";
 import { sanitizeApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
 import { sanitizeReadingReceiptSnapshot, type ReadingReceiptSnapshot } from "../src/core/conversation-attention.js";
+import { isAgentId } from "../src/core/types.js";
 
 // This is a separate, stricter boundary than the LOCAL lifecycle log. Never
 // serialize local paths, arbitrary exception text or crash dumps. Application
@@ -113,7 +114,7 @@ export function sanitizeDialogueDiagnostics(value: unknown): DialogueDiagnostics
   if (!r || typeof r !== "object") return undefined;
   const identifier = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
   const safe: Fields = {};
-  if (["dima", "katya"].includes(r.owner)) safe.owner = r.owner;
+  if (isAgentId(r.owner)) safe.owner = r.owner;
   if (identifier(r.pairId)) safe.pairId = r.pairId;
   if (typeof r.peerVersion === "string" && /^\d+\.\d+\.\d+$/.test(r.peerVersion)) safe.peerVersion = r.peerVersion;
   if (typeof r.compatible === "boolean") safe.compatible = r.compatible;
@@ -121,7 +122,7 @@ export function sanitizeDialogueDiagnostics(value: unknown): DialogueDiagnostics
   for (const key of ["probeAgeMs", "received", "service", "dialogue", "staleService", "lastReceivedAt", "lastDialogueAt"])
     if (Number.isSafeInteger(r[key]) && r[key] >= 0) safe[key] = r[key];
   const repairs: Fields[] = (Array.isArray(r.repairs) ? r.repairs : []).slice(0,100).flatMap((row: any) => {
-    if (!row || !identifier(row.id) || !identifier(row.requestId) || !["dima", "katya"].includes(row.initiator)
+    if (!row || !identifier(row.id) || !identifier(row.requestId) || !isAgentId(row.initiator)
       || !["restarted", "peer", "starting", "waiting", "complete", "error", "active", "probe", "queued"].includes(row.reason)) return [];
     return [{ id: row.id, requestId: row.requestId, initiator: row.initiator, reason: row.reason }];
   });

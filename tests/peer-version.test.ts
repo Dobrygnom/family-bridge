@@ -29,7 +29,12 @@ async function fixture() {
   const transport = {
     pairState: async () => ({ id: "pair", owner_id: "one", partner_id: "two" }), identity: async () => "one",
     send: async (input: any) => { sent.push(input); return "sent"; },
-    claimNext: async () => incoming.shift() ?? null, acknowledge: async () => {},
+    claimNext: async () => {
+      const next = incoming.shift();
+      return next ? { pair_id: "pair", conversation_id: next.conversation_id ?? next.id, sequence_number: 1,
+        sender_agent: "katya", created_at: new Date().toISOString(), ...next } : null;
+    },
+    acknowledge: async () => {},
   };
   (service as any).remote = transport;
   (service as any).localRemoteAgent = () => assert.fail("Version exchange must never invoke an agent");

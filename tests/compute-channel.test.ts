@@ -104,6 +104,34 @@ test("encrypted compute invitations can be switched off and queued work complete
   } finally { host.dispose(); client.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("compute host rejects a request whose transport role contradicts its typed agent", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fb-compute-role-"));
+  const net = network();
+  let executions = 0;
+  const host = new ComputeChannelManager(path.join(directory, "host"), directory, net.factory, false, async () => {
+    executions += 1;
+    return { response: { message_to_peer: "must not run", status: "continue", owner_question: "", topics: [], private_report: "", shared_summary: "" } };
+  });
+  const client = new ComputeChannelManager(path.join(directory, "client"), directory, net.factory, false);
+  try {
+    await host.configureHost();
+    const invitation = await host.createInvitation("Role check");
+    await client.join(invitation.code);
+    const agent = client.createAgent("role-check", { id: "dima", displayName: "Owner", perspective: "Private context" });
+    const pending = assert.rejects(agent.start("Start"), /не смог обработать/);
+    for (let attempt = 0; attempt < 50 && !net.messages.some(item => item.key.endsWith(":request")); attempt += 1)
+      await new Promise(resolve => setTimeout(resolve, 10));
+    const request = net.messages.find(item => item.key.endsWith(":request"));
+    assert.ok(request);
+    request.sender_agent = "katya";
+    await host.state();
+    await client.state();
+    await pending;
+    assert.equal(executions, 0);
+    assert.equal(net.messages.find(item => item.key.endsWith(":response"))?.payload.code, "COMPUTE_INVALID");
+  } finally { host.dispose(); client.dispose(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("a trusted computer auto-accepts a durable encrypted enrollment without invitation codes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "fb-compute-enrollment-"));
   const net = network();

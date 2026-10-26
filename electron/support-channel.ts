@@ -6,6 +6,7 @@ import { generateSharedSecret } from "../src/core/encryption.js";
 import { durableAuthStorage } from "./auth-storage.js";
 import { replaceStateFile } from "./store.js";
 import type { SupportContext } from "./remote-support.js";
+import type { AgentId } from "../src/core/types.js";
 
 export interface SupportOffer { logicalPairId: string; creatorId: string; invite: PairingInvite }
 interface SavedChannel extends SupportOffer { creator: boolean }
@@ -27,7 +28,7 @@ export class SupportChannel {
   private working?: Promise<unknown>;
   constructor(private readonly root: string,
     private readonly makeTransport: (secret: string, storage: AuthStorage, preserve: boolean) => SupabaseTransport,
-    private readonly binding: () => Promise<{ pairId: string; owner: "dima" | "katya"; peerVersion?: string } | undefined>) {}
+    private readonly binding: () => Promise<{ pairId: string; owner: AgentId; peerVersion?: string } | undefined>) {}
 
   private serial<T>(run: () => Promise<T>): Promise<T> {
     const next = (this.working ?? Promise.resolve()).catch(() => undefined).then(run);

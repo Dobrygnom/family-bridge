@@ -8,7 +8,7 @@ import { replaceStateFile } from "./store.js";
 import { generateSharedSecret } from "../src/core/encryption.js";
 import { SupabaseTransport, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import { CodexCliAgent, defaultCodexCommand, type CodexRuntimeOptions } from "../src/core/codex-runtime.js";
-import type { AgentResponse, AgentRuntime } from "../src/core/types.js";
+import { PAIR_CREATOR_AGENT_ID, isAgentId, peerAgentId, type AgentId, type AgentResponse, type AgentRuntime } from "../src/core/types.js";
 import { isolatedCodexInvocation, codexTaskFailure } from "../src/core/codex-isolation.js";
 import { codexReasoningArgs } from "../src/core/codex-model.js";
 import {
@@ -39,7 +39,7 @@ interface ComputeRequest {
   sessionId?: string;
   prompt: string;
   agent?: {
-    id: "dima" | "katya";
+    id: AgentId;
     displayName: string;
     ownerName?: string;
     peerName?: string;
@@ -107,7 +107,7 @@ const validRequest = (value: unknown): value is ComputeRequest => {
     && (!item.sessionId || bounded(item.sessionId, 200))
     && (["structured", "persistent-structured"].includes(item.operation)
       ? ["new-topic", "topic-refinement", "portrait-updates", "intake-response", "context-analysis"].includes(String(item.schema)) && !item.agent
-      : item.agent && ["dima", "katya"].includes(item.agent.id)
+      : item.agent && isAgentId(item.agent.id)
         && bounded(item.agent.displayName, 80) && optionalBounded(item.agent.ownerName, 80) && optionalBounded(item.agent.peerName, 80)
         && bounded(item.agent.perspective, REQUEST_LIMIT) && optionalBounded(item.agent.communicationExamples, REQUEST_LIMIT)
         && (!item.agent.language || ["ru", "en", "cs", "fr"].includes(item.agent.language))));
@@ -523,7 +523,7 @@ export class ComputeChannelManager {
     let changed = false;
     for (const job of Object.values(jobs).filter(item => !item.response)) {
       if (!job.sent) {
-        await transport.send({ pairId: pair.id, conversationId: job.request.id, sequence: 1, recipientId: host, senderAgent: job.request.agent?.id ?? "dima", payload: job.request, idempotencyKey: `compute-v1:${job.request.id}:request` });
+        await transport.send({ pairId: pair.id, conversationId: job.request.id, sequence: 1, recipientId: host, senderAgent: job.request.agent?.id ?? PAIR_CREATOR_AGENT_ID, payload: job.request, idempotencyKey: `compute-v1:${job.request.id}:request` });
         job.sent = true; job.updatedAt = new Date().toISOString(); changed = true;
       }
       const rows = await transport.readConversation(pair.id, job.request.id);
@@ -554,8 +554,11 @@ export class ComputeChannelManager {
     const resultFile = path.join(this.channelDirectory(channel.channelId), "results", `${envelope.id}.json`);
     let saved = parseJson<SavedHostResult | undefined>(resultFile, undefined);
     if (saved?.retryAt && saved.retryAt > Date.now()) return;
+    const request = validRequest(envelope.payload) ? envelope.payload : undefined;
+    const requestAgent = request?.agent?.id ?? PAIR_CREATOR_AGENT_ID;
+    const validEnvelopeRole = envelope.sender_agent === requestAgent;
     if (!saved?.response) {
-      const response = validRequest(envelope.payload) ? await this.runRequest(channel, envelope.payload) : {
+      const response = request && validEnvelopeRole ? await this.runRequest(channel, request) : {
         protocol: 1 as const, type: "response" as const, requestId: (envelope.payload as { id?: string } | null)?.id ?? randomUUID(), outcome: "error" as const, code: "COMPUTE_INVALID" as const,
       };
       saved = response.code === "COMPUTE_LIMIT"
@@ -565,7 +568,7 @@ export class ComputeChannelManager {
     }
     if (!saved.response) return;
     await transport.send({ pairId: channel.invite.pairId, conversationId: saved.conversationId, sequence: 2, recipientId: saved.recipientId,
-      senderAgent: envelope.sender_agent === "dima" ? "katya" : "dima", payload: saved.response, idempotencyKey: `compute-v1:${saved.response.requestId}:response` });
+      senderAgent: peerAgentId(requestAgent), payload: saved.response, idempotencyKey: `compute-v1:${saved.response.requestId}:response` });
     await transport.acknowledge(envelope.id);
   }
 
@@ -647,7 +650,7 @@ export class ComputeChannelManager {
 }
 
 class RemoteComputeAgent implements AgentRuntime {
-  readonly id: "dima" | "katya";
+  readonly id: AgentId;
   private sessionId?: string;
   constructor(private readonly manager: ComputeChannelManager, private readonly conversationId: string,
     private readonly options: Omit<CodexRuntimeOptions, "workspace" | "schemaPath" | "codexCommand" | "model" | "reasoningEffort">) { this.id = options.id; }

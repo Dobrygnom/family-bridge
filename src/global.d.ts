@@ -1,4 +1,4 @@
-import type { ConversationReport } from "./core/types.js";
+import type { AgentId, ConversationReport } from "./core/types.js";
 import type { DictationResult } from "./core/dictation.js";
 import type { PeerVersionCheck } from "./core/peer-version.js";
 import type { LiveConversation } from "./core/conversation-updates.js";
@@ -8,7 +8,7 @@ import type { RoutedTopic } from "./core/context-analysis.js";
 
 export interface AppState {
   conversationReading?: import("./core/conversation-attention.js").ReadingState;
-  owner: "dima" | "katya";
+  owner: AgentId;
   onboardingComplete: boolean;
   identityConfigured: boolean;
   processingMode?: "local" | "trusted";

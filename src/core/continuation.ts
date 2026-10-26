@@ -1,10 +1,11 @@
 import { agentKnowledgeRules } from "./agent-context-rules.js";
+import { isAgentId, type AgentId } from "./types.js";
 
 export type MessageOrigin = "agent" | "continuation" | "owner-answer";
 export function messageOrigin(value: unknown): MessageOrigin | undefined {
   return value === "agent" || value === "continuation" || value === "owner-answer" ? value : undefined;
 }
-export type SharedMessage = { from: "dima" | "katya"; text: string; origin?: MessageOrigin; sentAt?: string };
+export type SharedMessage = { from: AgentId; text: string; origin?: MessageOrigin; sentAt?: string };
 
 export function messageSentAt(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -51,7 +52,7 @@ export function supportsContinuation(version: string | undefined) {
 export function sharedHistory(value: unknown): SharedMessage[] {
   if (!Array.isArray(value) || value.length > 500) throw new Error("Invalid conversation history");
   const result = value.map((item): SharedMessage => {
-    if (!item || !["dima", "katya"].includes(item.from) || typeof item.text !== "string" || !item.text.trim() || item.text.length > 30_000) throw new Error("Invalid conversation message");
+    if (!item || !isAgentId(item.from) || typeof item.text !== "string" || !item.text.trim() || item.text.length > 30_000) throw new Error("Invalid conversation message");
     return { from: item.from, text: item.text, ...(messageOrigin(item.origin) ? { origin: messageOrigin(item.origin) } : {}),
       ...(messageSentAt(item.sentAt ?? item.createdAt) ? { sentAt: messageSentAt(item.sentAt ?? item.createdAt) } : {}) };
   });

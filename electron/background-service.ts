@@ -19,7 +19,7 @@ import { MockAgent } from "../src/core/mock-runtime.js";
 import { SupabaseTransport, type AuthStorage, type PairingInvite, type RemoteEnvelope } from "../src/core/supabase-transport.js";
 import { durableAuthStorage } from "./auth-storage.js";
 import { droppedReply, isKnownLegacyReply } from "../src/core/legacy-reply.js";
-import type { AgentResponse, AgentRuntime, ConversationReport } from "../src/core/types.js";
+import { PAIR_CREATOR_AGENT_ID, PAIR_JOINER_AGENT_ID, isAgentId, peerAgentId, roleForAgentId, type AgentId, type AgentResponse, type AgentRuntime, type ConversationReport } from "../src/core/types.js";
 import { AtomicStore, replaceStateFile, writeDurableFile, type StoredState, type AppLanguage, type OwnerId, type OwnerQuestionDisposition, type PendingManualReply, type PendingOwnerQuestion, type TopicSource } from "./store.js";
 import { archiveConversationHistory } from "./history-archive.js";
 import { Diagnostics } from "./diagnostics.js";
@@ -411,9 +411,9 @@ export class BackgroundService {
     const peer = this.support.peerReport()?.dialogueDiagnostics;
     // Older reports can disagree about who opened the SAME conversation. If
     // both authenticated installations explicitly wait for the other, elect
-    // the pair's "dima" role once. Never rewrite the old history or race two
+    // the pair creator role once. Never rewrite the old history or race two
     // senders, and never infer this deadlock from a stale/offline report.
-    return state.owner === "dima" && peer?.owner === "katya" && peer.pairId === state.remote?.pairId && peer.compatible === true
+    return state.owner === PAIR_CREATOR_AGENT_ID && peer?.owner === PAIR_JOINER_AGENT_ID && peer.pairId === state.remote?.pairId && peer.compatible === true
       && peer.repairs.some(row => row.id === candidate.rootId && row.reason === "peer");
   }
   private async repairLegacyConversations() {
@@ -591,7 +591,7 @@ export class BackgroundService {
     const version = validPeerVersion(report.status.version), dialogue = report.dialogueDiagnostics;
     const observedAt = report.at;
     const receipt = sanitizeReadingReceiptSnapshot(report.readingReceipts);
-    if (!version || !dialogue?.pairId || !Number.isFinite(Date.parse(observedAt)) || dialogue.owner !== "dima" && dialogue.owner !== "katya") return;
+    if (!version || !dialogue?.pairId || !Number.isFinite(Date.parse(observedAt)) || !isAgentId(dialogue.owner)) return;
     let accepted = false;
     const next = await this.store.mutate(current => {
       if (!current.remote || current.remote.pairId !== dialogue.pairId || dialogue.owner === current.owner) return {};
@@ -611,7 +611,7 @@ export class BackgroundService {
   private async reconcilePeerApplication(diagnostic: ApplicationDiagnostics) {
     const state = await this.store.read();
     const peerOwner = diagnostic.identity.owner;
-    if (!state.remote || (peerOwner !== "dima" && peerOwner !== "katya") || peerOwner === state.owner) return;
+    if (!state.remote || !isAgentId(peerOwner) || peerOwner === state.owner) return;
     const completed = new Set(readReportSummaries(state.reports).map(report=>report.id));
     const reports: string[] = [];
     const reportParents: Record<string,string> = {};
@@ -632,7 +632,7 @@ export class BackgroundService {
     for(const raw of diagnostic.conversations){
       const conversation=raw as any;
       if(typeof conversation.id!=="string" || completed.has(conversation.id) || typeof conversation.topic!=="string" || conversation.topic.startsWith(VERSION_PROBE_PREFIX) || !Array.isArray(conversation.messages)) continue;
-      const messages=conversation.messages.flatMap((message:any)=>(message?.from==="dima"||message?.from==="katya")&&typeof message.text==="string"?[{from:message.from,text:message.text,...(message.origin?{origin:message.origin}:{}),...(message.sentAt?{sentAt:message.sentAt}:{})}]:[]);
+      const messages=conversation.messages.flatMap((message:any)=>isAgentId(message?.from)&&typeof message.text==="string"?[{from:message.from,text:message.text,...(message.origin?{origin:message.origin}:{}),...(message.sentAt?{sentAt:message.sentAt}:{})}]:[]);
       if(messages.length!==conversation.messages.length) continue;
       const local=state.conversationTranscripts[conversation.id]?.messages;
       if(local && (local.length>=messages.length || !local.every((message,index)=>message.from===messages[index].from&&message.text===messages[index].text))) continue;
@@ -707,7 +707,7 @@ export class BackgroundService {
     const raw = report.messages ?? [];
     if (messageIndex >= raw.length) throw new Error("Message index out of range");
     const messages = raw.map(message=>({ from:message.from as OwnerId, text:String(message.text??""), ...(messageOrigin(message.origin)?{origin:messageOrigin(message.origin)}:{}), ...(messageSentAt(message.sentAt)?{sentAt:messageSentAt(message.sentAt)}:{}) }));
-    if (messages.some(message=>!(["dima","katya"] as string[]).includes(message.from)||!message.text)) throw new Error("Conversation history is invalid");
+    if (messages.some(message=>!isAgentId(message.from)||!message.text)) throw new Error("Conversation history is invalid");
     const selected = messages[messageIndex], localSelected = selected.from === state.owner;
     const history = messages.slice(0, localSelected ? messageIndex : messageIndex + 1);
     const topic = report.topic || "Разговор агентов";
@@ -1572,7 +1572,7 @@ export class BackgroundService {
     const counterpartPersonId = this.requireCounterpartPerson(counterpartPersonIdValue);
     const transport = this.configureRemote("", false);
     const invite = await transport.createPair();
-    await this.store.update({ owner: "dima", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret, counterpartPersonId } });
+    await this.store.update({ owner: PAIR_CREATOR_AGENT_ID, remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, inviteSecret: invite.inviteSecret, counterpartPersonId } });
     this.configureRemote(invite.encryptionSecret);
     await this.activateContextTopics(counterpartPersonId);
     return this.state();
@@ -1585,7 +1585,7 @@ export class BackgroundService {
     const invite = JSON.parse(Buffer.from(encoded.trim(), "base64url").toString("utf8")) as PairingInvite & { participantName?: string; appVersion?: string };
     const transport = this.configureRemote(invite.encryptionSecret, false);
     await transport.joinPair(invite);
-    await this.store.update({ owner: "katya", remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, peerName: invite.participantName?.trim() || undefined, peerVersion: invite.appVersion?.trim() || undefined, counterpartPersonId } });
+    await this.store.update({ owner: PAIR_JOINER_AGENT_ID, remote: { pairId: invite.pairId, encryptionSecret: invite.encryptionSecret, peerName: invite.participantName?.trim() || undefined, peerVersion: invite.appVersion?.trim() || undefined, counterpartPersonId } });
     await this.activateContextTopics(counterpartPersonId);
     return this.state();
   }
@@ -1858,7 +1858,7 @@ export class BackgroundService {
     await this.persistTranscript(conversationId, topic, messages);
     const next = await this.store.mutate(current=>({topicLaunches:{...current.topicLaunches,[conversationId]:{...current.topicLaunches[conversationId],status:current.topicLaunches[conversationId].status === "complete" ? "complete" : "waiting"}}, activeTopics:mergeTopicCatalog(current.activeTopics,[topic])}));
     this.emitTopicState(next);
-    this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text, turn: 1 });
+    this.emit({ type: "message", from: stored.owner, to: peerAgentId(stored.owner), text, turn: 1 });
     } catch (error) {
       const failureCode = supportErrorCode(error);
       const retryAt = Date.now() + (failureCode === "CODEX_USAGE_LIMIT" || failureCode === "COMPUTE_PENDING" ? 15 * 60_000 : 60_000);
@@ -2253,6 +2253,19 @@ export class BackgroundService {
         return;
       }
       envelope = { ...envelope, payload };
+      // The transport authenticates the two devices, while sender_agent is an
+      // application-level role carried inside each row. Validate both layers
+      // before accepting even metadata-only messages so a paired device cannot
+      // impersonate this installation's role or poison the durable retry queue.
+      if (envelope.sender_agent !== peerAgentId(stored.owner)) {
+        await this.store.mutate(current => ({ quarantinedDeliveries: Object.fromEntries([
+          ...Object.entries(current.quarantinedDeliveries),
+          [envelope.id, { envelope, code: "INVALID_PROTOCOL" as const, failedAt: new Date().toISOString() }],
+        ].slice(-100)) }));
+        this.diagnostics.record("dialogue.invalid-peer-role");
+        await this.remote.acknowledge(envelope.id);
+        return;
+      }
       // Service messages must not depend on onboarding, topics, or an LLM.
       if (envelope.payload.topic.startsWith(VERSION_PROBE_PREFIX) || envelope.payload.kind === "topic" && envelope.payload.versionOnly) {
         this.inboxProgress.service++;
@@ -2389,6 +2402,8 @@ export class BackgroundService {
       if (!this.remote) throw new Error("Нет соединения. Разговор сохранён для повторной отправки.");
       const stored = await this.store.read();
       if (!stored.remote || envelope.pair_id !== stored.remote.pairId) return;
+      const peerRole = peerAgentId(stored.owner);
+      if (envelope.sender_agent !== peerRole) throw new Error("Invalid peer role");
       const pair = await this.remote.pairState(stored.remote.pairId);
       if (!pair.partner_id) throw new Error("Собеседник ещё не подключён");
       const peerName = envelope.payload.senderName?.trim() || stored.remote.peerName;
@@ -2441,7 +2456,7 @@ export class BackgroundService {
         ?? currentTopics.conversationTranscripts[envelope.conversation_id]?.messages.map((message) => ({ ...message }))
         ?? inherited;
       const delivery = currentTopics.incomingDeliveries[envelope.id];
-      const incomingMessage:SharedMessage = { from: envelope.sender_agent as "dima" | "katya", text: dialogue.text,
+      const incomingMessage:SharedMessage = { from: peerRole, text: dialogue.text,
         ...(messageOrigin(dialogue.origin) ? { origin: messageOrigin(dialogue.origin) } : {}),
         sentAt: messageSentAt(dialogue.sentAt) ?? messageSentAt(envelope.created_at) };
       // An explicit peer diagnostic can reconcile the durable transcript just
@@ -2461,7 +2476,7 @@ export class BackgroundService {
         incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...current.incomingDeliveries[envelope.id], envelope, received: true } },
       }));
       this.publishConversations(receivedState);
-      this.emit({ type: "message", from: envelope.sender_agent as "dima" | "katya", to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
+      this.emit({ type: "message", from: peerRole, to: stored.owner, text: dialogue.text, turn: envelope.sequence_number });
       const replyMode = (await this.store.read()).conversationReplyMode;
       if (replyMode === "manual") {
         await this.queueManualReply({
@@ -2521,7 +2536,7 @@ export class BackgroundService {
         incomingDeliveries: { ...current.incomingDeliveries, [envelope.id]: { ...current.incomingDeliveries[envelope.id], envelope, responseSentAt: sentAt, responseSent: true } },
       }));
       this.publishConversations(sentState);
-      this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: sequence });
+      this.emit({ type: "message", from: stored.owner, to: peerAgentId(stored.owner), text: response.message_to_peer, turn: sequence });
       if (response.status === "complete") await this.saveRemoteReport(envelope.conversation_id, dialogue.topic, response.shared_summary, messages, { answerFrom: stored.displayName, answerFromOwnerId: stored.owner, comparisonSummary: response.comparison_summary });
   }
 
@@ -2642,7 +2657,7 @@ export class BackgroundService {
     });
     this.remoteMessages.set(pending.conversationId, saved.conversationTranscripts[pending.conversationId]?.messages ?? pending.transcript);
     this.publishConversations(saved);
-    this.emit({ type: "message", from: owner, to: owner === "dima" ? "katya" : "dima", text: pending.text!, turn: pending.nextSequence });
+    this.emit({ type: "message", from: owner, to: peerAgentId(owner), text: pending.text!, turn: pending.nextSequence });
     return this.state();
   }
 
@@ -2798,7 +2813,7 @@ export class BackgroundService {
       const pendingOwnerQuestions = stored.pendingOwnerQuestions.filter((item) => item.id !== id);
       await this.store.update({ pendingOwnerQuestions });
       this.emit({ type: "owner-questions", questions: this.publicOwnerQuestions(pendingOwnerQuestions) });
-      this.emit({ type: "message", from: stored.owner, to: stored.owner === "dima" ? "katya" : "dima", text: response.message_to_peer, turn: pending.nextSequence });
+      this.emit({ type: "message", from: stored.owner, to: peerAgentId(stored.owner), text: response.message_to_peer, turn: pending.nextSequence });
       if (response.status === "complete") await this.saveRemoteReport(pending.conversationId, pending.topic, response.shared_summary, messages, { answerFrom: stored.displayName, answerFromOwnerId: stored.owner, comparisonSummary: response.comparison_summary });
       return this.state();
     } finally {
@@ -2993,11 +3008,11 @@ export class BackgroundService {
     this.running = true;
     this.emit({ type: "status", status: "agenda_negotiation" });
     try {
-      const [dima, katya] = realCodex ? this.codexAgents(state) : this.mockAgents(state.language);
-      const coordinator = new ConversationCoordinator(dima, katya, undefined, {
+      const [creatorAgent, joinerAgent] = realCodex ? this.codexAgents(state) : this.mockAgents(state.language);
+      const coordinator = new ConversationCoordinator(creatorAgent, joinerAgent, undefined, {
         maxTurns: 8,
         onEvent: (event) => this.emit(event),
-        initiatorName: state.owner === "dima" ? state.displayName : state.remote?.peerName,
+        initiatorName: state.owner === PAIR_CREATOR_AGENT_ID ? state.displayName : state.remote?.peerName,
       });
       const report = await coordinator.run(topic);
       const reportsDir = path.join(this.userData, "reports");
@@ -3157,11 +3172,19 @@ export class BackgroundService {
     const schemaPath = path.join(this.resourcesPath, "schemas", "agent-response.schema.json");
     const root = path.join(this.userData, "agents");
     const command = defaultCodexCommand();
-    const firstName = (state.owner === "dima" ? state.displayName : state.remote?.peerName)?.trim() || "первый участник";
-    const secondName = (state.owner === "katya" ? state.displayName : state.remote?.peerName)?.trim() || "второй участник";
+    const workspaceFor = (id: AgentId) => {
+      const neutral = path.join(root, roleForAgentId(id));
+      const legacy = path.join(root, id);
+      // New installations use semantic role directories. Existing sessions
+      // keep their old location so an architectural cleanup never loses or
+      // silently forks a resumable Codex conversation.
+      return existsSync(neutral) || !existsSync(legacy) ? neutral : legacy;
+    };
+    const firstName = (state.owner === PAIR_CREATOR_AGENT_ID ? state.displayName : state.remote?.peerName)?.trim() || "первый участник";
+    const secondName = (state.owner === PAIR_JOINER_AGENT_ID ? state.displayName : state.remote?.peerName)?.trim() || "второй участник";
     return [
       new CodexCliAgent({
-        id: "dima",
+        id: PAIR_CREATOR_AGENT_ID,
         displayName: firstName,
         ownerName: firstName,
         peerName: secondName,
@@ -3169,12 +3192,12 @@ export class BackgroundService {
         language: state.language,
         model: codexExecutionModel(state.codexModel ?? DEFAULT_CODEX_MODEL),
         reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
-        workspace: path.join(root, "dima"),
+        workspace: workspaceFor(PAIR_CREATOR_AGENT_ID),
         schemaPath,
         codexCommand: command,
       }),
       new CodexCliAgent({
-        id: "katya",
+        id: PAIR_JOINER_AGENT_ID,
         displayName: secondName,
         ownerName: secondName,
         peerName: firstName,
@@ -3182,7 +3205,7 @@ export class BackgroundService {
         language: state.language,
         model: codexExecutionModel(state.codexModel ?? DEFAULT_CODEX_MODEL),
         reasoningEffort: state.codexReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
-        workspace: path.join(root, "katya"),
+        workspace: workspaceFor(PAIR_JOINER_AGENT_ID),
         schemaPath,
         codexCommand: command,
       }),
@@ -3238,11 +3261,11 @@ export class BackgroundService {
       ],
     }[language];
     return [
-      new MockAgent("dima", [
+      new MockAgent(PAIR_CREATOR_AGENT_ID, [
         make(dialogue[0], "continue"),
         make(dialogue[1], "complete", dialogue[4], dialogue[6]),
       ]),
-      new MockAgent("katya", [
+      new MockAgent(PAIR_JOINER_AGENT_ID, [
         make(dialogue[2], "continue"),
         make(dialogue[3], "complete", dialogue[5], dialogue[6]),
       ]),

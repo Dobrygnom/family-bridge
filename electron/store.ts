@@ -5,13 +5,14 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
 import type { RemoteEnvelope } from "../src/core/supabase-transport.js";
-import type { AgentResponse } from "../src/core/types.js";
+import { PAIR_CREATOR_AGENT_ID, type AgentId, type AgentResponse } from "../src/core/types.js";
 import type { MessageOrigin, SharedMessage } from "../src/core/continuation.js";
 import type { PairRecovery } from "../src/core/pair-recovery.js";
 import type { CodexModel, CodexReasoningEffort } from "../src/core/codex-settings.js";
 import type { ReadingReceiptSnapshot, ReadingState } from "../src/core/conversation-attention.js";
 
-export type OwnerId = "dima" | "katya";
+/** @deprecated Use AgentId in new contracts; kept as a state-schema alias. */
+export type OwnerId = AgentId;
 export type AppLanguage = "ru" | "en" | "cs" | "fr";
 export type OwnerQuestionDisposition = "answer" | "unknown" | "decline";
 export type TopicSource = "local" | "peer" | "unknown";
@@ -128,7 +129,7 @@ export interface StoredState {
 
 const defaults: StoredState = {
   topicLaunches: {},
-  owner: "dima",
+  owner: PAIR_CREATOR_AGENT_ID,
   onboardingComplete: false,
   identityConfigured: false,
   displayName: "",

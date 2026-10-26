@@ -83,6 +83,21 @@ test("malformed authenticated payload is acknowledged into a bounded local quara
   } finally { await f.cleanup(); }
 });
 
+test("a paired device cannot impersonate the local participant role", async () => {
+  const f = await fixture(); const acknowledged: string[] = [];
+  try {
+    f.transport.acknowledge = async (id: string) => { acknowledged.push(id); };
+    f.queue.push({ ...envelope("wrong-role"), sender_agent: "dima" });
+    await (f.service as any).pumpRemote();
+    const stored = await f.store.read();
+    assert.deepEqual(acknowledged, ["wrong-role"]);
+    assert.equal(stored.quarantinedDeliveries["wrong-role"].code, "INVALID_PROTOCOL");
+    assert.deepEqual(stored.incomingDeliveries, {});
+    assert.deepEqual(stored.conversationTranscripts, {});
+    assert.equal(f.sent.length, 0);
+  } finally { await f.cleanup(); }
+});
+
 test("failed sending survives restart and redelivery without duplicate generation or transcript", async () => {
   const f = await fixture();
   let generations = 0;

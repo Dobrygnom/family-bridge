@@ -42,6 +42,8 @@ Conversation reports are durable before their path is committed into state.
 
 Deep application diagnostics are a separate, explicit capability. The local authenticated control endpoint exposes `GET /local/application-diagnostics`; the encrypted peer support lane requests the same contract through `POST /peer/diagnostics`. It contains analyzed, pending, in-flight and active topics; prepared launches and messages; owner questions; conversation state; continuations; delivery/quarantine state; reports; and consistency invariants.
 
+Participant display names are configuration, not identity. Protocol logic uses neutral creator/joiner roles. The two historical protocol-v1 role tokens are isolated in one compatibility module so existing pairs and archives remain readable; production logic and future wire formats must not embed a couple's names. Every inbound row is accepted only when both its paired device identity and its expected peer role match. A mismatched role is durably quarantined and acknowledged without entering model execution or a retry loop.
+
 Storage recovery is part of that contract. `storage.recovery` identifies whether
 the previous generation was used because the primary was missing or invalid,
 whether invalid bytes were preserved, and whether the primary was repaired. The
