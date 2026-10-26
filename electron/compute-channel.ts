@@ -143,7 +143,8 @@ function parseInvitation(code: unknown): ComputeInvitation {
 export class ComputeChannelManager {
   private settings: ComputeSettings;
   private timer?: NodeJS.Timeout;
-  private working = false;
+  private tickPromise?: Promise<void>;
+  private tickRequested = false;
   private transports = new Map<string, SupabaseTransport>();
   private subscriptions = new Map<string, () => Promise<unknown>>();
   private clientWaiters = new Map<string, Array<(response: ComputeResponse) => void>>();
@@ -443,20 +444,26 @@ export class ComputeChannelManager {
   }
 
   private async tick() {
-    if (this.working) return;
-    this.working = true;
-    try {
-      if (this.settings.providerConfigured) await this.syncProviderRegistration(this.settings.mode === "host").catch(() => undefined);
-      if (this.settings.mode === "host") {
-        await this.pollEnrollments().catch(() => undefined);
-        await Promise.allSettled(this.settings.channels.filter(item => item.enabled).map(channel => this.pollHost(channel)));
-      }
-      if (this.settings.mode === "client") {
-        if (!this.settings.client?.enabled && this.settings.enrollment) await this.pollEnrollmentRequest();
-        if (this.settings.client?.enabled) await this.pollClient(this.settings.client);
-      }
-    } catch { /* Offline and sleeping computers are expected. */ }
-    finally { this.working = false; }
+    this.tickRequested = true;
+    if (this.tickPromise) return this.tickPromise;
+    this.tickPromise = (async () => {
+      do {
+        this.tickRequested = false;
+        try {
+          if (this.settings.providerConfigured) await this.syncProviderRegistration(this.settings.mode === "host").catch(() => undefined);
+          if (this.settings.mode === "host") {
+            await this.pollEnrollments().catch(() => undefined);
+            await Promise.allSettled(this.settings.channels.filter(item => item.enabled).map(channel => this.pollHost(channel)));
+          }
+          if (this.settings.mode === "client") {
+            if (!this.settings.client?.enabled && this.settings.enrollment) await this.pollEnrollmentRequest();
+            if (this.settings.client?.enabled) await this.pollClient(this.settings.client);
+          }
+        } catch { /* Offline and sleeping computers are expected. */ }
+      } while (this.tickRequested);
+    })();
+    try { await this.tickPromise; }
+    finally { this.tickPromise = undefined; }
   }
 
   private async syncProviderRegistration(enabled: boolean) {

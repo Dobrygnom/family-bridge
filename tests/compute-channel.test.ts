@@ -15,6 +15,7 @@ function network() {
   const enrollments: any[] = [];
   let enrollmentReadFailures = 0;
   let enrollmentDecisionFailures = 0;
+  let blockedConversationRead: Promise<void> | undefined;
   const factory = (secret: string, storage: AuthStorage, preserve: boolean): SupabaseTransport => {
     const identity = async () => {
       let id = await storage.getItem("identity");
@@ -41,7 +42,14 @@ function network() {
       send: async (input: any) => { let row = messages.find(item => item.key === input.idempotencyKey); if (!row) { row = { id: randomUUID(), key: input.idempotencyKey, pair_id: input.pairId, conversation_id: input.conversationId, sequence_number: input.sequence, sender_id: await identity(), recipient_id: input.recipientId, sender_agent: input.senderAgent, payload: input.payload, status: "pending", created_at: new Date().toISOString() }; messages.push(row); } return row.id; },
       claimNext: async (pairId: string) => { const me = await identity(); const row = messages.find(item => item.pair_id === pairId && item.recipient_id === me && item.status === "pending"); if (row) row.status = "claimed"; return row ?? null; },
       readClaimedReceived: async (pairId: string) => { const me = await identity(); return messages.find(item => item.pair_id === pairId && item.recipient_id === me && item.status === "claimed") ?? null; },
-      readConversation: async (pairId: string, conversationId: string) => messages.filter(item => item.pair_id === pairId && item.conversation_id === conversationId),
+      readConversation: async (pairId: string, conversationId: string) => {
+        if (blockedConversationRead) {
+          const blocked = blockedConversationRead;
+          blockedConversationRead = undefined;
+          await blocked;
+        }
+        return messages.filter(item => item.pair_id === pairId && item.conversation_id === conversationId);
+      },
       acknowledge: async (id: string) => { const row = messages.find(item => item.id === id); if (row) row.status = "processed"; },
       subscribe: () => async () => undefined,
       dispose: () => {},
@@ -53,6 +61,11 @@ function network() {
     enrollments,
     failNextEnrollmentRead: () => { enrollmentReadFailures += 1; },
     failNextEnrollmentDecision: () => { enrollmentDecisionFailures += 1; },
+    pauseNextConversationRead: () => {
+      let release!: () => void;
+      blockedConversationRead = new Promise<void>(resolve => { release = resolve; });
+      return release;
+    },
   };
 }
 
@@ -71,10 +84,13 @@ test("encrypted compute invitations can be switched off and queued work complete
     assert.equal((await host.state()).channels[0].connected, true);
     assert.equal((await client.state()).mode, "client");
     const agent = client.createAgent("conversation-1", { id: "dima", displayName: "Анна", ownerName: "Анна", peerName: "Борис", perspective: "Только переданный текст", language: "ru" });
+    const releaseConversationRead = net.pauseNextConversationRead();
     const pending = agent.start("Начни разговор");
     for (let attempt = 0; attempt < 50 && !net.messages.some(item => item.key.endsWith(":request")); attempt += 1) await new Promise(resolve => setTimeout(resolve, 10));
     await (host as any).tick();
-    await (client as any).tick();
+    const overlappingTick = (client as any).tick();
+    releaseConversationRead();
+    await overlappingTick;
     assert.deepEqual(await pending, answer);
     assert.equal(net.messages.filter(item => item.key.endsWith(":request")).length, 1);
     assert.equal(net.messages.filter(item => item.key.endsWith(":response")).length, 1);
