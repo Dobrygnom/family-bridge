@@ -108,6 +108,27 @@ test("failed sending survives restart and redelivery without duplicate generatio
   } finally { await f.cleanup(); }
 });
 
+test("a later recovered turn supersedes an obsolete historical reply instead of retrying a sequence conflict forever", async () => {
+  const f = await fixture();
+  try {
+    const first = { ...envelope("historical-3"), sequence_number: 3, historicalDelivery: true };
+    const later = { ...envelope("historical-4"), sequence_number: 4, historicalDelivery: true,
+      payload: { ...envelope().payload, text: "Later correction", status: "complete" } };
+    await f.store.update({ incomingDeliveries: {
+      [first.id]: { envelope: first },
+      [later.id]: { envelope: later },
+    } as any });
+    (f.service as any).localRemoteAgent = () => ({ start: async () => reply("Obsolete answer") });
+    f.transport.send = async () => { throw Object.assign(new Error("duplicate sequence"), { code: "23505" }); };
+    await (f.service as any).drainRemoteInbox();
+    const stored = await f.store.read();
+    assert.equal(stored.incomingDeliveries[first.id], undefined);
+    assert.ok(stored.incomingDeliveries[later.id]);
+    assert.ok(stored.completedIncoming.includes(first.id));
+    assert.equal(f.sent.length, 0);
+  } finally { await f.cleanup(); }
+});
+
 test("slow model does not block version probes or another conversation", async () => {
   const f = await fixture();
   let finish: ((value: ReturnType<typeof reply>) => void) | undefined;

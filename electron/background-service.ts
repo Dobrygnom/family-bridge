@@ -2330,6 +2330,21 @@ export class BackgroundService {
           this.incomingRetryAt.delete(envelope.id);
         } catch (error) {
           const code = supportErrorCode(error);
+          const latest = await this.store.read();
+          const supersededHistoricalReply = code === "23505" && Boolean(envelope.historicalDelivery)
+            && Object.values(latest.incomingDeliveries).some(candidate => candidate.envelope.conversation_id === envelope.conversation_id
+              && candidate.envelope.sequence_number > envelope.sequence_number);
+          if (supersededHistoricalReply) {
+            await this.store.mutate(current => {
+              const incomingDeliveries = { ...current.incomingDeliveries };
+              delete incomingDeliveries[envelope.id];
+              return { incomingDeliveries, completedIncoming: [...current.completedIncoming, envelope.id].slice(-2000) };
+            });
+            this.incomingRetryAt.delete(envelope.id);
+            this.remoteAgents.delete(envelope.conversation_id);
+            this.diagnostics.record("dialogue.historical_reply_superseded");
+            return;
+          }
           const failed = await this.store.mutate(current => {
             const previous = current.incomingDeliveries[envelope.id];
             if (!previous) return {};
