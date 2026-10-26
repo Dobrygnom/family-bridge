@@ -16,13 +16,16 @@ test("application diagnostics expose prepared app state but never source chat or
   const analysis = { analysisVersion: 5, sourceId: "SOURCE_CHAT_ID", sourceHash: "SOURCE_CHAT_HASH", analyzedAt: new Date().toISOString(), status: "ready" as const,
     people: [], topics: [{ id: "topic", title: "Неотправленная тема", aboutPersonIds: [], discussWithPersonId: "dima", sensitivity: "direct" as const,
       reason: "Почему тема создана", approved: true }] };
-  const diagnostics = buildApplicationDiagnostics(state, analysis, [], undefined, { usedPrevious:true, reason:"invalid-primary", recoveredAt:"2026-10-26T10:00:00.000Z", repairedAt:"2026-10-26T10:00:01.000Z", invalidPrimaryPreserved:true });
+  const diagnostics = buildApplicationDiagnostics(state, analysis, [], undefined, { usedPrevious:true, reason:"invalid-primary", recoveredAt:"2026-10-26T10:00:00.000Z", repairedAt:"2026-10-26T10:00:01.000Z", invalidPrimaryPreserved:true },
+    { available:true, createdAt:"2026-10-26T09:59:00.000Z", sourceVersion:"2.1.19", reports:2, files:4, reconciled:true });
   assert.equal(diagnostics.topics[0].pending, true);
   assert.equal(diagnostics.topicLaunches[0].preparedMessage, "Подготовленный текст");
   assert.equal(diagnostics.uiErrors.currentlyVisible, false);
   assert.equal(diagnostics.conversationReplyMode, "manual");
   assert.deepEqual(diagnostics.reading?.local?.stages.stage, [[0, 0]]);
   assert.equal(diagnostics.storage?.recovery?.reason, "invalid-primary");
+  assert.equal(diagnostics.storage?.checkpoint?.sourceVersion, "2.1.19");
+  assert.equal(diagnostics.storage?.checkpoint?.reconciled, true);
   assert.equal(diagnostics.invariants.find(item => item.name === "state-primary-recovered")?.ok, true);
   assert.ok(diagnostics.invariants.every(item => item.ok));
   const json = JSON.stringify(diagnostics);
@@ -51,4 +54,27 @@ test("missing historical parents are valid, but a cycle in conversation parents 
   assert.equal(visible.invariants.find(item => item.name === "conversation-parents-acyclic")?.ok, true);
   const cyclic = buildApplicationDiagnostics({ ...base, conversationTranscripts: {}, conversationParents: { a: "b", b: "a" } }, undefined, []);
   assert.equal(cyclic.invariants.find(item => item.name === "conversation-parents-acyclic")?.ok, false);
+});
+
+test("application diagnostics detect invalid participant roles in every resumable message queue", () => {
+  const base = { owner: "dima", displayName: "Дима", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true, conversationReplyMode: "manual" as const,
+    pendingTopics: [], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [], topicSources: {}, topicBriefs: {}, reports: [], topicLaunches: {},
+    pendingOwnerQuestions: [], pendingManualReplies: [], conversationTranscripts: {}, conversationInheritedCounts: {}, continuations: {}, conversationParents: {}, conversationModes: {},
+    incomingDeliveries: {}, quarantinedDeliveries: {}, completedIncoming: [], ignoredConversationIds: [] } satisfies StoredState;
+  const valid = buildApplicationDiagnostics({ ...base, conversationTranscripts: { valid: { topic: "T", messages: [{ from: "katya", text: "ok" }] } } }, undefined, []);
+  assert.equal(valid.invariants.find(item => item.name === "conversation-message-roles-valid")?.ok, true);
+
+  const invalid = buildApplicationDiagnostics({
+    ...base,
+    conversationTranscripts: { broken: { topic: "T", messages: [{ from: "unknown" as never, text: "bad" }] } },
+    pendingOwnerQuestions: [{ id: "question", conversationId: "c", topic: "T", question: "?", createdAt: "now", nextSequence: 1, transcript: [{ from: "unknown" as never, text: "bad" }] }],
+    pendingManualReplies: [{ id: "reply", conversationId: "c", topic: "T", createdAt: "now", nextSequence: 1, transcript: [{ from: "unknown" as never, text: "bad" }] }],
+    continuations: { continuation: { parentReportId: "p", topic: "T", pairId: "pair", instruction: "continue", history: [{ from: "unknown" as never, text: "bad" }], status: "waiting" } },
+  }, undefined, []);
+  const invariant = invalid.invariants.find(item => item.name === "conversation-message-roles-valid");
+  assert.equal(invariant?.ok, false);
+  assert.match(invariant?.details ?? "", /conversation:broken/);
+  assert.match(invariant?.details ?? "", /owner-question:question/);
+  assert.match(invariant?.details ?? "", /manual-reply:reply/);
+  assert.match(invariant?.details ?? "", /continuation:continuation/);
 });

@@ -82,6 +82,64 @@ test("a corrupted primary state recovers the previous durable generation", async
   }
 });
 
+test("an invalid saved participant role recovers the previous durable generation", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-role-recovery-"));
+  try {
+    const file = path.join(directory, "state.json");
+    const store = new AtomicStore(directory);
+    await store.update({ identityConfigured: true, displayName: "Durable identity" });
+    await store.update({ language: "cs" });
+    const invalid = JSON.parse(await readFile(file, "utf8"));
+    invalid.owner = "unexpected-person";
+    await writeFile(file, JSON.stringify(invalid));
+
+    const restarted = new AtomicStore(directory);
+    const recovered = await restarted.read();
+    assert.equal(recovered.owner, "dima");
+    assert.equal(recovered.displayName, "Durable identity");
+    assert.equal(recovered.language, "ru");
+    assert.equal(restarted.recoveryStatus()?.reason, "invalid-primary");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an invalid saved state container or transcript recovers instead of crashing the app", async () => {
+  for (const corruption of [
+    { conversationTranscripts: null },
+    { conversationTranscripts: { broken: { topic: "T", messages: [{ from: "unknown", text: "bad" }] } } },
+  ]) {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-shape-recovery-"));
+    try {
+      const file = path.join(directory, "state.json");
+      const store = new AtomicStore(directory);
+      await store.update({ identityConfigured: true, displayName: "Durable identity" });
+      await store.update({ language: "cs" });
+      const invalid = { ...JSON.parse(await readFile(file, "utf8")), ...corruption };
+      await writeFile(file, JSON.stringify(invalid));
+      const restarted = new AtomicStore(directory);
+      const recovered = await restarted.read();
+      assert.equal(recovered.displayName, "Durable identity");
+      assert.deepEqual(recovered.conversationTranscripts, {});
+      assert.equal(restarted.recoveryStatus()?.reason, "invalid-primary");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an invalid participant role is rejected before it can be persisted", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-role-write-"));
+  try {
+    const store = new AtomicStore(directory);
+    await assert.rejects(store.update({ owner: "unexpected-person" as never }), /Invalid saved participant role/);
+    const state = await new AtomicStore(directory).read();
+    assert.equal(state.owner, "dima");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("durable files never expose a partial destination and leave no temporary file", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-durable-file-"));
   try {

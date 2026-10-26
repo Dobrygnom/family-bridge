@@ -2,6 +2,8 @@ import type { ContextAnalysis } from "../src/core/context-analysis.js";
 import type { StoredState, StoreRecoveryStatus } from "./store.js";
 import type { UiErrorSnapshot } from "./ui-error-diagnostics.js";
 import { readingReceiptSnapshot } from "../src/core/conversation-attention.js";
+import { isAgentId } from "../src/core/types.js";
+import type { UpdateCheckpointDiagnostics } from "./update-checkpoint.js";
 
 export interface ApplicationDiagnostics {
   schema: 1; at: string;
@@ -18,11 +20,11 @@ export interface ApplicationDiagnostics {
   reports: Array<Record<string, unknown>>;
   uiErrors: UiErrorSnapshot;
   reading?: { local?: ReturnType<typeof readingReceiptSnapshot>; peer?: StoredState["peerConversationReading"] };
-  storage?: { recovery?: StoreRecoveryStatus };
+  storage?: { recovery?: StoreRecoveryStatus; checkpoint?: UpdateCheckpointDiagnostics };
   invariants: Array<{ name: string; ok: boolean; details?: string }>;
 }
 
-export function buildApplicationDiagnostics(state: StoredState, analysis: ContextAnalysis | undefined, reports: Array<Record<string, unknown>>, uiErrors: UiErrorSnapshot = { schema:1, totalShown:0, currentlyVisible:false, visibleCount:0, recent:[] }, storageRecovery?: StoreRecoveryStatus): ApplicationDiagnostics {
+export function buildApplicationDiagnostics(state: StoredState, analysis: ContextAnalysis | undefined, reports: Array<Record<string, unknown>>, uiErrors: UiErrorSnapshot = { schema:1, totalShown:0, currentlyVisible:false, visibleCount:0, recent:[] }, storageRecovery?: StoreRecoveryStatus, checkpoint?: UpdateCheckpointDiagnostics): ApplicationDiagnostics {
   const topicNames = new Set([...state.pendingTopics, ...state.inFlightTopics, ...state.pairTopics, ...state.activeTopics,
     ...Object.values(state.topicLaunches).map(job => job.topic), ...(analysis?.topics ?? []).map(topic => topic.title)]);
   const topics = [...topicNames].map(title => {
@@ -51,16 +53,23 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
     }
     return false;
   });
+  const invalidMessageRoles = [
+    ...Object.entries(state.conversationTranscripts).filter(([, transcript]) => transcript.messages.some(message => !isAgentId(message.from))).map(([id]) => `conversation:${id}`),
+    ...state.pendingOwnerQuestions.filter(question => question.transcript.some(message => !isAgentId(message.from))).map(question => `owner-question:${question.id}`),
+    ...state.pendingManualReplies.filter(reply => reply.transcript.some(message => !isAgentId(message.from))).map(reply => `manual-reply:${reply.id}`),
+    ...Object.entries(state.continuations).filter(([, continuation]) => continuation.history.some(message => !isAgentId(message.from))).map(([id]) => `continuation:${id}`),
+  ].slice(0, 20);
   return { schema:1, at:new Date().toISOString(), conversationReplyMode:state.conversationReplyMode, identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions, manualReplies,
     conversations, continuations, deliveries, quarantined, reports, uiErrors,
     reading: { ...(readingReceiptSnapshot(state.conversationReading) ? { local: readingReceiptSnapshot(state.conversationReading) } : {}), ...(state.peerConversationReading ? { peer: state.peerConversationReading } : {}) },
-    storage: { ...(storageRecovery ? { recovery: storageRecovery } : {}) },
+    storage: { ...(storageRecovery ? { recovery: storageRecovery } : {}), ...(checkpoint ? { checkpoint } : {}) },
     invariants:[
       { name:"state-primary-recovered", ok:!storageRecovery || Boolean(storageRecovery.repairedAt), ...(storageRecovery && !storageRecovery.repairedAt ? {details:storageRecovery.reason} : {}) },
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },
       { name:"conversation-parents-acyclic", ok:cyclicParents.length===0, ...(cyclicParents.length ? {details:cyclicParents.join(" | ")} : {}) },
       { name:"no-duplicate-delivery-id", ok:new Set([...Object.keys(state.incomingDeliveries),...Object.keys(state.quarantinedDeliveries)]).size === Object.keys(state.incomingDeliveries).length + Object.keys(state.quarantinedDeliveries).length },
+      { name:"conversation-message-roles-valid", ok:invalidMessageRoles.length===0, ...(invalidMessageRoles.length ? {details:invalidMessageRoles.join(" | ")} : {}) },
     ] };
 }
 

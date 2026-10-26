@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TopicBrief } from "../src/core/conversation-quality.js";
 import type { RemoteEnvelope } from "../src/core/supabase-transport.js";
-import { PAIR_CREATOR_AGENT_ID, type AgentId, type AgentResponse } from "../src/core/types.js";
+import { isAgentId, PAIR_CREATOR_AGENT_ID, type AgentId, type AgentResponse } from "../src/core/types.js";
 import type { MessageOrigin, SharedMessage } from "../src/core/continuation.js";
 import type { PairRecovery } from "../src/core/pair-recovery.js";
 import type { CodexModel, CodexReasoningEffort } from "../src/core/codex-settings.js";
@@ -159,6 +159,32 @@ const defaults: StoredState = {
   completedIncoming: [],
 };
 
+const plainRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
+const savedArrayKeys = ["pendingTopics", "inFlightTopics", "pairTopics", "activeTopics", "blockedTopics", "reports", "pendingOwnerQuestions", "pendingManualReplies", "ignoredConversationIds", "completedIncoming"] as const;
+const savedRecordKeys = ["topicLaunches", "topicSources", "topicBriefs", "conversationTranscripts", "conversationInheritedCounts", "continuations", "conversationParents", "conversationModes", "incomingDeliveries", "quarantinedDeliveries"] as const;
+const validSharedMessages = (value: unknown) => Array.isArray(value) && value.every(message => plainRecord(message) && isAgentId(message.from) && typeof message.text === "string");
+
+function validateSavedStateShape(record: Record<string, unknown>) {
+  for (const key of savedArrayKeys) if (record[key] !== undefined && !Array.isArray(record[key])) throw new Error(`Invalid saved state field: ${key}`);
+  for (const key of savedRecordKeys) if (record[key] !== undefined && !plainRecord(record[key])) throw new Error(`Invalid saved state field: ${key}`);
+  for (const key of ["onboardingComplete", "identityConfigured", "autoStart"] as const) if (record[key] !== undefined && typeof record[key] !== "boolean") throw new Error(`Invalid saved state field: ${key}`);
+  if (record.displayName !== undefined && typeof record.displayName !== "string") throw new Error("Invalid saved display name");
+  if (record.language !== undefined && !["ru", "en", "cs", "fr"].includes(String(record.language))) throw new Error("Invalid saved language");
+  if (record.conversationReplyMode !== undefined && !["automatic", "manual"].includes(String(record.conversationReplyMode))) throw new Error("Invalid saved reply mode");
+  if (record.remote !== undefined && !plainRecord(record.remote)) throw new Error("Invalid saved pairing");
+  if (plainRecord(record.remote) && (typeof record.remote.pairId !== "string" || typeof record.remote.encryptionSecret !== "string")) throw new Error("Invalid saved pairing");
+  if (record.peerConversationReading !== undefined && (!plainRecord(record.peerConversationReading) || !isAgentId(record.peerConversationReading.owner))) throw new Error("Invalid saved peer reading receipt");
+  for (const transcript of Object.values(plainRecord(record.conversationTranscripts) ? record.conversationTranscripts : {})) {
+    if (!plainRecord(transcript) || typeof transcript.topic !== "string" || !validSharedMessages(transcript.messages)) throw new Error("Invalid saved conversation transcript");
+  }
+  for (const queue of [record.pendingOwnerQuestions, record.pendingManualReplies]) if (Array.isArray(queue)) for (const item of queue) {
+    if (!plainRecord(item) || typeof item.id !== "string" || typeof item.conversationId !== "string" || !validSharedMessages(item.transcript)) throw new Error("Invalid saved reply queue");
+  }
+  for (const continuation of Object.values(plainRecord(record.continuations) ? record.continuations : {})) {
+    if (!plainRecord(continuation) || !validSharedMessages(continuation.history)) throw new Error("Invalid saved continuation");
+  }
+}
+
 export async function replaceStateFile(temporary: string, destination: string) {
   // writeFile() only hands bytes to the operating system. Flush the completed
   // temporary file before it becomes authoritative so a successful mutation
@@ -232,6 +258,9 @@ export class AtomicStore {
   private normalize(value: unknown): StoredState {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved state");
     const record = value as Partial<StoredState>;
+    validateSavedStateShape(record as unknown as Record<string, unknown>);
+    const owner = record.owner === undefined ? defaults.owner : record.owner;
+    if (!isAgentId(owner)) throw new Error("Invalid saved participant role");
     const ownerQuestions = Array.isArray(record.pendingOwnerQuestions) ? record.pendingOwnerQuestions : [];
     const savedManual = Array.isArray(record.pendingManualReplies) ? record.pendingManualReplies : [];
     const legacyManual = ownerQuestions.filter((item) => item?.manualReply === true).map((item): PendingManualReply => ({
@@ -246,7 +275,7 @@ export class AtomicStore {
       sentAt: item.preparedSentAt,
     }));
     const manualByConversation = new Map([...legacyManual, ...savedManual].map((item) => [item.conversationId, item]));
-    return { ...defaults, ...record,
+    return { ...defaults, ...record, owner,
       pendingOwnerQuestions: ownerQuestions.filter((item) => item?.manualReply !== true),
       pendingManualReplies: [...manualByConversation.values()],
     } as StoredState;
@@ -281,7 +310,7 @@ export class AtomicStore {
   mutate(update: (current: StoredState) => Partial<StoredState>): Promise<StoredState> {
     const operation = this.pending.then(async () => {
       const current = await this.readSnapshot();
-      const next = { ...current, ...update(current) };
+      const next = this.normalize({ ...current, ...update(current) });
       await mkdir(path.dirname(this.file), { recursive: true });
       const nextText = JSON.stringify(next, null, 2);
       const backup = `${this.file}.previous`;

@@ -35,8 +35,14 @@ local application diagnostics and in an authenticated explicit peer diagnostic;
 the lifecycle log retains metadata-only recovery and repair events.
 
 Update checkpoints use the same durable-file primitive for the state snapshot,
-manifest and every report copy before the checkpoint directory becomes visible.
-Conversation reports are durable before their path is committed into state.
+manifest, every report copy and every independent context/intake file before the
+checkpoint directory becomes visible. The manifest carries a checksum for each
+file. On the first launch after an update, missing reports, pending topics,
+manual drafts, continuations, incoming deliveries, pairing state and missing or
+corrupt context files are reconciled without replacing valid newer files. The
+checkpoint is then durably marked as consumed, so a later intentional deletion
+cannot be resurrected on every launch. Conversation reports are durable before
+their path is committed into state.
 
 ## Diagnostic API
 
@@ -48,6 +54,11 @@ Storage recovery is part of that contract. `storage.recovery` identifies whether
 the previous generation was used because the primary was missing or invalid,
 whether invalid bytes were preserved, and whether the primary was repaired. The
 `state-primary-recovered` invariant stays failed until repair has completed.
+The same section reports the newest verified update checkpoint, its source
+version, counts and one-time reconciliation state without exposing paths or
+contents. `conversation-message-roles-valid` checks every resumable transcript,
+manual queue and continuation; invalid saved roles trigger generation recovery
+at the storage boundary before ordinary work begins.
 
 Conversation maintenance is a separate bounded command lane in 1.2.44+. It can delete one exact conversation ID or branch a completed conversation from one exact message index. Delete writes a tombstone before removing the report so delayed packets cannot recreate it. Restart retains the original report, assigns a new idempotent conversation ID, preserves the selected prefix and resumes over the ordinary encrypted dialogue transport. Both actions write metadata-only audit receipts and expose no UI controls.
 

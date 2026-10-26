@@ -44,7 +44,7 @@ import { SupportChannel } from "./support-channel.js";
 import { sanitizeSupportReport, supportEvents, supportErrorCode, type SupportReport } from "./support-report.js";
 import { bridgeWirePayload, DIALOGUE_PROTOCOL_VERSION, type DialoguePayload, type TopicPayload } from "../src/core/dialogue-protocol.js";
 import { buildApplicationDiagnostics, type ApplicationDiagnostics } from "./application-diagnostics.js";
-import { createUpdateCheckpoint, recoverMissingCheckpointData } from "./update-checkpoint.js";
+import { completeUpdateCheckpointRecovery, createUpdateCheckpoint, recoverMissingCheckpointData, updateCheckpointDiagnostics } from "./update-checkpoint.js";
 import { CODEX_MODELS, CODEX_REASONING_EFFORTS, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, codexExecutionModel, supportsCodexConfig, type CodexModel, type CodexReasoningEffort } from "../src/core/codex-settings.js";
 import { prepareManualContext } from "../src/core/manual-context.js";
 import { ComputeChannelManager } from "./compute-channel.js";
@@ -584,7 +584,7 @@ export class BackgroundService {
   async applicationDiagnostics() {
     const state = await this.store.read();
     const reports = readReportSummaries(state.reports, { localOwnerId:state.owner, localName:state.displayName || "Вы", peerName:state.remote?.peerName || "Партнёр", topicSources:state.topicSources });
-    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.(), this.store.recoveryStatus());
+    return buildApplicationDiagnostics(state, this.readContextAnalysis(), reports as unknown as Array<Record<string, unknown>>, await this.options.uiDiagnostics?.(), this.store.recoveryStatus(), await updateCheckpointDiagnostics(this.userData));
   }
 
   private async persistPeerObservation(report: SupportReport) {
@@ -1362,9 +1362,10 @@ export class BackgroundService {
     const storageRecovery = this.store.recoveryStatus();
     if (storageRecovery) this.diagnostics.record("storage.state-recovered", { recovered:true, recoveryReason:storageRecovery.reason, preserved:Boolean(storageRecovery.invalidPrimaryPreserved) });
     const recovered = await recoverMissingCheckpointData(this.userData, initialState);
-    if (Object.keys(recovered).length) {
-      await this.store.update(recovered);
-      this.diagnostics.record("update.checkpoint-reconciled");
+    if (Object.keys(recovered.state).length) await this.store.update(recovered.state);
+    if (recovered.checkpointRoot) {
+      await completeUpdateCheckpointRecovery(recovered.checkpointRoot, this.options.appVersion ?? "development");
+      this.diagnostics.record("update.checkpoint-reconciled", { current:Object.keys(recovered.state).length, total:recovered.restoredFiles.length });
     }
     if (storageRecovery) {
       if (!this.store.recoveryStatus()?.repairedAt) await this.store.repairRecoveredState();
