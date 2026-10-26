@@ -113,7 +113,7 @@ test("a later recovered turn supersedes an obsolete historical reply instead of 
   try {
     const first = { ...envelope("historical-3"), sequence_number: 3, historicalDelivery: true };
     const later = { ...envelope("historical-4"), sequence_number: 4, historicalDelivery: true,
-      payload: { ...envelope().payload, text: "Later correction", status: "complete" } };
+      payload: { ...envelope().payload, text: "Later correction is the final agreement.", status: "complete", sharedSummary: "The later correction completes the agreement." } };
     await f.store.update({ incomingDeliveries: {
       [first.id]: { envelope: first },
       [later.id]: { envelope: later },
@@ -123,8 +123,9 @@ test("a later recovered turn supersedes an obsolete historical reply instead of 
     await (f.service as any).drainRemoteInbox();
     const stored = await f.store.read();
     assert.equal(stored.incomingDeliveries[first.id], undefined);
-    assert.ok(stored.incomingDeliveries[later.id]);
+    assert.equal(stored.incomingDeliveries[later.id], undefined);
     assert.ok(stored.completedIncoming.includes(first.id));
+    assert.ok(stored.completedIncoming.includes(later.id));
     assert.equal(f.sent.length, 0);
   } finally { await f.cleanup(); }
 });

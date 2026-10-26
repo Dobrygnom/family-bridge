@@ -2365,6 +2365,10 @@ export class BackgroundService {
       work.push(task);
     }
     await Promise.all(work);
+    // A recovered conversation can contain consecutive historical turns. Once
+    // the head is completed or safely superseded, drain its successor now
+    // instead of waiting for the five-minute transport fallback.
+    if (work.length && Object.keys((await this.store.read()).incomingDeliveries).length) return this.drainRemoteInbox();
   }
 
   private async processIncomingDialogue(envelope: RemoteEnvelope<DialoguePayload>) {
