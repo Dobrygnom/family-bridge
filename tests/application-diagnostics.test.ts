@@ -78,3 +78,14 @@ test("application diagnostics detect invalid participant roles in every resumabl
   assert.match(invariant?.details ?? "", /manual-reply:reply/);
   assert.match(invariant?.details ?? "", /continuation:continuation/);
 });
+
+test("application diagnostics expose duplicate completed conversation ids", () => {
+  const state = { owner: "dima", displayName: "Дима", language: "ru", onboardingComplete: true, identityConfigured: true, autoStart: true, conversationReplyMode: "manual" as const,
+    pendingTopics: [], inFlightTopics: [], pairTopics: [], activeTopics: [], blockedTopics: [], topicSources: {}, topicBriefs: {}, reports: [], topicLaunches: {},
+    pendingOwnerQuestions: [], pendingManualReplies: [], conversationTranscripts: {}, conversationInheritedCounts: {}, continuations: {}, conversationParents: {}, conversationModes: {},
+    incomingDeliveries: {}, quarantinedDeliveries: {}, completedIncoming: [], ignoredConversationIds: [] } satisfies StoredState;
+  const diagnostics = buildApplicationDiagnostics(state, undefined, [{ id:"same-conversation" }, { id:"same-conversation" }]);
+  const invariant = diagnostics.invariants.find(item => item.name === "unique-report-conversation-id");
+  assert.equal(invariant?.ok, false);
+  assert.equal(invariant?.details, "same-conversation");
+});

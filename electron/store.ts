@@ -166,6 +166,7 @@ const validSharedMessages = (value: unknown) => Array.isArray(value) && value.ev
 
 function validateSavedStateShape(record: Record<string, unknown>) {
   for (const key of savedArrayKeys) if (record[key] !== undefined && !Array.isArray(record[key])) throw new Error(`Invalid saved state field: ${key}`);
+  if (Array.isArray(record.reports) && !record.reports.every(item => typeof item === "string" && item.trim())) throw new Error("Invalid saved report index");
   for (const key of savedRecordKeys) if (record[key] !== undefined && !plainRecord(record[key])) throw new Error(`Invalid saved state field: ${key}`);
   for (const key of ["onboardingComplete", "identityConfigured", "autoStart"] as const) if (record[key] !== undefined && typeof record[key] !== "boolean") throw new Error(`Invalid saved state field: ${key}`);
   if (record.displayName !== undefined && typeof record.displayName !== "string") throw new Error("Invalid saved display name");

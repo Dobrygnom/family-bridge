@@ -255,6 +255,32 @@ export function readReportSummaries(reportPaths: string[], names: { localOwnerId
   });
 }
 
+function reportConversationId(reportPath: string) {
+  try {
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as { conversationId?: unknown };
+    return typeof report.conversationId === "string" && report.conversationId.trim() ? report.conversationId.trim() : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * State is an index of report files, not the archive itself. A recovered report may
+ * have a different filename, but a conversation must appear in that index once.
+ * Keep the first reference (callers put the preferred/newest copy first) and leave
+ * every underlying file untouched as recovery evidence.
+ */
+export function deduplicateReportReferences(reportPaths: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const reportPath of reportPaths) {
+    const conversationId = reportConversationId(reportPath);
+    const key = conversationId ? `conversation:${conversationId}` : `file:${path.resolve(reportPath).toLocaleLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(reportPath);
+  }
+  return result;
+}
+
 export class BackgroundService {
   private readonly updateActivity = new UpdateActivity();
   private updating = false;
@@ -642,7 +668,7 @@ export class BackgroundService {
       if(Number.isInteger(conversation.inheritedMessageCount)) inherited[conversation.id]=conversation.inheritedMessageCount;
     }
     if(!reports.length&&!Object.keys(transcripts).length)return;
-    await this.store.mutate(current=>({reports:[...reports.filter(file=>!current.reports.includes(file)),...current.reports],conversationTranscripts:{...current.conversationTranscripts,...transcripts},conversationParents:{...current.conversationParents,...reportParents,...parents},conversationModes:{...current.conversationModes,...modes},conversationInheritedCounts:{...current.conversationInheritedCounts,...inherited}}));
+    await this.store.mutate(current=>({reports:deduplicateReportReferences([...reports,...current.reports]),conversationTranscripts:{...current.conversationTranscripts,...transcripts},conversationParents:{...current.conversationParents,...reportParents,...parents},conversationModes:{...current.conversationModes,...modes},conversationInheritedCounts:{...current.conversationInheritedCounts,...inherited}}));
     this.diagnostics.record("conversation.peer-reconciled",{reports:reports.length,current:Object.keys(transcripts).length});
   }
 
@@ -1375,6 +1401,12 @@ export class BackgroundService {
     // The durable peer report may be newer than legacy fields in state.json.
     // Reconcile it before any renderer can observe the startup state.
     await this.support.loadDurableState();
+    await this.store.mutate(current => {
+      const reports = deduplicateReportReferences(current.reports);
+      if (reports.length === current.reports.length && reports.every((report, index) => report === current.reports[index])) return {};
+      this.diagnostics.record("conversation.report-index-repaired", { total:current.reports.length, current:reports.length });
+      return { reports };
+    });
     await archiveConversationHistory(this.userData, await this.store.read(), this.options.appVersion ?? "development");
     this.diagnostics.record("conversation.history-archived");
     let { state } = await this.resetExperienceOnce();
@@ -2852,7 +2884,7 @@ export class BackgroundService {
       completedAt,
     }, null, 2));
     const next = await this.store.mutate((current) => ({
-      reports: [reportPath, ...current.reports],
+      reports: deduplicateReportReferences([reportPath, ...current.reports]),
       topicLaunches: current.topicLaunches[conversationId] ? { ...current.topicLaunches, [conversationId]: { ...current.topicLaunches[conversationId], status: "complete" } } : current.topicLaunches,
       pendingTopics: current.pendingTopics.filter((item) => item !== topic),
       pairTopics: mergeTopicCatalog(current.pairTopics, [topic]),
@@ -3021,7 +3053,7 @@ export class BackgroundService {
       const reportPath = path.join(reportsDir, `${report.completedAt.replace(/[:.]/g, "-")}.json`);
       await writeDurableFile(reportPath, JSON.stringify(report, null, 2));
       const next = await this.store.update({
-        reports: [reportPath, ...state.reports].slice(0, 100),
+        reports: deduplicateReportReferences([reportPath, ...state.reports]).slice(0, 100),
         pendingTopics: state.pendingTopics.filter((item) => item !== topic),
         pairTopics: mergeTopicCatalog(state.pairTopics, [topic]),
         topicSources: markTopicSource(state.topicSources, topic, "local"),

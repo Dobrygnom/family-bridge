@@ -59,6 +59,8 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
     ...state.pendingManualReplies.filter(reply => reply.transcript.some(message => !isAgentId(message.from))).map(reply => `manual-reply:${reply.id}`),
     ...Object.entries(state.continuations).filter(([, continuation]) => continuation.history.some(message => !isAgentId(message.from))).map(([id]) => `continuation:${id}`),
   ].slice(0, 20);
+  const reportIds = reports.flatMap(report => typeof report.id === "string" && report.id.trim() ? [report.id.trim()] : []);
+  const duplicateReportIds = [...new Set(reportIds.filter((id, index) => reportIds.indexOf(id) !== index))].slice(0, 20);
   return { schema:1, at:new Date().toISOString(), conversationReplyMode:state.conversationReplyMode, identity:{ owner:state.owner, displayName:state.displayName, peerName:state.remote?.peerName,
     peerVersion:state.remote?.peerVersion, counterpartPersonId:state.remote?.counterpartPersonId }, topics, topicLaunches, ownerQuestions, manualReplies,
     conversations, continuations, deliveries, quarantined, reports, uiErrors,
@@ -69,6 +71,7 @@ export function buildApplicationDiagnostics(state: StoredState, analysis: Contex
       { name:"one-active-launch-per-topic", ok:duplicateLaunches.length===0, ...(duplicateLaunches.length ? {details:duplicateLaunches.join(" | ")} : {}) },
       { name:"conversation-parents-acyclic", ok:cyclicParents.length===0, ...(cyclicParents.length ? {details:cyclicParents.join(" | ")} : {}) },
       { name:"no-duplicate-delivery-id", ok:new Set([...Object.keys(state.incomingDeliveries),...Object.keys(state.quarantinedDeliveries)]).size === Object.keys(state.incomingDeliveries).length + Object.keys(state.quarantinedDeliveries).length },
+      { name:"unique-report-conversation-id", ok:duplicateReportIds.length===0, ...(duplicateReportIds.length ? {details:duplicateReportIds.join(" | ")} : {}) },
       { name:"conversation-message-roles-valid", ok:invalidMessageRoles.length===0, ...(invalidMessageRoles.length ? {details:invalidMessageRoles.join(" | ")} : {}) },
     ] };
 }

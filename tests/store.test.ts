@@ -108,6 +108,7 @@ test("an invalid saved state container or transcript recovers instead of crashin
   for (const corruption of [
     { conversationTranscripts: null },
     { conversationTranscripts: { broken: { topic: "T", messages: [{ from: "unknown", text: "bad" }] } } },
+    { reports: [{ conversationId: "must-be-a-file-reference" }] },
   ]) {
     const directory = await mkdtemp(path.join(os.tmpdir(), "family-bridge-store-shape-recovery-"));
     try {

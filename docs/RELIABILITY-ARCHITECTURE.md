@@ -44,6 +44,15 @@ checkpoint is then durably marked as consumed, so a later intentional deletion
 cannot be resurrected on every launch. Conversation reports are durable before
 their path is committed into state.
 
+Completed report files form an append-only recovery archive; application state
+contains a separate active index. That index is keyed by the stable conversation
+ID inside each report, never by filename, because checkpoint or peer recovery may
+legitimately create another physical copy. Startup repairs the index before the
+renderer can observe it, every report-producing path applies the same rule, and
+the preferred first reference wins. Duplicate references are removed only from
+the index: all report files remain on disk as recovery evidence. Deep diagnostics
+exposes `unique-report-conversation-id` without revealing paths or message text.
+
 ## Diagnostic API
 
 Deep application diagnostics are a separate, explicit capability. The local authenticated control endpoint exposes `GET /local/application-diagnostics`; the encrypted peer support lane requests the same contract through `POST /peer/diagnostics`. It contains analyzed, pending, in-flight and active topics; prepared launches and messages; owner questions; conversation state; continuations; delivery/quarantine state; reports; and consistency invariants.

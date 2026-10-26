@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BackgroundService, readReportSummaries } from "../electron/background-service.js";
+import { BackgroundService, deduplicateReportReferences, readReportSummaries } from "../electron/background-service.js";
 import { AtomicStore } from "../electron/store.js";
 import { continuationPrompt, incomingContinuationPrompt, sharedHistory, supportsContinuation, supportsRestart } from "../src/core/continuation.js";
 import type { AgentResponse } from "../src/core/types.js";
@@ -76,6 +76,18 @@ test("peer reconciliation restores a missing completed report and a longer live 
     assert.equal(state.conversationTranscripts["peer-live"].messages.length,3);
     assert.equal(state.conversationParents["peer-live"],"peer-report");
     assert.equal(f.sent.length,0,"reconciliation stores data but never sends dialogue");
+  } finally { await rm(f.dir,{recursive:true,force:true}); }
+});
+
+test("report index keeps one reference per conversation while preserving the archive files", async () => {
+  const f=await fixture();
+  try {
+    const duplicate=path.join(f.dir,"reports","same-conversation-recovered.json");
+    await writeFile(duplicate,JSON.stringify({conversationId:"original-id",topic:"Звонки",sharedSummary:"Восстановлено",messages:[{from:"dima",text:"Новее"}],completedAt:"2026-09-02T00:00:00Z"}));
+    const unique=deduplicateReportReferences([duplicate,f.report]);
+    assert.deepEqual(unique,[duplicate]);
+    assert.match(await readFile(duplicate,"utf8"),/Восстановлено/);
+    assert.match(await readFile(f.report,"utf8"),/original-id/);
   } finally { await rm(f.dir,{recursive:true,force:true}); }
 });
 
