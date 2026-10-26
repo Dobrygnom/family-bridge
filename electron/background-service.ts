@@ -2305,7 +2305,7 @@ export class BackgroundService {
       this.diagnostics.record("dialogue.received");
   }
 
-  private async drainRemoteInbox() {
+  private async drainRemoteInbox(): Promise<void> {
     if (this.updating) return;
     const stored = await this.store.read();
     if (this.updating) return;
@@ -2368,7 +2368,7 @@ export class BackgroundService {
     // A recovered conversation can contain consecutive historical turns. Once
     // the head is completed or safely superseded, drain its successor now
     // instead of waiting for the five-minute transport fallback.
-    if (work.length && Object.keys((await this.store.read()).incomingDeliveries).length) return this.drainRemoteInbox();
+    if (work.length && Object.keys((await this.store.read()).incomingDeliveries).length) await this.drainRemoteInbox();
   }
 
   private async processIncomingDialogue(envelope: RemoteEnvelope<DialoguePayload>) {
