@@ -20,8 +20,12 @@ import { errorMessage } from "../src/core/error-message.js";
 import { supportErrorCode } from "./support-report.js";
 import { UiErrorDiagnostics } from "./ui-error-diagnostics.js";
 import { loginItemSettings, shouldLaunchHidden } from "../src/core/auto-start.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { isWindowsInstallerParent } from "../src/core/windows-update-handoff.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 const { autoUpdater } = electronUpdater;
 process.stdout?.on("error", () => undefined);
 process.stderr?.on("error", () => undefined);
@@ -225,14 +229,21 @@ app.whenReady().then(async () => {
   if (process.platform === "win32" && process.argv.includes("--updated")) {
     const installerPid = process.ppid;
     app.releaseSingleInstanceLock();
-    const installerGoneBy = Date.now() + 60_000;
-    while (Date.now() < installerGoneBy) {
-      try { process.kill(installerPid, 0); }
-      catch { break; }
-      await new Promise(resolve => setTimeout(resolve, 1_000));
+    let installerParent = false;
+    try {
+      const { stdout } = await execFileAsync("tasklist.exe", ["/FI", `PID eq ${installerPid}`, "/FO", "CSV", "/NH"], { windowsHide: true, timeout: 5_000 });
+      installerParent = isWindowsInstallerParent(stdout);
+    } catch { /* An unknown parent gets only the settle delay, never a one-minute startup stall. */ }
+    if (installerParent) {
+      const installerGoneBy = Date.now() + 60_000;
+      while (Date.now() < installerGoneBy) {
+        try { process.kill(installerPid, 0); }
+        catch { break; }
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+      }
     }
-    await new Promise(resolve => setTimeout(resolve, 5_000));
-    await shell.openPath(process.execPath);
+    await new Promise(resolve => setTimeout(resolve, installerParent ? 5_000 : 500));
+    await Promise.race([shell.openPath(process.execPath), new Promise(resolve => setTimeout(resolve, 5_000))]);
     await new Promise(resolve => setTimeout(resolve, 3_000));
     app.exit(0);
     return;
