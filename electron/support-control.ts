@@ -17,7 +17,7 @@ export function supportLocatorFiles(userData: string) {
     path.join(os.tmpdir(), `family-bridge-support-${key}.json`)];
 }
 /** Local operator access without Electron Inspector or a second profile writer. */
-export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; applicationDiagnostics?: () => unknown; readStatus?: () => unknown; update: () => unknown; refreshContext?: () => unknown; setReplyMode?: (mode: unknown) => unknown; continueConversation?: (input: unknown) => unknown; maintenance?: (command:SupportMaintenanceCommand)=>Promise<unknown> }): Promise<Server> {
+export async function startSupportControl(userData: string, support: RemoteSupport, local?: { diagnostics: () => unknown; applicationDiagnostics?: () => unknown; readStatus?: () => unknown; checkUpdate?: () => unknown; forceUpdate?: () => unknown; update: () => unknown; refreshContext?: () => unknown; setReplyMode?: (mode: unknown) => unknown; continueConversation?: (input: unknown) => unknown; maintenance?: (command:SupportMaintenanceCommand)=>Promise<unknown> }): Promise<Server> {
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   const server = createServer((req, res) => {
@@ -31,6 +31,8 @@ export async function startSupportControl(userData: string, support: RemoteSuppo
       if (local && req.method === "GET" && req.url === "/local/diagnostics") return local.diagnostics();
       if (local?.applicationDiagnostics && req.method === "GET" && req.url === "/local/application-diagnostics") return local.applicationDiagnostics();
       if (local?.readStatus && req.method === "GET" && req.url === "/local/read-status") return local.readStatus();
+      if (local?.checkUpdate && req.method === "POST" && req.url === "/local/check-update") return local.checkUpdate();
+      if (local?.forceUpdate && req.method === "POST" && req.url === "/local/force-update") return local.forceUpdate();
       if (local && req.method === "POST" && req.url === "/local/update") return local.update();
       if (local?.refreshContext && req.method === "POST" && req.url === "/local/refresh-context") return local.refreshContext();
       if (local?.setReplyMode && req.method === "POST" && req.url === "/local/reply-mode") return local.setReplyMode((await jsonBody(req) as { mode?: unknown }).mode);

@@ -4,10 +4,10 @@ import os from "node:os";
 import { supportLocatorFiles } from "../electron/support-control.js";
 
 const [command = "status", ...args] = process.argv.slice(2);
-const commands = { "reply-mode": ["POST", "/local/reply-mode"], "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "application-diagnostics": ["GET", "/local/application-diagnostics"], "read-status": ["GET", "/local/read-status"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], "peer-diagnostics": ["POST", "/peer/diagnostics"], update: ["POST", "/peer/update"], recover: ["POST", "/peer/recover"] } as const;
+const commands = { "reply-mode": ["POST", "/local/reply-mode"], "refresh-context": ["POST", "/local/refresh-context"], diagnostics: ["GET", "/local/diagnostics"], "application-diagnostics": ["GET", "/local/application-diagnostics"], "read-status": ["GET", "/local/read-status"], "check-update": ["POST", "/local/check-update"], "force-update": ["POST", "/local/force-update"], "install-update": ["POST", "/local/update"], "local-update": ["POST", "/local/update"], status: ["GET", "/status"], snapshot: ["POST", "/peer/snapshot"], "peer-diagnostics": ["POST", "/peer/diagnostics"], update: ["POST", "/peer/update"], recover: ["POST", "/peer/recover"] } as const;
 const replyMode = command === "reply-mode" ? args[0] : undefined;
 const profileArg = command === "reply-mode" ? args[1] : args[0];
-if (!(command in commands) || command === "reply-mode" && !["automatic", "manual"].includes(replyMode ?? "") || args.length > (command === "reply-mode" ? 2 : 1)) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts reply-mode automatic|manual [profile-directory] | status|diagnostics|application-diagnostics|read-status|local-update|refresh-context|snapshot|peer-diagnostics|update|recover [profile-directory]");
+if (!(command in commands) || command === "reply-mode" && !["automatic", "manual"].includes(replyMode ?? "") || args.length > (command === "reply-mode" ? 2 : 1)) throw new Error("Usage: node --import tsx scripts/family-bridge-support.ts reply-mode automatic|manual [profile-directory] | status|diagnostics|application-diagnostics|read-status|check-update|force-update|install-update|refresh-context|snapshot|peer-diagnostics|update|recover [profile-directory]");
 const profile = profileArg || (process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "family-bridge")
   : process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "family-bridge") : path.join(os.homedir(), ".config", "family-bridge"));
 let success = false;
@@ -18,7 +18,7 @@ for (const file of supportLocatorFiles(profile)) {
   // Authenticate the discovered process with a read before sending a command.
   const headers = { Authorization: `Bearer ${locator.token}` };
   try {
-    const probeRoute = command === "diagnostics" || command === "application-diagnostics" || command === "read-status" || command === "local-update" || command === "refresh-context" || command === "reply-mode" ? "/local/diagnostics" : "/status";
+    const probeRoute = command === "diagnostics" || command === "application-diagnostics" || command === "read-status" || command === "check-update" || command === "force-update" || command === "install-update" || command === "local-update" || command === "refresh-context" || command === "reply-mode" ? "/local/diagnostics" : "/status";
     const probe = await fetch(`http://127.0.0.1:${locator.port}${probeRoute}`, { headers, signal: AbortSignal.timeout(5_000) });
     if (!probe.ok) continue;
     const local = await probe.json();

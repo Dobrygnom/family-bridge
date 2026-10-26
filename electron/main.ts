@@ -74,6 +74,7 @@ function handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: 
 let windowsUpdateVersion: string | undefined;
 let windowsUpdateDownloading = false;
 let windowsUpdateReady = false;
+let forceUpdateWhenReady = false;
 let updateCheckOperation: Promise<void> | undefined;
 if (process.env.FAMILY_BRIDGE_E2E_USER_DATA) app.setPath("userData", path.resolve(process.env.FAMILY_BRIDGE_E2E_USER_DATA));
 const hasSingleInstanceLock = process.env.FAMILY_BRIDGE_E2E_ALLOW_SECOND_INSTANCE === "1" || app.requestSingleInstanceLock();
@@ -194,7 +195,13 @@ async function installPreparedUpdate() {
 }
 
 async function presentReadyUpdate(state: UpdateState) {
-  if (state.ready && state.version) updateGate.ready();
+  if (!state.ready || !state.version) return;
+  updateGate.ready();
+  if (forceUpdateWhenReady) {
+    forceUpdateWhenReady = false;
+    updateGate.requestNow();
+    setTimeout(() => void updateGate.tick(), 0);
+  }
 }
 
 function checkForUpdates() {
@@ -216,6 +223,13 @@ function checkForUpdates() {
     }
   })().finally(() => { updateCheckOperation = undefined; });
   return updateCheckOperation;
+}
+
+async function forceUpdateCheck() {
+  forceUpdateWhenReady = true;
+  await checkForUpdates();
+  if (currentUpdate.ready) await presentReadyUpdate(currentUpdate);
+  else if (!currentUpdate.available && !currentUpdate.downloading) forceUpdateWhenReady = false;
 }
 
 let serviceReady = false;
@@ -271,14 +285,7 @@ app.whenReady().then(async () => {
       reportsExportDirectory: path.join(app.getPath("documents"), "Family Bridge Reports"),
       requestUpdateCheck: () => setTimeout(() => void checkForUpdates(), 0),
       requestSupportUpdate: () => {
-        setTimeout(() => {
-          void checkForUpdates().then(() => {
-            if (currentUpdate.ready) {
-              updateGate.requestNow();
-              void updateGate.tick();
-            }
-          }).catch(() => service.diagnostics.record("support.failed"));
-        }, 0);
+        setTimeout(() => void forceUpdateCheck().catch(() => service.diagnostics.record("support.failed")), 0);
       },
       uiDiagnostics: () => uiErrors.snapshot(),
       computeEnrollmentNotifier: requestId => {
@@ -298,7 +305,16 @@ app.whenReady().then(async () => {
       setReplyMode: mode => service.setConversationReplyMode(mode),
       continueConversation: input => service.continueReport(input),
       refreshContext: () => { if (preparingUpdate || updateInstallIsQuitting) throw new Error("Update in progress"); void service.refreshContextNow().catch(() => service.diagnostics.record("context.read-failed")); return { accepted: true }; },
-      update: () => { if (!currentUpdate.ready) throw new Error("Update not ready"); updateGate.requestNow(); setTimeout(() => void updateGate.tick(), 0); return { accepted: true }; },
+      checkUpdate: async () => { await checkForUpdates(); return { accepted: true, update: { ...currentUpdate } }; },
+      forceUpdate: async () => {
+        await forceUpdateCheck();
+        return { accepted: true, forceRequested: forceUpdateWhenReady || Boolean(currentUpdate.ready), update: { ...currentUpdate } };
+      },
+      update: () => {
+        if (!currentUpdate.ready) return { accepted: false, reason: "not-ready", update: { ...currentUpdate } };
+        updateGate.requestNow(); setTimeout(() => void updateGate.tick(), 0);
+        return { accepted: true, installRequested: true, update: { ...currentUpdate } };
+      },
     })
     .then(server => app.once("will-quit", () => { service.support.stop(); server.close(); }))
     .catch(() => service.diagnostics.record("support.failed"));
@@ -518,12 +534,14 @@ app.whenReady().then(async () => {
         void presentReadyUpdate(update);
       });
       autoUpdater.on("update-not-available", () => {
+        forceUpdateWhenReady = false;
         windowsUpdateVersion = undefined;
         windowsUpdateDownloading = false;
         windowsUpdateReady = false;
         publishUpdate({ available: false, downloading: false });
       });
       autoUpdater.on("error", (error) => {
+        forceUpdateWhenReady = false;
         updateGate.cancel();
         preparingUpdate = false;
         updateInstallIsQuitting = false;
